@@ -154,34 +154,45 @@ fn project_variables(view: dae::DaeView<'_>) -> Result<Vec<Value>, DaeBackendErr
     Ok(projected)
 }
 
+/// An attribute that carries no numeric values; an absent optional, not an error.
+fn optional_miss<T>() -> Result<Option<T>, DaeBackendError> {
+    Ok(Option::None)
+}
+
 fn numeric_values<'dae>(
     evaluator: &mut rumoca_eval_dae::NumericEvaluator<'dae>,
     variable: dae::VariableView<'dae>,
     attribute: &'static str,
     expression: Option<dae::ExprId<'dae>>,
 ) -> Result<Option<Vec<f64>>, DaeBackendError> {
+    let scalar_type = variable.value_type().scalar_type();
     let numeric_expression = expression.filter(|_| {
         matches!(
-            variable.value_type().scalar_type(),
-            dae::ScalarType::Real | dae::ScalarType::Integer
+            scalar_type,
+            dae::ScalarType::Real | dae::ScalarType::Integer | dae::ScalarType::Boolean
         )
     });
-    numeric_expression
-        .map(|expression| {
-            let mut values = evaluator.expression(expression)?;
-            variable.broadcast_values(&mut values);
-            if values.len() != variable.scalar_count() {
-                return Err(DaeBackendError::AttributeShape {
-                    variable: variable.name().to_string(),
-                    attribute,
-                    actual: values.len(),
-                    expected: variable.scalar_count(),
-                    span: variable.declaration().span(),
-                });
-            }
-            Ok(values)
-        })
-        .transpose()
+    let Some(expression) = numeric_expression else {
+        return optional_miss();
+    };
+    let mut values = match evaluator.expression(expression) {
+        Ok(values) => values,
+        // A Boolean the static evaluator cannot fold keeps no value, as every
+        // Boolean did before Booleans were evaluated.
+        Err(_) if matches!(scalar_type, dae::ScalarType::Boolean) => return optional_miss(),
+        Err(error) => return Err(error.into()),
+    };
+    variable.broadcast_values(&mut values);
+    if values.len() != variable.scalar_count() {
+        return Err(DaeBackendError::AttributeShape {
+            variable: variable.name().to_string(),
+            attribute,
+            actual: values.len(),
+            expected: variable.scalar_count(),
+            span: variable.declaration().span(),
+        });
+    }
+    Ok(Some(values))
 }
 
 fn project_functions(view: dae::DaeView<'_>) -> Vec<Value> {

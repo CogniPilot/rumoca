@@ -21,9 +21,11 @@ external_functions = false
 external_tables = false
 random = false
 initialization = false
-events = false
+# State and time events run the hand-written event runtime (`events.rs`)
+# over the model's scalar event profile; the template refuses what it does not run.
+events = true
 runtime_events = false
-clocks = false
+clocks = true
 dynamic_ranges = false
 dynamic_derivative_subscripts = false
 forward_ad = false
@@ -42,3 +44,8 @@ dtypes = ["f64"]
 [[files]]
 path = "{{ model_name }}_fixed_ode.rs"
 template = "model_fixed_ode.rs.jinja"
+
+# The hand-written event runtime every generated module includes verbatim.
+[[partials]]
+template = "events.rs"
+name = "rust-fixed-ode-events.jinja"

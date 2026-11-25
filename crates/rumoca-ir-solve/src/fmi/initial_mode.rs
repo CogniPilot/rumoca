@@ -5,24 +5,55 @@ mod tests;
 mod typed_relation;
 
 use crate::parameter_reads::scalar_parameter_output as parameter;
-use crate::{LinearOp, LinearOpSliceKind, SolveModel, SolveVisitor};
+use crate::{
+    LinearOp, LinearOpSliceKind, SolveArtifacts, SolveModel, SolveProblem, SolvePureCallTable,
+    SolveVisitor,
+};
 
 pub(super) fn validate(model: &SolveModel) -> Result<(), &'static str> {
-    let Some(flag) = model.problem.solve_layout.initial_event_parameter_index else {
+    admit(
+        &model.problem,
+        &model.artifacts,
+        &model.pure_calls,
+        |reads| reads.visit_solve_model(model),
+    )
+}
+
+/// `validate` for a scalar target that renders a problem and its artifacts
+/// without a retained model: every read of the initialization-mode flag must
+/// sit in a checked relation region.
+pub fn admit_initial_mode(
+    problem: &SolveProblem,
+    artifacts: &SolveArtifacts,
+    calls: &SolvePureCallTable,
+) -> Result<(), &'static str> {
+    admit(problem, artifacts, calls, |reads| {
+        reads.visit_solve_problem(problem)?;
+        reads.visit_solve_artifacts(artifacts)
+    })
+}
+
+fn admit(
+    problem: &SolveProblem,
+    artifacts: &SolveArtifacts,
+    calls: &SolvePureCallTable,
+    visit: impl FnOnce(&mut ModeReads<'_>) -> Result<(), std::convert::Infallible>,
+) -> Result<(), &'static str> {
+    let Some(flag) = problem.solve_layout.initial_event_parameter_index else {
         return Ok(());
     };
     let mut reads = ModeReads {
-        model: Some(model),
+        model: Some((problem, artifacts)),
         in_sample: false,
         flag,
-        memory: &model.problem.solve_layout.relation_memory_parameter_indices,
-        calls: &model.pure_calls,
-        seed_offset: model.problem.layout.y_scalars(),
+        memory: &problem.solve_layout.relation_memory_parameter_indices,
+        calls,
+        seed_offset: problem.layout.y_scalars(),
         total: 0,
         guards: 0,
         unknown: false,
     };
-    match reads.visit_solve_model(model) {
+    match visit(&mut reads) {
         Ok(()) => {}
         Err(never) => match never {},
     }
@@ -38,7 +69,8 @@ pub(super) fn validate(model: &SolveModel) -> Result<(), &'static str> {
 }
 
 struct ModeReads<'a> {
-    model: Option<&'a SolveModel>,
+    /// The problem and artifacts the visited blocks belong to.
+    model: Option<(&'a SolveProblem, &'a SolveArtifacts)>,
     in_sample: bool,
     flag: usize,
     memory: &'a [usize],
@@ -56,11 +88,11 @@ impl SolveVisitor for ModeReads<'_> {
         &mut self,
         block: &crate::ScalarProgramBlock,
     ) -> Result<(), Self::Error> {
-        let Some(model) = self.model else {
+        let Some((problem, artifacts)) = self.model else {
             return crate::visitor::walk_scalar_program_block(self, block);
         };
-        let discrete = &model.problem.discrete;
-        let artifacts = &model.artifacts.discrete;
+        let discrete = &problem.discrete;
+        let artifacts = &artifacts.discrete;
         let guarded_jvp = artifacts
             .guarded_jacobian_v
             .as_ref()
@@ -115,7 +147,7 @@ impl SolveVisitor for ModeReads<'_> {
         op: &LinearOp,
     ) -> Result<(), Self::Error> {
         let sampled = self.in_sample
-            || matches!(kind, LinearOpSliceKind::GuardedAssignmentProgram { program_index, .. } if self.model.is_some_and(|m| m.problem.discrete.guarded_assignments[program_index].clock_owner().is_some()));
+            || matches!(kind, LinearOpSliceKind::GuardedAssignmentProgram { program_index, .. } if self.model.is_some_and(|(problem, _)| problem.discrete.guarded_assignments[program_index].clock_owner().is_some()));
         if sampled && matches!(op, LinearOp::LoadP { index, .. } if *index == self.flag) {
             return Ok(());
         }

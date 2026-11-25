@@ -224,6 +224,7 @@ fn builtin_template_targets_render_or_are_explicit_readiness_zero_manifests() {
             "fmi3:typed_arithmetic.jinja".to_string(),
             "fmi3:typed_functions.jinja".to_string(),
             "fmi3:typed_tensors.jinja".to_string(),
+            "rust-fixed-ode:events.rs".to_string(),
         ],
         "the declared support partials changed"
     );
@@ -801,6 +802,7 @@ fn shared_template_names_are_globally_unique_and_target_owned() {
             "galec-model.c.jinja <- embedded-c-galec/model.c.jinja".to_string(),
             "galec-model.h.jinja <- embedded-c-galec/model.h.jinja".to_string(),
             "galec-solve-c.jinja <- embedded-c-galec/solve_c.jinja".to_string(),
+            "rust-fixed-ode-events.jinja <- rust-fixed-ode/events.rs".to_string(),
         ],
         "the shared render-environment inventory changed"
     );

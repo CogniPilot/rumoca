@@ -131,7 +131,7 @@
 {%- endif %}
 {%- endmacro %}
 
-#![allow(dead_code, non_snake_case)]
+#![allow(dead_code, non_snake_case, rustdoc::broken_intra_doc_links)]
 
 {{ real_extremum_prelude("rust") }}
 pub type Scalar = f64;
@@ -148,11 +148,14 @@ pub type Derivative = [Scalar; DERIVATIVE_LEN];
 pub struct SolveError;
 
 
-/// Default value of every compiled parameter slot (P layout). NaN marks a slot
-/// the host must supply (an input) or that `init_params` computes.
+/// Default value of every compiled parameter slot (P layout). NaN marks an
+/// input the host must supply or a named slot `init_params` computes; the
+/// homotopy parameter starts at 1 (the actual expression); other unnamed
+/// slots are event bookkeeping and start at 0, as an FMU instance.
 pub const DEFAULT_P: [f64; P_LEN] = [
+{%- set homotopy = solve.solve_layout.initial_homotopy_parameter_index %}
 {%- for value in solve_parameter_defaults %}
-    {{ value if value is not none else "f64::NAN" }}{{ "," if not loop.last else "" }}
+    {{ value if value is not none else ("1.0" if loop.index0 == homotopy else ("f64::NAN" if solve_parameter_inputs[loop.index0] or solve_parameter_names[loop.index0] is not none else "0.0")) }}{{ "," if not loop.last else "" }}
 {%- endfor %}
 ];
 
@@ -239,6 +242,9 @@ pub fn derivative_rhs_into(
     let _ = p;
 {%- set alg = solve_blocks.continuous.algebraic_assignments %}
 {%- set alg_plan = alg.scalar_plan if alg else none %}
+{%- if solve.layout.y_scalars > (solve_blocks.continuous.derivative_rhs_scalar or solve_blocks.continuous.derivative_rhs).output_count and not (alg_plan and alg_plan.output_count > 0) %}
+{{ fail("unsupported-feature:exact_algebraic_assignments: an algebraic or output slot has no exact assignment") }}
+{%- endif %}
 {%- if alg_plan and alg_plan.output_count > 0 %}
     // Algebraic refresh: the derivative rows read algebraic slots of y. Only
     // the state slots of the input are read; every algebraic slot is assigned
@@ -287,3 +293,174 @@ pub fn refresh_algebraics(
 {%- endif %}
     Ok(())
 }
+
+{#- Events: the model's facts for the hand-written event runtime that follows
+    (`events.rs`). Every value is a Solve IR fact carried by
+    `solve_events.profile`; nothing here decides how events execute. -#}
+{%- if solve_events.refusal is not none %}
+{{ fail("unsupported-feature:events: " ~ solve_events.refusal) }}
+{%- endif %}
+{%- set ev = solve_events.profile %}
+{%- if ev %}
+{%- if ev.entry_pre_rows | select | list | length > 0 %}{{ fail("unsupported-feature:events.entry_pre: rust-fixed-ode does not execute discrete rows that read pre at the event entry in every pass") }}{% endif %}
+{%- if solve.events.actions | selectattr("assertion_projection") | list | length > 0 %}{{ fail("unsupported-feature:events.actions: rust-fixed-ode does not execute assertions raised inside called functions") }}{% endif %}
+{%- if ev.action_clock_lanes | reject("none") | list | length > 0 %}{{ fail("unsupported-feature:events.actions: rust-fixed-ode does not execute assertions owned by a clock") }}{% endif %}
+{%- if ev.has_quotient_memory %}{{ fail("unsupported-feature:events.quotient_memory: rust-fixed-ode does not execute quotient-memory discrete rows") }}{% endif %}
+{%- if ev.pre_commit_needs_snapshot %}{{ fail("unsupported-feature:events.pre_commit: rust-fixed-ode does not commit pre bindings whose source is another pre binding") }}{% endif %}
+{%- endif %}
+{%- set nroots = ev.roots | length if ev else 0 %}
+{%- set search = namespace(roots=[]) %}
+{%- if ev %}{% for root in ev.roots %}{% if root.role == "search" %}{% set search.roots = search.roots + [loop.index0] %}{% endif %}{% endfor %}{% endif %}
+{%- set nind = search.roots | length %}
+{%- set ndisc = ev.discrete_targets | length if ev else 0 %}
+{%- set nguard = ev.guarded_targets | length if ev else 0 %}
+{%- set nruntime = ev.runtime_targets | length if ev else 0 %}
+{%- set npost = ev.post_commit_targets | length if ev else 0 %}
+{%- macro slot(s) %}Slot { index: {{ s.index }}, in_y: {{ "true" if s.column == "y" else "false" }} }{% endmacro %}
+{%- macro rows_fn(name, plan) %}
+fn {{ name }}(time: Scalar, y: &State, p: &Parameters, out: &mut [f64]) -> Result<(), SolveError> {
+    let _ = (time, y, p, &out);
+{%- if plan %}
+{%- for program in plan.programs %}
+    {
+{%- for op in program.ops %}
+{{ scalar_op(op, out="out") }}
+{%- endfor %}
+    }
+{%- endfor %}
+{%- endif %}
+    Ok(())
+}
+{%- endmacro %}
+
+/// Instants of the model's static time events, ascending.
+pub const TIME_EVENTS: &[f64] = &[{% if ev %}{% for instant in ev.time_events.instants | sort %}{{ instant }}{{ ", " if not loop.last else "" }}{% endfor %}{% endif %}];
+/// The model's periodic clocks (`sample`).
+const CLOCKS: &[Clock] = &[
+{%- if ev %}{% for clock in ev.time_events.clocks %}
+    Clock { period: {{ clock.period }}, phase: {{ clock.phase }}, phase_numerator: {{ clock.phase_numerator }}, period_numerator: {{ clock.period_numerator }}, denominator: {{ clock.denominator }}, activation: {{ clock.activation }} },
+{%- endfor %}{% endif %}
+];
+/// Relative tolerance within which two instants are one instant.
+const TIME_MATCH_TOLERANCE: f64 = {{ ev.time_events.match_tolerance if ev else 0.0 }};
+
+/// Root conditions: a root changes sign where its relation changes side.
+pub const N_ROOTS: usize = {{ nroots }};
+const ROOT_SLOTS: usize = {{ [nroots, 1] | max }};
+/// Zero domain per root: 1 positive, -1 non-positive, 0 previous side.
+const ROOT_ZERO: [i8; ROOT_SLOTS] = [{% for root in (ev.roots if ev else []) %}{{ 1 if root.zero == "positive" else (-1 if root.zero == "non_positive" else 0) }}, {% else %}0{% endfor %}];
+/// Relation-memory parameter per root.
+const ROOT_MEMORY: [Option<usize>; ROOT_SLOTS] = [{% for root in (ev.roots if ev else []) %}{% if root.memory is not none %}Some({{ root.memory }}){% else %}None{% endif %}, {% else %}None{% endfor %}];
+/// Whether a root's relation memory is refreshed after the event commit.
+const ROOT_ALGEBRAIC: [bool; ROOT_SLOTS] = [{% for root in (ev.roots if ev else []) %}{{ "true" if root.algebraic_dependent else "false" }}, {% else %}false{% endfor %}];
+/// Event indicators: the roots a state event is searched on.
+const INDICATORS: usize = {{ nind }};
+const INDICATOR_SLOTS: usize = {{ [nind, 1] | max }};
+const INDICATOR_ROOT: [usize; INDICATOR_SLOTS] = [{% for root in search.roots %}{{ root }}, {% else %}0{% endfor %}];
+
+/// Every root condition at `time`, `y`, `p`; reads the algebraic slots of `y`
+/// as given.
+pub fn eval_roots(time: Scalar, y: &State, p: &Parameters, out: &mut [f64; ROOT_SLOTS]) -> Result<(), SolveError> {
+    let _ = (time, y, p, &out);
+{%- if ev %}
+{%- for program in solve.events.root_plan.programs %}
+    {
+{%- for op in program.ops %}
+{{ scalar_op(op, out="out") }}
+{%- endfor %}
+    }
+{%- endfor %}
+{%- endif %}
+    Ok(())
+}
+
+/// Scratch size of the row blocks below.
+const ROW_SLOTS: usize = {{ [ndisc, nguard, nruntime, npost, 1] | max }};
+/// Discrete equations and condition memories: their parameter targets, and
+/// which rows are condition memories.
+const DISCRETE_TARGETS: &[usize] = &[{% for target in (ev.discrete_targets if ev else []) %}{{ target }}, {% endfor %}];
+const DISCRETE_MEMORY_ROW: &[bool] = &[{% for row in (ev.condition_memory_rows if ev else []) %}{{ "true" if row else "false" }}, {% endfor %}];
+/// Rows only a public read observes, and whether they read a solver
+/// coordinate.
+const DISCRETE_OBSERVED_ROW: &[bool] = &[{% for row in (ev.observation_rows if ev else []) %}{{ "true" if row else "false" }}, {% endfor %}];
+const OBSERVATION_READS_Y: bool = {{ "true" if ev and ev.observation_reads_y else "false" }};
+{{- rows_fn("discrete_values", solve.discrete.rhs_plan if ev and ndisc > 0 else none) }}
+/// Pulse condition memories, released after the iteration settles.
+const PULSE_ROWS: &[usize] = &[{% for row in (ev.pulse_rows if ev else []) %}{{ row }}, {% endfor %}];
+
+fn pulse_values(time: Scalar, y: &State, p: &Parameters, out: &mut [f64]) -> Result<(), SolveError> {
+    let _ = (time, y, p, &out);
+{%- for index in (ev.pulse_programs if ev else []) %}
+    {
+{%- for op in solve.discrete.rhs_plan.programs[index].ops %}
+{{ scalar_op(op, out="out") }}
+{%- endfor %}
+    }
+{%- endfor %}
+    Ok(())
+}
+/// Guarded assignments (`reinit`, `when` bodies) and the clock that owns each.
+const GUARDED_TARGETS: &[Slot] = &[{% for s in (ev.guarded_targets if ev else []) %}{{ slot(s) }}, {% endfor %}];
+const GUARDED_CLOCK: &[Option<usize>] = &[{% for clock in (ev.guarded_clocks if ev else []) %}{% if clock is not none %}Some({{ clock }}){% else %}None{% endif %}, {% endfor %}];
+{{- rows_fn("guarded_values", solve.discrete.guarded_assignment_plan if ev and nguard > 0 else none) }}
+/// Runtime assignments, run to their fixed point inside an event.
+const RUNTIME_TARGETS: &[Slot] = &[{% for s in (ev.runtime_targets if ev else []) %}{{ slot(s) }}, {% endfor %}];
+{{- rows_fn("runtime_values", solve.discrete.runtime_assignment_plan if ev and nruntime > 0 else none) }}
+/// Post-commit assignments, run after `pre` commits.
+const POST_COMMIT_TARGETS: &[Slot] = &[{% for s in (ev.post_commit_targets if ev else []) %}{{ slot(s) }}, {% endfor %}];
+{{- rows_fn("post_commit_values", solve.discrete.post_commit_assignment_plan if ev and npost > 0 else none) }}
+
+/// Pre bindings, and the ones an event pass advances and settles on.
+const PRE_LANES: &[PreLane] = &[{% for lane in (ev.pre_bindings if ev else []) %}PreLane { dest: {{ lane.dest }}, source: {{ lane.source }}, in_y: {{ "true" if lane.column == "y" else "false" }} }, {% endfor %}];
+const ITERATION_LANES: &[usize] = &[{% for lane in (ev.iteration_lanes if ev else []) %}{{ lane }}, {% endfor %}];
+const PRE_LANE_SLOTS: usize = {{ [ev.iteration_lanes | length if ev else 0, 1] | max }};
+/// The parameter that reads 1 during the initial event, if the model reads
+/// `initial()`.
+const INITIAL_EVENT_P: Option<usize> = {% if ev and solve.solve_layout.initial_event_parameter_index is not none %}Some({{ solve.solve_layout.initial_event_parameter_index }}){% else %}None{% endif %};
+
+/// Assertions (`assert`, MLS §8.3.7): an `Error` action that evaluates
+/// nonzero stops the run; a `Warning` never does. Condition memories are read
+/// at their event-entry value while an event checks them.
+const ACTIONS: &[ActionKind] = &[{% for action in (solve.events.actions if ev else []) %}ActionKind::{{ "Error" if action.kind == "Assert" else "Warning" }}, {% endfor %}];
+const ACTION_SLOTS: usize = {{ [solve.events.actions | length if ev else 0, 1] | max }};
+const CONDITION_MEMORIES: &[usize] = &[{% for index in (ev.condition_memories if ev else []) %}{{ index }}, {% endfor %}];
+
+fn action_values(time: Scalar, y: &State, p: &Parameters, out: &mut [f64]) -> Result<(), SolveError> {
+    let _ = (time, y, p, &out);
+{%- if ev and solve.events.actions | length > 0 %}
+{%- for program in solve.events.action_plan.programs %}
+    {
+{%- for op in program.ops %}
+{{ scalar_op(op, out="out") }}
+{%- endfor %}
+    }
+{%- endfor %}
+{%- endif %}
+    Ok(())
+}
+
+/// Discrete-valued inputs as `(first parameter slot, scalar count)` runs: a
+/// change between steps is an event at the next step's first instant.
+const DISCRETE_INPUTS: &[(usize, usize)] = &[{% for run in (ev.discrete_input_runs.runs if ev else []) %}({{ run.p_base }}, {{ run.count }}), {% endfor %}];
+const INPUT_SLOTS: usize = {{ [ev.discrete_input_runs.scalar_count if ev else 0, 1] | max }};
+
+/// The event iteration schedule the compiler issued (SPEC_0044 ME-EVENT-006).
+{%- set schedule = ev.schedule if ev else none %}
+const FIXED_POINT_CAP: usize = {{ schedule.fixed_point_cap if schedule else 1 }};
+const EVENT_PASS: &[EventStep] = &[{% for s in (schedule.event_pass if schedule else []) %}EventStep::{{ s }}, {% endfor %}];
+const RELATION_PASS: &[RelationStep] = &[{% for s in (schedule.relation_pass if schedule else []) %}RelationStep::{{ s }}, {% endfor %}];
+/// A cycling iteration is resolved by the mode search: it looks back over the
+/// last `SURFACE_WINDOW` passes and searches at most `MODE_LIMIT` relations.
+const SURFACE_WINDOW: usize = {{ schedule.relation_surface_window if schedule else 0 }};
+const SURFACE_SLOTS: usize = {{ [schedule.relation_surface_window if schedule else 0, 1] | max }};
+const MODE_LIMIT: usize = {{ schedule.mode_search_relations if schedule else 0 }};
+const MODE_SLOTS: usize = {{ [schedule.mode_search_relations if schedule else 0, 1] | max }};
+{%- set nb = namespace(offsets=[], flat=[]) %}
+{%- for hood in (ev.root_neighborhoods if ev else []) %}{% set nb.offsets = nb.offsets + [nb.flat | length] %}{% set nb.flat = nb.flat + hood %}{% endfor %}
+{%- set nb.offsets = nb.offsets + [nb.flat | length] %}
+/// Per root, the roots reading a coordinate it reads, itself included:
+/// `NEIGHBOR[NEIGHBOR_OFFSET[r]..NEIGHBOR_OFFSET[r + 1]]`.
+const NEIGHBOR_OFFSET: &[usize] = &[{% for offset in nb.offsets %}{{ offset }}, {% endfor %}];
+const NEIGHBOR: &[usize] = &[{% for root in nb.flat %}{{ root }}, {% endfor %}];
+const SETTLE_PASS: &[SettleStep] = &[{% for s in (schedule.settle_pass if schedule else []) %}SettleStep::{{ s }}, {% endfor %}];
+{% include "rust-fixed-ode-events.jinja" %}

@@ -87,6 +87,7 @@ pub use indicator_plan::{
     FmiIndicatorPlan, IndicatorEntry, IndicatorPlanError, IndicatorPlanInputs,
     IndicatorPlanRejection, IndicatorReading, IndicatorZeroSide,
 };
+pub use initial_mode::admit_initial_mode;
 pub use max_step_duration::{
     MAX_STEP_DURATION_DESCRIPTION, MAX_STEP_DURATION_NAME, MAX_STEP_DURATION_UNCONSTRAINED,
     MAX_STEP_DURATION_UNIT,
@@ -102,6 +103,7 @@ pub use native_deployment::{
 pub use root_location::{
     RootBracket, RootLocationPlan, RootRefinementMethod, RootTieBreak, SlidingModes,
 };
+pub use scalar_events::{ScalarEventProfile, scalar_event_profile};
 
 /// Configuration-Mode capability declared by the checked FMI component.
 ///

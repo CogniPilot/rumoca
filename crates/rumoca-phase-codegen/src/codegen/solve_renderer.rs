@@ -324,6 +324,23 @@ fn parameter_defaults(problem: &solve::SolveProblem, dae_entry: &Value) -> Vec<O
     defaults
 }
 
+/// Whether each compiled parameter slot (`P` layout order) holds an external
+/// input scalar, array elements included.
+fn parameter_inputs(problem: &solve::SolveProblem) -> Vec<bool> {
+    let mut inputs = vec![false; problem.layout.p_scalars()];
+    for run in &problem.solve_layout.variable_storage_runs {
+        if run.role != solve::SolveVariableStorageRole::ExternalInput {
+            continue;
+        }
+        if let solve::ScalarSlot::P { index, .. } = run.base {
+            for slot in inputs.iter_mut().skip(index).take(run.scalar_count) {
+                *slot = true;
+            }
+        }
+    }
+    inputs
+}
+
 /// The scalar name of every compiled parameter slot (`P` layout order), from
 /// the layout's scalar bindings; `None` for a slot no scalar name binds.
 fn parameter_names(problem: &solve::SolveProblem) -> Vec<Option<String>> {
@@ -365,6 +382,7 @@ fn solve_render_context_value_with_handles(
     let solve_value = super::solve_lazy::solve_value(handle.clone())?;
     let artifacts_value = super::solve_lazy::artifacts_value(handle.clone())?;
     let prepared_blocks = solve_template_blocks_value(&handle)?;
+    let solve_events = solve_events_value(&handle);
     let scalar_derivative_programs = prepared_blocks.scalar_derivative_programs;
     let solve_blocks = prepared_blocks.value;
     let derivative_nodes = Value::from_object(LazyDerivativeNodesValue::new(
@@ -401,10 +419,12 @@ fn solve_render_context_value_with_handles(
     );
     let parameter_defaults = Value::from(parameter_defaults(solve_problem, &dae_entry));
     let parameter_names = Value::from(parameter_names(solve_problem));
+    let parameter_inputs = Value::from(parameter_inputs(solve_problem));
     let context = match model_name {
         Some(name) => minijinja::context! {
             solve_parameter_defaults => parameter_defaults.clone(),
             solve_parameter_names => parameter_names.clone(),
+            solve_parameter_inputs => parameter_inputs.clone(),
             dae => dae_entry.clone(),
             fmi => fmi_entry.clone(),
             solve => solve_value.clone(),
@@ -413,6 +433,7 @@ fn solve_render_context_value_with_handles(
             ir_kind => "solve",
             model_name => name,
             solve_blocks => solve_blocks,
+            solve_events => solve_events,
             solve_derivative_nodes => derivative_nodes,
             solve_implicit_rows => implicit_rows,
             solve_jacobian_rows => implicit_jacobian_rows,
@@ -422,6 +443,7 @@ fn solve_render_context_value_with_handles(
         None => minijinja::context! {
             solve_parameter_defaults => parameter_defaults,
             solve_parameter_names => parameter_names,
+            solve_parameter_inputs => parameter_inputs,
             dae => dae_entry.clone(),
             fmi => fmi_entry.clone(),
             solve => solve_value.clone(),
@@ -429,6 +451,7 @@ fn solve_render_context_value_with_handles(
             ir => solve_value,
             ir_kind => "solve",
             solve_blocks => solve_blocks,
+            solve_events => solve_events,
             solve_derivative_nodes => derivative_nodes,
             solve_implicit_rows => implicit_rows,
             solve_jacobian_rows => implicit_jacobian_rows,
@@ -440,6 +463,30 @@ fn solve_render_context_value_with_handles(
         context,
         scalar_derivative_programs,
     })
+}
+
+/// The `solve_events` render entry: the scalar event profile of a problem
+/// with events (`profile`), or the reason it has none (`refusal`). Both are
+/// none for an event-free problem.
+fn solve_events_value(handle: &super::solve_lazy::SolveRenderHandle) -> Value {
+    let problem = handle.problem();
+    if !solve::solve_has_events(problem) {
+        return minijinja::context! { profile => (), refusal => () };
+    }
+    let no_calls = solve::SolvePureCallTable::default();
+    let calls = handle
+        .inlined_pure_calls()
+        .or_else(|| handle.pure_calls())
+        .unwrap_or(&no_calls);
+    let admitted = solve::fmi::admit_initial_mode(problem, handle.artifacts(), calls)
+        .and_then(|()| solve::fmi::scalar_event_profile(problem));
+    match admitted {
+        Ok(profile) => minijinja::context! {
+            profile => Value::from_serialize(&profile),
+            refusal => (),
+        },
+        Err(refusal) => minijinja::context! { profile => (), refusal => refusal },
+    }
 }
 
 pub(super) fn c_renderable_derivative_nodes(

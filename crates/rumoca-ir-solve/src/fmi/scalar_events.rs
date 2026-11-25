@@ -19,12 +19,12 @@ use serde::Serialize;
 
 use crate::{
     DiscreteEventPreMode, DiscreteRowRole, PreParamSource, RootSearchPlan, RootSearchRole,
-    RootZeroDomain, ScalarSlot, SolveEventActionKind, SolveModel,
+    RootZeroDomain, ScalarSlot, SolveEventActionKind, SolveModel, SolveProblem,
 };
 
 /// The Solve IR facts the generated component reads to execute events.
 #[derive(Debug, Serialize)]
-pub(super) struct ScalarEventProfile {
+pub struct ScalarEventProfile {
     /// Per root output: whether and how it is evaluated in Event Mode.
     roots: Vec<ScalarEventRoot>,
     has_quotient_memory: bool,
@@ -44,6 +44,11 @@ pub(super) struct ScalarEventProfile {
     /// Per discrete output: whether it is a condition memory, the rows
     /// initialization seeds with `pre` following the current value.
     condition_memory_rows: Vec<bool>,
+    /// Per discrete output: whether its `pre` reads the event-entry value in
+    /// every pass (`DiscreteEventPreMode::EventEntry`). Every other row, a
+    /// `Fixed` one included, reads the event entry in the first pass and the
+    /// previous pass after it, as the pre lanes advance.
+    entry_pre_rows: Vec<bool>,
     /// Pulse-memory outputs and their checked producing programs. Only these
     /// programs are evaluated when the event releases its clock pulses.
     pulse_rows: Vec<usize>,
@@ -166,8 +171,22 @@ fn seed_rows(problem: &crate::SolveProblem) -> Result<Vec<SeedRow>, &'static str
 }
 
 pub(super) fn validate(model: &SolveModel) -> Result<ScalarEventProfile, &'static str> {
-    let problem = &model.problem;
-    refuse_unsupported_owners(model)?;
+    if model
+        .problem
+        .discrete
+        .pre_modes
+        .iter()
+        .any(|mode| *mode != DiscreteEventPreMode::FollowCurrent)
+    {
+        return Err("the C profile executes only discrete rows whose pre follows the current pass");
+    }
+    scalar_event_profile(&model.problem)
+}
+
+/// Admit the scalar event profile of a lowered problem, or say why it needs
+/// more.
+pub fn scalar_event_profile(problem: &SolveProblem) -> Result<ScalarEventProfile, &'static str> {
+    refuse_unsupported_owners(problem)?;
     let events = &problem.events;
     let discrete = &problem.discrete;
     let search = RootSearchPlan::derive(problem);
@@ -215,10 +234,7 @@ pub(super) fn validate(model: &SolveModel) -> Result<ScalarEventProfile, &'stati
         .any(|lane| lane.column == "p" && pre_destinations.contains(&lane.source));
     let iteration_lanes = iteration_lanes(discrete, layout, pre_bindings.len())?;
     let (pulse_rows, pulse_programs) = pulse_producers(discrete)?;
-    let guarded_clocks = guarded_clocks(
-        discrete,
-        model.problem.clocks.periodic_event_schedules.len(),
-    )?;
+    let guarded_clocks = guarded_clocks(discrete, problem.clocks.periodic_event_schedules.len())?;
     Ok(ScalarEventProfile {
         has_quotient_memory: discrete
             .row_roles
@@ -229,6 +245,9 @@ pub(super) fn validate(model: &SolveModel) -> Result<ScalarEventProfile, &'stati
         pre_bindings,
         pre_commit_needs_snapshot,
         iteration_lanes,
+        entry_pre_rows: (0..discrete.row_roles.len())
+            .map(|row| discrete.pre_modes.get(row) == Some(&DiscreteEventPreMode::EventEntry))
+            .collect(),
         condition_memory_rows: discrete
             .row_roles
             .iter()
@@ -249,7 +268,7 @@ pub(super) fn validate(model: &SolveModel) -> Result<ScalarEventProfile, &'stati
             .collect(),
         guarded_clocks,
         action_clock_lanes: action_clock_lanes(problem)?,
-        time_events: super::time_events::derive(model)?,
+        time_events: super::time_events::derive(problem)?,
         discrete_input_runs: discrete_inputs(problem)?,
         post_commit_targets: slots(&discrete.post_commit_assignment_targets)?,
         condition_memories: events.condition_memory_parameter_indices.clone(),
@@ -279,13 +298,6 @@ fn validate_scalar_discrete_rows(
         )
     }) {
         return Err("the C profile executes only discrete equations and condition memories");
-    }
-    if discrete
-        .pre_modes
-        .iter()
-        .any(|mode| *mode != DiscreteEventPreMode::FollowCurrent)
-    {
-        return Err("the C profile executes only discrete rows whose pre follows the current pass");
     }
     Ok(())
 }
@@ -367,8 +379,7 @@ fn action_clock_lanes(problem: &crate::SolveProblem) -> Result<Vec<Option<usize>
     Ok(owners.into_iter().map(Option::flatten).collect())
 }
 
-fn refuse_unsupported_owners(model: &SolveModel) -> Result<(), &'static str> {
-    let problem = &model.problem;
+fn refuse_unsupported_owners(problem: &SolveProblem) -> Result<(), &'static str> {
     let events = &problem.events;
     let discrete = &problem.discrete;
     if crate::solve_has_runtime_events(problem) {

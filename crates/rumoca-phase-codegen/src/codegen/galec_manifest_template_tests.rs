@@ -840,6 +840,7 @@ fn support_partials_are_shared_and_are_not_artifacts() {
             "fmi3/typed_arithmetic.jinja".to_string(),
             "fmi3/typed_functions.jinja".to_string(),
             "fmi3/typed_tensors.jinja".to_string(),
+            "rust-fixed-ode/events.rs".to_string(),
         ],
         "the built-in support partials changed; keep the declaration and its \
          render-coverage exemption in step"

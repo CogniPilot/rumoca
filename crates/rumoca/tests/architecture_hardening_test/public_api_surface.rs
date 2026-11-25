@@ -177,6 +177,16 @@ const DOCUMENTED_CONTRACT_SURFACES: &[(&str, &str, &str)] = &[
         "source_dae_forbidden_builtin_name",
         "spec/SPEC_0041_CRATE_OWNERSHIP_CATALOG.md",
     ),
+    (
+        "crates/rumoca-phase-codegen/src/templates/rust-fixed-ode/events.rs",
+        "p_mut",
+        "docs/user-guide/src/codegen/targets.md",
+    ),
+    (
+        "crates/rumoca-phase-codegen/src/templates/rust-fixed-ode/events.rs",
+        "evaluation_bound",
+        "docs/user-guide/src/codegen/targets.md",
+    ),
 ];
 
 /// Workspace directories whose sources can reference a public item.

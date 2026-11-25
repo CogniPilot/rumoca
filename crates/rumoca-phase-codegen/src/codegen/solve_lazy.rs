@@ -663,9 +663,9 @@ fn algebraic_assignment_ownership_complete(problem: &solve::SolveProblem) -> boo
         return false;
     }
     let continuous = &problem.continuous;
+    // Every non-state solver slot, outputs included, needs an assignment.
     let state_count = problem.solve_layout.state_scalar_count();
-    let Some(required_algebraic_end) =
-        state_count.checked_add(problem.solve_layout.algebraic_scalar_count())
+    let Some(required_algebraic_end) = state_count.checked_add(non_state_scalar_count(problem))
     else {
         return false;
     };
@@ -839,14 +839,18 @@ pub(super) fn explicit_algebraic_assignment_block(
     problem: &solve::SolveProblem,
     pure_calls: Option<&solve::SolvePureCallTable>,
 ) -> Result<Option<solve::ComputeBlock>, CodegenError> {
-    if problem.solve_layout.algebraic_scalar_count() == 0
-        || !algebraic_assignment_ownership_complete(problem)
-    {
+    if non_state_scalar_count(problem) == 0 || !algebraic_assignment_ownership_complete(problem) {
         return Ok(unavailable_algebraic_assignment_block());
     }
     materialized_assignment_programs(problem, pure_calls)
         .map(materialize_output_assignments)
         .transpose()
+}
+
+/// The algebraic and output solver slots: the ones a refresh assigns.
+fn non_state_scalar_count(problem: &solve::SolveProblem) -> usize {
+    let layout = &problem.solve_layout;
+    layout.solver_scalar_count() - layout.state_scalar_count()
 }
 
 fn unavailable_algebraic_assignment_block() -> Option<solve::ComputeBlock> {
