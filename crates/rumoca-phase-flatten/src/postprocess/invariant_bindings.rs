@@ -12,6 +12,8 @@ use rumoca_eval_flat::translation_reads::ResourceRoots;
 use rumoca_ir_flat as flat;
 
 use crate::Context;
+
+mod initial_algorithms;
 use rustc_hash::FxHashMap;
 
 /// Fold the invariant bindings SPEC_0040 FLAT-C01 proves into their values.
@@ -52,6 +54,13 @@ pub(crate) fn fold_invariant_bindings(flat: &mut flat::Model, ctx: &Context) {
         }
         variable.binding = folded;
     }
+    let inventory = FunctionInventory {
+        flat,
+        resources: &ctx.resource_roots,
+        enumeration_literals: &ctx.declared_enumeration_literals,
+    };
+    let decided = initial_algorithms::decide_string_initial_algorithms(flat, &inventory);
+    initial_algorithms::apply(flat, decided);
 }
 
 struct BindingEvaluator<'a> {
