@@ -20,10 +20,12 @@ pub(super) fn lower_algebraic_family_map<'dae>(
     if family.bodies().len() != 1 {
         return Ok(false);
     }
-    let checked_domain = context
-        .view
-        .domain(family.domain())
-        .expect("checked family domain resolves");
+    let checked_domain = context.view.domain(family.domain()).ok_or_else(|| {
+        LowerError::contract(
+            "structured algebraic family domain does not resolve",
+            family.provenance().span(),
+        )
+    })?;
     let domain = checked_domain.structured();
     let points = domain.index_tuples().map_err(|error| {
         LowerError::contract(
@@ -35,7 +37,7 @@ pub(super) fn lower_algebraic_family_map<'dae>(
     let body = family
         .bodies()
         .get(0)
-        .expect("single checked family body resolves");
+        .ok_or_else(|| LowerError::contract("structured algebraic family has no body", span))?;
     let mut has_sum_reduction = false;
     dae::for_each_expression(context.view, body, |_, expression| {
         has_sum_reduction |= matches!(
@@ -67,6 +69,9 @@ pub(super) fn lower_algebraic_family_map<'dae>(
             .ok_or_else(|| {
                 LowerError::contract("structured algebraic scalar view overflow", span)
             })?;
+        let affine_derivatives = context.affine_derivatives.ok_or_else(|| {
+            LowerError::contract("continuous context has no affine derivative systems", span)
+        })?;
         let program = ScalarCompiler::new(
             context.view,
             context.layout,
@@ -74,11 +79,7 @@ pub(super) fn lower_algebraic_family_map<'dae>(
         )
         .with_function_conditional_owners(context.function_conditional_owners)
         .with_derivative_definitions(context.derivatives)
-        .with_affine_derivative_systems(
-            context
-                .affine_derivatives
-                .expect("continuous context owns affine systems"),
-        )
+        .with_affine_derivative_systems(affine_derivatives)
         .program(body, scalar)?;
         if program.iter().any(|operation| {
             matches!(
