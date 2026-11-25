@@ -56,19 +56,15 @@ pub(crate) fn component_type_alias_packages(
                 .declaration_source_scope
                 .as_ref()?
                 .to_flat_string();
-            let package = match component.type_name.split_once('.') {
-                Some((first, rest)) if !rest.is_empty() => {
-                    let spelled = resolved_class(tree, &class_scopes, class_index, &scope, first)?;
+            let type_path = rumoca_core::ComponentPath::from_flat_path(&component.type_name);
+            let package = match type_path.len() {
+                0 => return None,
+                1 => member_package(tree, &class_scopes, class_index, &scope, &type_path)?,
+                _ => {
+                    let head = type_path.prefix(1)?;
+                    let spelled = resolved_class(tree, &class_scopes, class_index, &scope, &head)?;
                     alias_target(class_index, spelled)?
                 }
-                Some(_) => return None,
-                None => member_package(
-                    tree,
-                    &class_scopes,
-                    class_index,
-                    &scope,
-                    &component.type_name,
-                )?,
             };
             (package_def_ids.contains(&package)
                 && declares_or_inherits(class_index, package, type_class))
@@ -89,20 +85,19 @@ fn member_package(
     class_scopes: &FxHashMap<DefId, rumoca_core::ScopeId>,
     class_index: &ast::ClassDefIndex<'_>,
     scope: &str,
-    name: &str,
+    name: &rumoca_core::ComponentPath,
 ) -> Option<DefId> {
     let declaring = class_index.def_id_by_qualified_name(scope)?;
-    let name = rumoca_core::ComponentPath::from_flat_path(name);
     let mut current = Some(*class_scopes.get(&declaring)?);
     while let Some(scope_id) = current {
         let scope = tree.scope_tree.get(scope_id)?;
-        if tree.scope_tree.lookup_member(scope_id, &name).is_some() {
+        if tree.scope_tree.lookup_member(scope_id, name).is_some() {
             return tree.scope_to_class.get(&scope_id).copied();
         }
         if scope
             .imports
             .iter()
-            .any(|import| import.resolves(&name).is_some())
+            .any(|import| import.resolves(name).is_some())
             || scope.is_encapsulated()
         {
             return None;
@@ -121,14 +116,11 @@ fn resolved_class(
     class_scopes: &FxHashMap<DefId, rumoca_core::ScopeId>,
     class_index: &ast::ClassDefIndex<'_>,
     scope: &str,
-    name: &str,
+    name: &rumoca_core::ComponentPath,
 ) -> Option<DefId> {
     let declaring = class_index.def_id_by_qualified_name(scope)?;
     let class_scope = *class_scopes.get(&declaring)?;
-    tree.scope_tree.lookup(
-        class_scope,
-        &rumoca_core::ComponentPath::from_flat_path(name),
-    )
+    tree.scope_tree.lookup(class_scope, name)
 }
 
 /// The class a chain of short class definitions without modifications ends

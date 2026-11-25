@@ -133,7 +133,6 @@ end P;
 ";
 
 #[test]
-#[ignore = "Resolve rejects a class inherited through a non-replaceable package alias (Board i-c62dd6c9)"]
 fn an_inherited_medium_alias_wins_over_the_enclosing_package_alias() {
     for run in 0..RUNS {
         let flat = Compiler::new()
