@@ -20,8 +20,10 @@
 //!   or [`INSTRUMENTED_TEST_BINARY_SIZE_CEILING_MIB`] MiB when the build carries
 //!   source-based coverage instrumentation (`cfg(coverage_nightly)`), which adds
 //!   counters and mapping tables to every function. The largest today is
-//!   `suite_core` at 285 MiB plain and 304 MiB instrumented (measured
-//!   2026-10-13); normal growth, new dependencies, and new test files are
+//!   `suite_core`: 285 MiB plain and 304 MiB instrumented on 2026-10-13, 297.7
+//!   MiB plain on 2026-11-25, and 228.0 MiB once third-party crates stopped
+//!   carrying debug info (`[profile.dev.package."*"]` in the workspace
+//!   manifest); normal growth, new dependencies, and new test files are
 //!   accepted, and only a step change in what a test binary links is rejected.
 //! * **Absence of measurement.** A checkout that has not built its test
 //!   binaries, or a non-`debug` profile directory, skips rather than fails: a
