@@ -15,6 +15,7 @@ pub fn try_eval_flat_expr_boolean(
         array_dims: &FxHashMap::default(),
         known_values: no_known_values(),
         resources: None,
+        declared_enums: None,
         functions: &FxHashMap::default(),
         var_context: None,
     };

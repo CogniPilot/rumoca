@@ -43,6 +43,31 @@ pub(crate) fn collect_enumeration_declarations(
     declarations
 }
 
+/// Every enumeration literal the tree declares, by its canonical path, as its
+/// enumeration type and literal name (MLS §4.9.5).
+pub(crate) fn declared_enumeration_literals(
+    tree: &ast::ClassTree,
+) -> rumoca_eval_flat::phase_constant::DeclaredEnumerationLiterals {
+    let mut declared = rumoca_eval_flat::phase_constant::DeclaredEnumerationLiterals::default();
+    for (def_id, qualified_name) in &tree.def_map {
+        let Some(class_def) = tree.get_class_by_def_id(*def_id) else {
+            continue;
+        };
+        if class_def.enum_literals.is_empty() {
+            continue;
+        }
+        declared.types.insert(*def_id, qualified_name.clone());
+        for literal in &class_def.enum_literals {
+            let literal = literal.ident.text.to_string();
+            declared.literals.insert(
+                format!("{qualified_name}.{literal}"),
+                (qualified_name.clone(), literal),
+            );
+        }
+    }
+    declared
+}
+
 /// Canonicalize enum literal references in the final flat model.
 pub(crate) fn canonicalize_flat_enum_literals(
     flat: &mut flat::Model,

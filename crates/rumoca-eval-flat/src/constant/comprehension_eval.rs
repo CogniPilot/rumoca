@@ -63,6 +63,10 @@ impl EvalEnvironment for BinderScope<'_> {
         self.outer.translation_resources()
     }
 
+    fn enumeration_type(&self, declaration: rumoca_core::DefId) -> Option<&str> {
+        self.outer.enumeration_type(declaration)
+    }
+
     fn predefined_types(&self) -> Option<rumoca_ir_flat::PredefinedTypeIds> {
         self.outer.predefined_types()
     }
@@ -101,6 +105,10 @@ impl EvalEnvironment for IteratorDeclarations<'_> {
     }
     fn translation_resources(&self) -> Option<&ResourceRoots> {
         self.outer.translation_resources()
+    }
+
+    fn enumeration_type(&self, declaration: rumoca_core::DefId) -> Option<&str> {
+        self.outer.enumeration_type(declaration)
     }
 
     fn predefined_types(&self) -> Option<rumoca_ir_flat::PredefinedTypeIds> {

@@ -31,6 +31,23 @@ pub trait EvalEnvironment {
     }
     /// Look up an explicitly registered enumeration literal.
     fn get_enum(&self, name: &str) -> Option<&(String, String)>;
+    /// The canonical name of the enumeration type a declaration declares,
+    /// when the evaluation knows the translation's enumerations.
+    fn enumeration_type(&self, _declaration: rumoca_core::DefId) -> Option<&str> {
+        None
+    }
+    /// The enumeration literal `reference` names: by the declaration of its
+    /// enumeration type when the evaluation knows it (MLS §4.9.5), whatever
+    /// the spelling of the path, and otherwise by its exact name.
+    fn reference_enum(&self, reference: &rumoca_core::Reference) -> Option<&(String, String)> {
+        if let [.., literal] = reference.parts()
+            && let Some(type_name) = self.enumeration_type(literal.def_id)
+            && let Some(identity) = self.get_enum(&format!("{type_name}.{}", literal.ident))
+        {
+            return Some(identity);
+        }
+        self.get_enum(reference.as_str())
+    }
     /// Find a function definition under a registered call name.
     fn get_function(&self, name: &str) -> Option<&Function>;
     /// Read shape metadata without constructing array elements.

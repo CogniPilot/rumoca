@@ -861,3 +861,73 @@ fn a_deferred_parameter_is_reported_as_deferred_rather_than_unknown() {
         EvalError::UnknownVariable { .. }
     ));
 }
+
+#[test]
+fn an_enumeration_compared_with_an_integer_is_a_type_error_not_false() {
+    let mut ctx = EvalContext::new();
+    ctx.enum_literals.insert(
+        "Lib.Sign.Negative".to_string(),
+        ("Lib.Sign".to_string(), "Negative".to_string()),
+    );
+    let literal = || Expression::VarRef {
+        name: "Lib.Sign.Negative".into(),
+        subscripts: vec![],
+        span: test_span(),
+    };
+    for op in [OpBinary::Eq, OpBinary::Neq] {
+        let mixed = Expression::Binary {
+            op: op.clone(),
+            lhs: Box::new(make_int(1)),
+            rhs: Box::new(literal()),
+            span: test_span(),
+        };
+        assert!(
+            matches!(eval_expr(&mixed, &ctx), Err(EvalError::TypeMismatch { .. })),
+            "{op:?} of an Integer and an enumeration literal has no value"
+        );
+        let same = Expression::Binary {
+            op: op.clone(),
+            lhs: Box::new(literal()),
+            rhs: Box::new(literal()),
+            span: test_span(),
+        };
+        assert_eq!(
+            eval_expr(&same, &ctx).unwrap().as_bool(),
+            Some(op == OpBinary::Eq)
+        );
+    }
+}
+
+#[test]
+fn enumerations_of_different_types_are_a_type_error_not_false() {
+    let mut ctx = EvalContext::new();
+    for (path, type_name, literal) in [
+        ("Lib.Sign.Negative", "Lib.Sign", "Negative"),
+        ("Sign.Negative", "Sign", "Negative"),
+        ("Lib.Other.Negative", "Lib.Other", "Negative"),
+    ] {
+        ctx.enum_literals.insert(
+            path.to_string(),
+            (type_name.to_string(), literal.to_string()),
+        );
+    }
+    let literal = |path: &str| Expression::VarRef {
+        name: path.into(),
+        subscripts: vec![],
+        span: test_span(),
+    };
+    for other in ["Sign.Negative", "Lib.Other.Negative"] {
+        for op in [OpBinary::Eq, OpBinary::Neq] {
+            let mixed = Expression::Binary {
+                op: op.clone(),
+                lhs: Box::new(literal("Lib.Sign.Negative")),
+                rhs: Box::new(literal(other)),
+                span: test_span(),
+            };
+            assert!(
+                matches!(eval_expr(&mixed, &ctx), Err(EvalError::TypeMismatch { .. })),
+                "{op:?} of `Lib.Sign.Negative` and `{other}` has no value"
+            );
+        }
+    }
+}

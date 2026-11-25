@@ -1401,7 +1401,7 @@ fn eval_var_ref(
     if let Some(val) = eval.ctx.get_reference_value(reference) {
         return Ok(val.into_owned());
     }
-    if let Some((type_name, literal)) = eval.ctx.get_enum(name) {
+    if let Some((type_name, literal)) = eval.ctx.reference_enum(reference) {
         return Ok(Value::Enum(type_name.clone(), literal.clone()));
     }
     // MLS 3.6 §12.2: a record component's fields are read through the joined

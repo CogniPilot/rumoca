@@ -376,6 +376,7 @@ pub fn flatten_ref_in_closure(
         .predefined_member(&rumoca_core::ComponentPath::from_flat_path("String"));
     ctx.predefined_intrinsics = ast_lower::PredefinedIntrinsicIds::from_tree(tree);
     ctx.resource_roots = resource_roots::resource_roots(tree);
+    ctx.declared_enumeration_literals = enum_literals::declared_enumeration_literals(tree);
     ctx.materialize_structured_families = options.materialize_structured_families;
     if !model_name.is_empty() {
         ctx.simulated_root_name = Some(crate::path_utils::leaf_segment(model_name).to_string());

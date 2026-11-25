@@ -31,8 +31,8 @@ pub(super) fn eval_binary_op(
         OpBinary::DivElem => element_wise(lhs, rhs, span, eval_div),
         OpBinary::Exp => eval_exp(lhs, rhs, span),
         OpBinary::ExpElem => element_wise(lhs, rhs, span, eval_exp),
-        OpBinary::Eq => eval_eq(lhs, rhs),
-        OpBinary::Neq => eval_neq(lhs, rhs),
+        OpBinary::Eq => eval_eq(lhs, rhs, span),
+        OpBinary::Neq => eval_neq(lhs, rhs, span),
         OpBinary::Lt => eval_lt(lhs, rhs, span),
         OpBinary::Le => eval_le(lhs, rhs, span),
         OpBinary::Gt => eval_gt(lhs, rhs, span),
@@ -389,7 +389,8 @@ fn eval_negate(v: &Value, span: Span) -> Result<Value, EvalError> {
 
 // Comparison operations
 
-fn eval_eq(lhs: &Value, rhs: &Value) -> Result<Value, EvalError> {
+fn eval_eq(lhs: &Value, rhs: &Value, span: Span) -> Result<Value, EvalError> {
+    enumeration_operands_agree(lhs, rhs, span)?;
     match (lhs, rhs) {
         (Value::Integer(a), Value::Real(b)) => Ok(Value::Bool((*a as f64) == *b)),
         (Value::Real(a), Value::Integer(b)) => Ok(Value::Bool(*a == (*b as f64))),
@@ -397,11 +398,32 @@ fn eval_eq(lhs: &Value, rhs: &Value) -> Result<Value, EvalError> {
     }
 }
 
-fn eval_neq(lhs: &Value, rhs: &Value) -> Result<Value, EvalError> {
+fn eval_neq(lhs: &Value, rhs: &Value, span: Span) -> Result<Value, EvalError> {
+    enumeration_operands_agree(lhs, rhs, span)?;
     match (lhs, rhs) {
         (Value::Integer(a), Value::Real(b)) => Ok(Value::Bool((*a as f64) != *b)),
         (Value::Real(a), Value::Integer(b)) => Ok(Value::Bool(*a != (*b as f64))),
         _ => Ok(Value::Bool(lhs != rhs)),
+    }
+}
+
+/// An enumeration value is comparable only with a value of the same
+/// enumeration type (MLS §4.9.5, §10.6.6): comparing it with a value of any
+/// other type, another enumeration included, is a type error, never `false`.
+fn enumeration_operands_agree(lhs: &Value, rhs: &Value, span: Span) -> Result<(), EvalError> {
+    match (lhs, rhs) {
+        (Value::Enum(left, _), Value::Enum(right, _)) if left == right => Ok(()),
+        (Value::Enum(left, _), Value::Enum(right, _)) => Err(EvalError::type_mismatch(
+            format!("enumeration {left}"),
+            format!("enumeration {right}"),
+            span,
+        )),
+        (Value::Enum(..), other) | (other, Value::Enum(..)) => Err(EvalError::type_mismatch(
+            "enumeration",
+            other.type_name(),
+            span,
+        )),
+        _ => Ok(()),
     }
 }
 

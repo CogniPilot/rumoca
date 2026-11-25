@@ -391,6 +391,7 @@ mod top_level_package_constant_dimensions;
 mod torn_square_root_characteristic;
 mod trajectory_adjoint_tensor_test;
 mod trajectory_sensitivity_test;
+mod translation_enumeration_literals;
 mod translation_file_reads;
 mod trial_residual_scale;
 mod type_attribute_inheritance;

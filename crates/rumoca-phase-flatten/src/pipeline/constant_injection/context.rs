@@ -36,6 +36,11 @@ pub(crate) struct Context {
     /// The directory of each loaded top-level package, against which a
     /// foreign file reader resolves MLS §13.5 URIs (SPEC_0040 FLAT-C06).
     pub(crate) resource_roots: rumoca_eval_flat::translation_reads::ResourceRoots,
+    /// Every enumeration literal the tree declares, by its canonical path
+    /// (MLS §4.9.5), which a translation evaluation resolves a literal
+    /// reference through.
+    pub(crate) declared_enumeration_literals:
+        rumoca_eval_flat::phase_constant::DeclaredEnumerationLiterals,
     /// General constant expression values (scalars/arrays) extracted from
     /// class/package constants and redeclare/extends modifications.
     pub constant_values: rustc_hash::FxHashMap<String, rumoca_core::Expression>,

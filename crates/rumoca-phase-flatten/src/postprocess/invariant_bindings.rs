@@ -7,13 +7,20 @@ use rumoca_core::{
     InstanceId, Literal, Reference, Span, Subscript, Variability,
 };
 use rumoca_eval_flat::constant::{DeferredParameterSource, EvalEnvironment, Value, eval_expr};
+use rumoca_eval_flat::phase_constant::DeclaredEnumerationLiterals;
 use rumoca_eval_flat::translation_reads::ResourceRoots;
 use rumoca_ir_flat as flat;
+
+use crate::Context;
 use rustc_hash::FxHashMap;
 
 /// Fold the invariant bindings SPEC_0040 FLAT-C01 proves into their values.
-pub(crate) fn fold_invariant_bindings(flat: &mut flat::Model, resources: &ResourceRoots) {
-    let mut evaluator = BindingEvaluator::new(flat, resources);
+pub(crate) fn fold_invariant_bindings(flat: &mut flat::Model, ctx: &Context) {
+    let mut evaluator = BindingEvaluator::new(
+        flat,
+        &ctx.resource_roots,
+        &ctx.declared_enumeration_literals,
+    );
     for variable in flat.variables.values() {
         evaluator.value(variable.instance_id);
     }
@@ -50,7 +57,11 @@ struct BindingEvaluator<'a> {
 }
 
 impl<'a> BindingEvaluator<'a> {
-    fn new(flat: &'a flat::Model, resources: &'a ResourceRoots) -> Self {
+    fn new(
+        flat: &'a flat::Model,
+        resources: &'a ResourceRoots,
+        enumeration_literals: &'a DeclaredEnumerationLiterals,
+    ) -> Self {
         let mut variables = FxHashMap::default();
         for variable in flat.variables.values() {
             variables
@@ -61,7 +72,11 @@ impl<'a> BindingEvaluator<'a> {
         Self {
             flat,
             variables,
-            functions: FunctionInventory { flat, resources },
+            functions: FunctionInventory {
+                flat,
+                resources,
+                enumeration_literals,
+            },
             values: FxHashMap::default(),
         }
     }
@@ -211,6 +226,15 @@ impl FallibleExpressionRewriter for BindingEvaluator<'_> {
         subscripts: &[Subscript],
         span: Span,
     ) -> Result<Expression, Self::Error> {
+        // A declared enumeration literal is a constant of its type (MLS
+        // §4.9.5), not a model variable: the interpreter reads it by name.
+        let variable = name.instance_id().and_then(|id| self.variables.get(&id));
+        if variable.is_none()
+            && subscripts.is_empty()
+            && self.functions.reference_enum(name).is_some()
+        {
+            return self.walk_var_ref_expression(name, subscripts, span);
+        }
         let id = name.instance_id().ok_or(())?;
         let variable = self.variables.get(&id).copied().flatten().ok_or(())?;
         let declaration = variable.component_ref.as_ref().ok_or(())?.target_def_id();
@@ -227,6 +251,7 @@ impl FallibleExpressionRewriter for BindingEvaluator<'_> {
 struct FunctionInventory<'a> {
     flat: &'a flat::Model,
     resources: &'a ResourceRoots,
+    enumeration_literals: &'a DeclaredEnumerationLiterals,
 }
 
 impl EvalEnvironment for FunctionInventory<'_> {
@@ -234,8 +259,15 @@ impl EvalEnvironment for FunctionInventory<'_> {
         None
     }
 
-    fn get_enum(&self, _name: &str) -> Option<&(String, String)> {
-        None
+    fn get_enum(&self, name: &str) -> Option<&(String, String)> {
+        self.enumeration_literals.literals.get(name)
+    }
+
+    fn enumeration_type(&self, declaration: rumoca_core::DefId) -> Option<&str> {
+        self.enumeration_literals
+            .types
+            .get(&declaration)
+            .map(String::as_str)
     }
 
     fn get_function(&self, name: &str) -> Option<&Function> {

@@ -27,6 +27,7 @@ impl Context {
             enum_parameter_values: rustc_hash::FxHashMap::default(),
             aggregate_parameter_values: rustc_hash::FxHashMap::default(),
             resource_roots: rumoca_eval_flat::translation_reads::ResourceRoots::new(),
+            declared_enumeration_literals: Default::default(),
             constant_values: rustc_hash::FxHashMap::default(),
             constant_values_by_def_id: rustc_hash::FxHashMap::default(),
             constant_values_by_scope: rustc_hash::FxHashMap::default(),

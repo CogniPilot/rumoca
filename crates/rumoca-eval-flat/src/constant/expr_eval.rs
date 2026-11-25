@@ -114,7 +114,7 @@ fn eval_var_ref(
         };
     }
     // Then try as an enum literal from context
-    if let Some((type_name, literal)) = ctx.get_enum(name) {
+    if let Some((type_name, literal)) = ctx.reference_enum(reference) {
         return Ok(Value::Enum(type_name.clone(), literal.clone()));
     }
     // A declared `fixed = false` parameter resolves; only its value is absent
