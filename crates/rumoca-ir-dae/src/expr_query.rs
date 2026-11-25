@@ -368,6 +368,7 @@ fn push_children<'dae>(
     match operation {
         ExpressionOperation::Literal(_)
         | ExpressionOperation::Coordinate(_)
+        | ExpressionOperation::AssignedParameter { .. }
         | ExpressionOperation::FunctionFoldParameter { .. } => {}
         ExpressionOperation::Range(range) => {
             pending.push(range.stop().expression());
@@ -410,6 +411,7 @@ fn push_children<'dae>(
         }
         ExpressionOperation::Comprehension { body, .. } => pending.push(body),
         ExpressionOperation::Field { base, .. } => pending.push(base),
+        ExpressionOperation::PassAssigned { operand } => pending.push(operand),
         ExpressionOperation::FunctionValue { definition, .. } => pending.push(definition.rhs()),
         ExpressionOperation::FunctionFoldOutput { fold, .. } => {
             let fold = dae

@@ -1,6 +1,7 @@
 mod algorithm_coordinates;
 mod function_checking_calls;
 use std::borrow::Cow;
+mod absent_field_states;
 mod assignment_conditionals;
 mod branch_snapshots;
 mod clocks;
@@ -65,6 +66,7 @@ pub(super) use when_elements::{
 };
 
 use super::*;
+pub(super) use absent_field_states::{AbsentFieldStates, result_field_path};
 use clocks::SampledTarget;
 use clocks::{ClockAnalysis, ClockDomainAnalysis, analyze_clocks};
 pub(super) use clocks::{
@@ -295,6 +297,10 @@ pub(super) struct FunctionDefinednessPlan {
     /// Path-partial values asserted defined before the statement (or the
     /// assembly group it leads) at this index runs.
     pub(super) asserted_reads: HashMap<usize, Vec<VarName>>,
+    /// Field locals of the record result whose executed-path state the
+    /// trailing assembly at this index carries to the read of the field,
+    /// instead of asserting it here.
+    pub(super) carried_reads: HashMap<usize, Vec<VarName>>,
     /// All declared outputs checked against their actual state at return.
     pub(super) returned: Vec<VarName>,
 }

@@ -25,6 +25,38 @@ pub(in crate::construction) fn require_function_values<'dae>(
     Ok(())
 }
 
+/// Carry the executed-path state of each named field local of the record
+/// result into the definition its assembly row reads, without a check.
+fn carry_function_values<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    symbols: FunctionSymbols<'_, 'dae>,
+    body: &mut dae::FunctionBody<'dae>,
+    names: &[VarName],
+    span: Span,
+) -> Result<(), dae::DaeConstructionError> {
+    let provenance =
+        dae::DaeProvenance::generated(dae::DaeGeneration::FunctionConditionLowering, span)?;
+    for name in names {
+        let target = function_value_coordinate(symbols.coordinates, name);
+        match construction
+            .functions(|functions| functions.current_definition_id(body, target, provenance))
+        {
+            // Written on every path after all: the plain read is total.
+            Ok(_) => {}
+            Err(dae::DaeConstructionError::IncompleteDefinition {
+                kind: "function value",
+                index,
+                ..
+            }) if index == target.ordinal() => {
+                construction
+                    .functions(|functions| functions.carry_assigned(body, target, provenance))?;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(())
+}
+
 #[derive(Clone, Copy)]
 pub(in crate::construction) struct FunctionSymbols<'symbols, 'dae> {
     pub(in crate::construction) coordinates: &'symbols HashMap<VarName, Coordinate<'dae>>,
@@ -59,6 +91,12 @@ pub(in crate::construction) fn lower_function_statements<'dae>(
         {
             let span = statement.source_span().unwrap_or(definedness.span);
             require_function_values(construction, symbols, &mut body, names, span)?;
+        }
+        if let Some(definedness) = definedness.as_deref_mut()
+            && let Some(names) = definedness.plan.carried_reads.get(&index)
+        {
+            let span = statement.source_span().unwrap_or(definedness.span);
+            carry_function_values(construction, symbols, &mut body, names, span)?;
         }
         if let FunctionStatementPlan::ArrayAssembly(assembly) = plan {
             let statement_count = assembly.direct_count + usize::from(assembly.loop_plan.is_some());

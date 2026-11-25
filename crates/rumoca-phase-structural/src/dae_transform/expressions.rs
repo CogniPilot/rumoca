@@ -500,6 +500,16 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
                     .collect::<Result<Vec<_>, _>>()?;
                 self.target.at(provenance).builtin(builtin, arguments)
             }
+            dae::ExpressionOperation::PassAssigned { operand } => {
+                self.rebuild_instantiated_pass(operand, provenance)
+            }
+            dae::ExpressionOperation::AssignedParameter { parameter, checked } => {
+                let argument = self
+                    .function_context
+                    .parameter_argument(parameter)
+                    .expect("instantiation proof resolves this function parameter");
+                self.rebuild_instantiated_assigned_argument(argument, checked)
+            }
             // A model expression inside a structured family carries the family's
             // binder domain but no function scope; it needs no argument
             // substitution, so every other operation (a model coordinate, a
@@ -560,6 +570,17 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
             dae::ExpressionOperation::Field { base, field } => {
                 let base = self.rebuild(base)?;
                 self.target.at(provenance).field(base, field as usize)?
+            }
+            dae::ExpressionOperation::PassAssigned { operand } => {
+                let operand = self.rebuild(operand)?;
+                self.target.at(provenance).pass_assigned(operand)?
+            }
+            dae::ExpressionOperation::AssignedParameter { parameter, checked } => {
+                let parameter = self.functions[parameter.function().index() as usize].parameters
+                    [parameter.ordinal() as usize];
+                self.target
+                    .at(provenance)
+                    .assigned_parameter(parameter, checked)?
             }
             dae::ExpressionOperation::Range(range) => self.rebuild_range(range, provenance)?,
             dae::ExpressionOperation::Comprehension { domain, body } => {
@@ -866,6 +887,42 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
         subscripts: dae::SubscriptsView<'source>,
     ) -> Result<Vec<dae::Subscript<'target>>, dae::DaeConstructionError> {
         self.rebuild_subscripts_with(subscripts, Self::rebuild)
+    }
+
+    /// An instantiated forward of a call result's field. It stays a forward
+    /// while it is still the field of a rebuilt call; a field the instantiation
+    /// projects to its defining expression has a value, so it is that value.
+    fn rebuild_instantiated_pass(
+        &mut self,
+        operand: dae::ExprId<'source>,
+        provenance: dae::DaeProvenance,
+    ) -> Result<dae::ExprId<'target>, dae::DaeConstructionError> {
+        let operand = self.rebuild_instantiated(operand)?;
+        match self.target.at(provenance).pass_assigned(operand) {
+            Err(dae::DaeConstructionError::InvalidAssignedStatePass { .. }) => Ok(operand),
+            forwarded => forwarded,
+        }
+    }
+
+    /// The argument an instantiated parameter that may arrive absent stands
+    /// for. A checked read reads a forwarded field with the presence check of
+    /// a plain field read; an unchecked use keeps forwarding it.
+    fn rebuild_instantiated_assigned_argument(
+        &mut self,
+        argument: dae::ExprId<'source>,
+        checked: bool,
+    ) -> Result<dae::ExprId<'target>, dae::DaeConstructionError> {
+        let forwarded = self
+            .source
+            .expression(argument)
+            .expect("instantiated expression resolves")
+            .operation();
+        match forwarded {
+            dae::ExpressionOperation::PassAssigned { operand } if checked => {
+                self.rebuild_instantiated(operand)
+            }
+            _ => self.rebuild_instantiated(argument),
+        }
     }
 
     pub(super) fn rebuild_instantiated_subscripts(

@@ -1028,10 +1028,11 @@ fn rebuild_node<'dae>(
             mapped(&ids.types, *value_type, "value type", provenance)?,
             map_expression_operands(wire, ids, *operand_count, provenance)?,
         ),
-        ExprNodeWire::Field { base, field } => at.field(
-            mapped(&ids.expressions, *base, "expression", provenance)?,
-            *field as usize,
-        ),
+        node @ (ExprNodeWire::Field { .. }
+        | ExprNodeWire::PassAssigned { .. }
+        | ExprNodeWire::AssignedParameter { .. }) => {
+            helpers::rebuild_field_read(ids, at, node, provenance)
+        }
         ExprNodeWire::Range {
             start_expression,
             explicit_step_expression,

@@ -87,6 +87,8 @@ pub(super) struct FunctionEntryWire<Name = rumoca_core::VarName> {
     pub(super) derivatives: Vec<FunctionDerivativeWire>,
     /// MLS §18.3 inline request of the declaration.
     pub(super) inline: rumoca_core::InlineAnnotation,
+    /// Parameter ordinals a call may pass without a value, increasing.
+    pub(super) absent_parameters: Vec<u32>,
     #[serde(deserialize_with = "deserialize_provenance")]
     pub(super) declaration: DaeProvenance,
 }
@@ -164,6 +166,8 @@ pub(super) enum FunctionStatementInput {
     },
     RequireAssigned {
         target: u32,
+        /// The state is carried to the returned record, not checked here.
+        carried: bool,
         #[serde(deserialize_with = "deserialize_provenance")]
         provenance: DaeProvenance,
     },

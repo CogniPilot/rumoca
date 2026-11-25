@@ -56,7 +56,8 @@ fn walk<'dae>(
     for statement in statements {
         match statement {
             dae::FunctionStatementView::Assignment { definition }
-            | dae::FunctionStatementView::RequireAssigned { definition, .. } => {
+            | dae::FunctionStatementView::RequireAssigned { definition, .. }
+            | dae::FunctionStatementView::CarryAssigned { definition, .. } => {
                 record(definition, current, predecessors);
             }
             dae::FunctionStatementView::AssignmentGroup { definitions } => {

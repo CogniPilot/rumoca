@@ -109,6 +109,9 @@ pub struct NumericEvaluator<'dae, F = fn(dae::VariableView<'dae>, usize) -> Opti
     override_value: F,
     input_policy: InputInitializationPolicy,
     input_initializations: Vec<Option<InputInitialization>>,
+    /// The operand a `PassAssigned` is forwarding: its value or absence is
+    /// read without the presence check, exactly once.
+    forwarding: Option<u32>,
 }
 
 impl<'dae> NumericEvaluator<'dae> {
@@ -188,6 +191,7 @@ where
             override_value,
             input_policy,
             input_initializations: vec![None; view.variable_count()],
+            forwarding: None,
         }
     }
 
@@ -216,11 +220,20 @@ where
         let context_independent = node.variability() == dae::ExpressionVariability::Constant
             && node.binder_domain().is_none()
             && node.function_scope().is_none();
-        if cacheable && let Some(value) = self.cached_expression(id, context_independent) {
-            return Ok(value.clone());
-        }
+        let forwarded = self.forwarding.take() == Some(id.index());
         let span = node.provenance().span();
+        if cacheable && let Some(value) = self.cached_expression(id, context_independent) {
+            let value = value.clone();
+            self.admit_absent(&value, operation, forwarded, span)?;
+            return Ok(value);
+        }
         let mut value = self.evaluate_expression_operation(node, operation, span)?;
+        if self.admit_absent(&value, operation, forwarded, span)? {
+            if cacheable {
+                self.cache_expression(id, value.clone(), context_independent);
+            }
+            return Ok(value);
+        }
         require_finite(&value, span)?;
         if node.value_type().scalar_type() == dae::ScalarType::Real {
             value = value.map(|value| Scalar::Real(value.real()));
@@ -271,6 +284,15 @@ where
             dae::ExpressionOperation::Record(fields) => return self.record(fields),
             dae::ExpressionOperation::Field { base, field } => {
                 return self.record_field(base, field as usize, span);
+            }
+            dae::ExpressionOperation::PassAssigned { operand } => {
+                self.forwarding = Some(operand.index());
+                return self.source_values(operand);
+            }
+            // The checked read fails in `admit_absent`; the forward passes on.
+            dae::ExpressionOperation::AssignedParameter { parameter, .. } => {
+                return self
+                    .coordinate_value(dae::CoordinateView::FunctionParameter(parameter), span);
             }
             dae::ExpressionOperation::Range(range) => range_values(
                 range.start().value(),
@@ -794,6 +816,19 @@ where
                 }
                 dae::FunctionStatementView::Conditional { conditional } => {
                     self.ordered_function_conditional(conditional)?
+                }
+                dae::FunctionStatementView::CarryAssigned {
+                    conditional,
+                    value,
+                    definition,
+                    provenance,
+                } => {
+                    self.carry_function_assigned(
+                        conditional,
+                        value,
+                        definition,
+                        provenance.span(),
+                    )?;
                 }
                 dae::FunctionStatementView::RequireAssigned {
                     conditional,

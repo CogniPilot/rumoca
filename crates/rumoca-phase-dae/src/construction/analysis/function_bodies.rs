@@ -1303,7 +1303,21 @@ fn resolve_sequence_definitions(
     let mut index = 0usize;
     while index < statements.len() {
         if let (Some(plan), Some(later_uses)) = (definedness.as_deref_mut(), &later_uses) {
-            before_top_level_statement(statements, plans, index, later_uses, definitions, plan);
+            let function = VarName::new(context.function.name.as_str());
+            before_top_level_statement(
+                statements,
+                plans,
+                index,
+                later_uses,
+                definitions,
+                plan,
+                &|local| {
+                    context
+                        .shape_analysis
+                        .absent_fields()
+                        .carries_field_local(&function, local)
+                },
+            );
         }
         let count = match &mut plans[index] {
             FunctionStatementPlan::RecordFieldAssembly(assembly) => {

@@ -346,7 +346,8 @@ fn output_stores<'dae>(
                 output_stores(body, target, branch, true, stores);
             }
             dae::FunctionStatementView::Assertion { .. }
-            | dae::FunctionStatementView::RequireAssigned { .. } => {}
+            | dae::FunctionStatementView::RequireAssigned { .. }
+            | dae::FunctionStatementView::CarryAssigned { .. } => {}
         }
     }
 }

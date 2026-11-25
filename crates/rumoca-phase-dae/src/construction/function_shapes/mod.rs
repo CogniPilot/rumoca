@@ -790,6 +790,8 @@ pub(super) struct FunctionShapeAnalysis {
     tunable: HashSet<VarName>,
     /// Model-scope calls whose key carries a value read from model variables.
     keyed_argument_reads: Vec<KeyedArgumentReads>,
+    /// Record result fields a path may leave unwritten (MLS §12.4.4).
+    absent_fields: analysis::AbsentFieldStates,
 }
 
 impl FunctionShapeAnalysis {
@@ -878,6 +880,7 @@ impl FunctionShapeAnalysis {
                 non_evaluable: specialization_key::non_evaluable_closure(flat),
                 tunable: specialization_key::tunable_parameters(flat, evaluable),
                 keyed_argument_reads: Vec::new(),
+                absent_fields: analysis::AbsentFieldStates::analyze(flat),
             },
             active_specializations: Vec::new(),
             chain_depths: Vec::new(),

@@ -460,6 +460,9 @@ impl<'dae> Projection<'_, 'dae> {
         };
         match node.operation() {
             dae::ExpressionOperation::Literal(_) => Ok(()),
+            dae::ExpressionOperation::AssignedParameter { parameter, .. } => {
+                self.function_parameter(parameter, scalar_index, node.provenance().span())
+            }
             dae::ExpressionOperation::Range(range) => self.range_dependencies(range),
             dae::ExpressionOperation::Coordinate(coordinate) => {
                 if let dae::CoordinateView::FunctionParameter(parameter) = coordinate {
@@ -474,7 +477,8 @@ impl<'dae> Projection<'_, 'dae> {
                 }
                 Ok(())
             }
-            dae::ExpressionOperation::Unary { operand, .. } => {
+            dae::ExpressionOperation::Unary { operand, .. }
+            | dae::ExpressionOperation::PassAssigned { operand } => {
                 self.expression(operand, scalar_index)
             }
             dae::ExpressionOperation::Binary { operator, lhs, rhs } => {

@@ -27,7 +27,8 @@ pub(super) fn first_function_assertion(statements: dae::FunctionStatements<'_>) 
                     return Some(span);
                 }
             }
-            dae::FunctionStatementView::RequireAssigned { provenance, .. } => {
+            dae::FunctionStatementView::RequireAssigned { provenance, .. }
+            | dae::FunctionStatementView::CarryAssigned { provenance, .. } => {
                 return Some(provenance.span());
             }
             dae::FunctionStatementView::Assignment { .. }

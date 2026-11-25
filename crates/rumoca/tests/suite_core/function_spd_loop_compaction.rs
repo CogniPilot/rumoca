@@ -430,7 +430,8 @@ fn function_statements_have_assertion(statements: dae::FunctionStatements<'_>) -
     statements.into_iter().any(|statement| match statement {
         dae::FunctionStatementView::Assignment { .. }
         | dae::FunctionStatementView::AssignmentGroup { .. }
-        | dae::FunctionStatementView::RequireAssigned { .. } => false,
+        | dae::FunctionStatementView::RequireAssigned { .. }
+        | dae::FunctionStatementView::CarryAssigned { .. } => false,
         dae::FunctionStatementView::Assertion { .. } => true,
         dae::FunctionStatementView::Conditional { conditional } => conditional
             .branches()

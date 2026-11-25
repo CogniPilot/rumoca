@@ -359,6 +359,19 @@ fn project_function_statement(statement: dae::FunctionStatementView<'_>) -> Valu
             "definition": definition.id().ordinal(),
             "provenance": provenance,
         }),
+        // No template renders a carried state: each one refuses the kind.
+        dae::FunctionStatementView::CarryAssigned {
+            conditional,
+            value,
+            definition,
+            provenance,
+        } => json!({
+            "kind": "carry_assigned",
+            "conditional": conditional.id().ordinal(),
+            "value": value.ordinal(),
+            "definition": definition.id().ordinal(),
+            "provenance": provenance,
+        }),
         dae::FunctionStatementView::Assignment { definition } => json!({
             "kind": "assignment",
             "definition": definition.id().ordinal(),
@@ -492,6 +505,8 @@ fn project_expression_operation(operation: dae::ExpressionOperation<'_>) -> Valu
             "base": base.index(),
             "field": field,
         }),
+        operation @ (dae::ExpressionOperation::PassAssigned { .. }
+        | dae::ExpressionOperation::AssignedParameter { .. }) => project_assigned_state(operation),
         dae::ExpressionOperation::Range(range) => project_range_operation(range),
         dae::ExpressionOperation::Comprehension { domain, body } => json!({
             "kind": "comprehension",
@@ -550,6 +565,24 @@ fn project_expression_operation(operation: dae::ExpressionOperation<'_>) -> Valu
             source_clock,
             target_clock,
         } => project_clock_transfer(kind, source, source_clock, target_clock),
+    }
+}
+
+/// A carried field state: a forwarded call-result field, or a parameter
+/// that may arrive absent.
+fn project_assigned_state(operation: dae::ExpressionOperation<'_>) -> Value {
+    match operation {
+        dae::ExpressionOperation::PassAssigned { operand } => json!({
+            "kind": "pass_assigned",
+            "operand": operand.index(),
+        }),
+        dae::ExpressionOperation::AssignedParameter { parameter, checked } => json!({
+            "kind": "assigned_parameter",
+            "function": parameter.function().index(),
+            "ordinal": parameter.ordinal(),
+            "checked": checked,
+        }),
+        _ => unreachable!("only a carried field state reaches this projection"),
     }
 }
 

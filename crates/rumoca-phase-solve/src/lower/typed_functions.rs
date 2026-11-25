@@ -485,6 +485,13 @@ impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
                         provenance.span(),
                     )?;
                 }
+                // Refused before lowering (`carried_field_state`): the call
+                // interface carries no assigned state yet.
+                dae::FunctionStatementView::CarryAssigned { provenance, .. } => {
+                    return Err(solve::SolveProgramConstructionError::InvalidCallInterface {
+                        provenance: provenance.span(),
+                    });
+                }
                 dae::FunctionStatementView::Conditional { conditional } => {
                     self.scoped_conditional(conditional)?;
                 }

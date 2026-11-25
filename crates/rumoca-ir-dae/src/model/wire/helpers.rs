@@ -72,3 +72,38 @@ pub(super) fn expect_ordinal(
     }
     Err(duplicate(kind, found, at))
 }
+
+/// Rebuild a forwarded assigned state or a parameter that may arrive absent
+/// through the checked constructors, which re-verify where each may stand.
+/// Replay a record field read and the forms that carry its assigned state.
+pub(super) fn rebuild_field_read<'dae>(
+    ids: &WireIds<'dae>,
+    at: ExpressionAt<'_, 'dae>,
+    node: &ExprNodeWire,
+    provenance: DaeProvenance,
+) -> Result<ExprId<'dae>, DaeConstructionError> {
+    match node {
+        ExprNodeWire::Field { base, field } => at.field(
+            mapped(&ids.expressions, *base, "expression", provenance)?,
+            *field as usize,
+        ),
+        ExprNodeWire::PassAssigned { operand } => at.pass_assigned(mapped(
+            &ids.expressions,
+            *operand,
+            "expression",
+            provenance,
+        )?),
+        ExprNodeWire::AssignedParameter {
+            function,
+            ordinal,
+            checked,
+        } => at.assigned_parameter(
+            FunctionParameterId::from_raw(
+                mapped(&ids.functions, *function, "function", provenance)?.index(),
+                *ordinal,
+            ),
+            *checked,
+        ),
+        _ => Err(malformed("expressions.nodes.assigned_state")),
+    }
+}

@@ -191,7 +191,7 @@ pub(super) fn require_assigned<'dae>(
     dae: &mut DaeConstruction<'dae>,
     ids: &mut WireIds<'dae>,
     state: &mut FunctionReplay<'_, '_, 'dae>,
-    target: u32,
+    (target, carried): (u32, bool),
     provenance: DaeProvenance,
 ) -> Result<(), DaeConstructionError> {
     expect_function_value(wire, state.function_index, target, provenance)?;
@@ -201,8 +201,14 @@ pub(super) fn require_assigned<'dae>(
         .definitions
         .len();
     match state.capability.as_mut() {
+        Some(ReplayCapability::Body(body)) if carried => {
+            dae.functions(|functions| functions.carry_assigned(body, value, provenance))?;
+        }
         Some(ReplayCapability::Body(body)) => {
             dae.functions(|functions| functions.require_assigned(body, value, provenance))?;
+        }
+        Some(ReplayCapability::Fold(_)) if carried => {
+            return Err(malformed("functions.statements.require_assigned"));
         }
         Some(ReplayCapability::Fold(body)) => {
             dae.functions(|functions| functions.require_assigned_loop(body, value, provenance))?;

@@ -10,7 +10,20 @@ impl<'dae> Functions<'_, 'dae> {
         target: FunctionValueId<'dae>,
         provenance: DaeProvenance,
     ) -> Result<FunctionDefinitionId<'dae>, DaeConstructionError> {
-        self.require_assigned_region(body, target, provenance)
+        self.require_assigned_region(body, target, provenance, false)
+    }
+
+    /// Carry the exact executed-path state of a partial value without a
+    /// check: the issued definition holds the value or its absence. Only a
+    /// field of the record assigned to a function output may read it; the
+    /// check moves to the read of that field (MLS §12.4.4).
+    pub fn carry_assigned(
+        &mut self,
+        body: &mut FunctionBody<'dae>,
+        target: FunctionValueId<'dae>,
+        provenance: DaeProvenance,
+    ) -> Result<FunctionDefinitionId<'dae>, DaeConstructionError> {
+        self.require_assigned_region(body, target, provenance, true)
     }
 
     /// The same assigned-state operation inside an existing compact loop.
@@ -20,7 +33,7 @@ impl<'dae> Functions<'_, 'dae> {
         target: FunctionValueId<'dae>,
         provenance: DaeProvenance,
     ) -> Result<FunctionDefinitionId<'dae>, DaeConstructionError> {
-        self.require_assigned_region(body.body(), target, provenance)
+        self.require_assigned_region(body.body(), target, provenance, false)
     }
 
     fn require_assigned_region(
@@ -28,6 +41,7 @@ impl<'dae> Functions<'_, 'dae> {
         body: &FunctionBody<'dae>,
         target: FunctionValueId<'dae>,
         provenance: DaeProvenance,
+        carried: bool,
     ) -> Result<FunctionDefinitionId<'dae>, DaeConstructionError> {
         check_provenance(self.source_map, provenance)?;
         check_function_value_owner(body.function, target, provenance)?;
@@ -64,6 +78,11 @@ impl<'dae> Functions<'_, 'dae> {
                 span: provenance.span(),
             });
         }
+        if carried {
+            self.storage.functions[body.function.index() as usize]
+                .carried_definitions
+                .push(definition.ordinal());
+        }
         let build = function_build_state_mut(self.storage, body);
         build
             .statements
@@ -71,6 +90,7 @@ impl<'dae> Functions<'_, 'dae> {
                 owner: owner.ordinal(),
                 target: target.ordinal(),
                 definition: definition.ordinal(),
+                carried,
             });
         build.current_values[target.ordinal() as usize] =
             FunctionValueState::Assigned(definition.ordinal());

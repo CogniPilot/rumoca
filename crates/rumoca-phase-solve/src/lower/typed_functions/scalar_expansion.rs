@@ -115,7 +115,8 @@ fn carries_owner_only_construct<'dae>(
         dae::FunctionStatementView::Assignment { .. }
         | dae::FunctionStatementView::AssignmentGroup { .. }
         | dae::FunctionStatementView::Assertion { .. } => false,
-        dae::FunctionStatementView::RequireAssigned { .. } => true,
+        dae::FunctionStatementView::RequireAssigned { .. }
+        | dae::FunctionStatementView::CarryAssigned { .. } => true,
         dae::FunctionStatementView::Conditional { conditional } => {
             in_loop || !is_pure_conditional(view, conditional)
         }

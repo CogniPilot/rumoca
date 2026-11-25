@@ -57,6 +57,7 @@ fn assert_same_rhs_definitions(view: dae::DaeView<'_>) {
             dae::FunctionStatementView::AssignmentGroup { .. }
             | dae::FunctionStatementView::Conditional { .. }
             | dae::FunctionStatementView::RequireAssigned { .. }
+            | dae::FunctionStatementView::CarryAssigned { .. }
             | dae::FunctionStatementView::Assertion { .. }
             | dae::FunctionStatementView::For { .. } => None,
         })
@@ -97,6 +98,7 @@ fn assert_same_rhs_definitions(view: dae::DaeView<'_>) {
             dae::FunctionStatementView::Assignment { .. }
             | dae::FunctionStatementView::Conditional { .. }
             | dae::FunctionStatementView::RequireAssigned { .. }
+            | dae::FunctionStatementView::CarryAssigned { .. }
             | dae::FunctionStatementView::AssignmentGroup { .. }
             | dae::FunctionStatementView::Assertion { .. } => None,
         })
@@ -270,9 +272,11 @@ fn function_expression_edges<'dae>(
     match expression.operation() {
         dae::ExpressionOperation::Literal(_)
         | dae::ExpressionOperation::Coordinate(_)
+        | dae::ExpressionOperation::AssignedParameter { .. }
         | dae::ExpressionOperation::FunctionConditionalOutput { .. }
         | dae::ExpressionOperation::FunctionFoldParameter { .. }
         | dae::ExpressionOperation::FunctionFoldOutput { .. } => {}
+        dae::ExpressionOperation::PassAssigned { operand } => push(operand),
         dae::ExpressionOperation::Range(range) => {
             push(range.start().expression());
             if let Some(step) = range.explicit_step() {
@@ -355,6 +359,10 @@ fn function_operation_fingerprint(operation: dae::ExpressionOperation<'_>) -> St
     match operation {
         dae::ExpressionOperation::Literal(literal) => format!("literal:{literal:?}"),
         dae::ExpressionOperation::Coordinate(coordinate) => coordinate_fingerprint(coordinate),
+        dae::ExpressionOperation::PassAssigned { .. } => "pass_assigned".to_owned(),
+        dae::ExpressionOperation::AssignedParameter { parameter, checked } => {
+            format!("assigned_parameter:{}:{checked}", parameter.ordinal())
+        }
         dae::ExpressionOperation::Unary { operator, .. } => format!("unary:{operator:?}"),
         dae::ExpressionOperation::Binary { operator, .. } => format!("binary:{operator:?}"),
         dae::ExpressionOperation::ClockTransfer {

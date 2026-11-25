@@ -12,6 +12,7 @@ use crate::layout::{LoweredLayout, StorageClass, lower_layout};
 
 mod algebraic_family;
 pub(crate) mod algorithm_block;
+mod carried_field_state;
 mod matched_projection;
 mod matching_rows;
 use matched_projection::{MatchedBlockView, MatchedProjection};
@@ -65,6 +66,7 @@ pub(crate) fn lower_solve_problem(
             "the model has no variables or equations to simulate",
         ));
     }
+    carried_field_state::refuse_carried_field_states(view)?;
     let mut lowered = lower_layout(view)?;
     lowered.refresh_profile = profile;
     lowered.assertion_roots = crate::layout::AssertionRoots::of_product(

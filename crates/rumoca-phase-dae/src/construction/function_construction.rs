@@ -277,7 +277,8 @@ fn function_signature<'dae>(
         .collect::<Result<Vec<_>, _>>()?;
     Ok(
         dae::FunctionSignature::new(function.name.clone(), parameters, results, declaration)
-            .with_inline(function.inline),
+            .with_inline(function.inline)
+            .with_absent_parameters(shapes.absent_fields().absent_parameters(&function.name)),
     )
 }
 

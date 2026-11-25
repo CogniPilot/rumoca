@@ -93,7 +93,8 @@ fn collect_sites<'dae>(
             // No proof is issued for simultaneous writes or another lifetime.
             dae::FunctionStatementView::AssignmentGroup { .. }
             | dae::FunctionStatementView::For { .. }
-            | dae::FunctionStatementView::RequireAssigned { .. } => return None,
+            | dae::FunctionStatementView::RequireAssigned { .. }
+            | dae::FunctionStatementView::CarryAssigned { .. } => return None,
         }
     }
     Some(())

@@ -212,6 +212,7 @@ mod function_record_defaults;
 mod function_record_field_bindings;
 mod function_record_field_branches;
 mod function_record_field_locals;
+mod function_record_field_reads;
 mod function_record_multi_output;
 mod function_record_whole_values;
 mod function_region_binder_captures;

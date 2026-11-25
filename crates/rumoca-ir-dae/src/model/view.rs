@@ -1,8 +1,10 @@
 mod arena_walks;
 mod expression_operands;
+mod function_statements;
 mod model_conditionals;
 mod quotient_owners;
 pub use expression_operands::ConditionalExpressionOperands;
+pub use function_statements::FunctionStatementView;
 pub use model_conditionals::ModelConditionalView;
 #[cfg(test)]
 mod scalar_owner_tests;
@@ -795,6 +797,8 @@ impl<'dae> FunctionView<'dae> {
         // substitute this body answers to it, and one that cannot ignores it,
         // because an annotation changes nothing about what the function means.
         const fn inline -> rumoca_core::InlineAnnotation = |view| view.entry.inline;
+        // Parameter ordinals a call may pass without a value, increasing.
+        fn absent_parameters -> &'dae [u32] = |view| &view.entry.absent_parameters;
         fn name -> &'dae VarName = |view| &view.entry.name;
         fn parameter_types -> ValueTypeOperands<'dae> = |view| ValueTypeOperands {
             raw: &view.entry.parameters,
@@ -1077,108 +1081,6 @@ pub(super) fn function_definition_view<'dae>(
 }
 
 #[derive(Clone)]
-pub enum FunctionStatementView<'dae> {
-    RequireAssigned {
-        conditional: FunctionConditionalBodyView<'dae>,
-        value: FunctionValueId<'dae>,
-        definition: FunctionDefinitionView<'dae>,
-        provenance: DaeProvenance,
-    },
-    Conditional {
-        conditional: FunctionConditionalBodyView<'dae>,
-    },
-    Assignment {
-        definition: FunctionDefinitionView<'dae>,
-    },
-    AssignmentGroup {
-        definitions: FunctionDefinitionValues<'dae>,
-    },
-    Assertion {
-        condition: ExprId<'dae>,
-        message: ExprId<'dae>,
-        level: AssertionLevel,
-        provenance: DaeProvenance,
-    },
-    For {
-        fold: FunctionFoldId<'dae>,
-        statements: FunctionStatements<'dae>,
-        provenance: DaeProvenance,
-    },
-}
-
-impl<'dae> FunctionStatementView<'dae> {
-    fn from_wire(
-        dae: &'dae Dae,
-        function: FunctionId<'dae>,
-        statement: &'dae FunctionStatementWire,
-    ) -> Self {
-        match statement {
-            FunctionStatementWire::RequireAssigned {
-                owner,
-                target,
-                definition,
-            } => {
-                let definition = function_definition_view(dae, function, *definition);
-                Self::RequireAssigned {
-                    conditional: DaeView {
-                        dae,
-                        marker: PhantomData,
-                    }
-                    .function_conditional(FunctionConditionalId::from_raw(function.index(), *owner))
-                    .expect("checked partial-state owner resolves"),
-                    value: FunctionValueId::from_raw(function.index(), *target),
-                    definition,
-                    provenance: definition.provenance(),
-                }
-            }
-            FunctionStatementWire::ScopedConditional { owner } => Self::Conditional {
-                conditional: DaeView {
-                    dae,
-                    marker: PhantomData,
-                }
-                .function_conditional(FunctionConditionalId::from_raw(function.index(), *owner))
-                .expect("issued conditional owner resolves"),
-            },
-            FunctionStatementWire::Assignment { definition } => Self::Assignment {
-                definition: function_definition_view(dae, function, *definition),
-            },
-            FunctionStatementWire::AssignmentGroup { definitions } => Self::AssignmentGroup {
-                definitions: FunctionDefinitionValues {
-                    dae,
-                    function,
-                    raw: definitions,
-                },
-            },
-            FunctionStatementWire::Assertion {
-                condition,
-                message,
-                level,
-                provenance,
-            } => Self::Assertion {
-                condition: ExprId::from_raw(*condition),
-                message: ExprId::from_raw(*message),
-                level: *level,
-                provenance: *provenance,
-            },
-            FunctionStatementWire::For {
-                fold,
-                statements,
-                provenance,
-            } => Self::For {
-                fold: FunctionFoldId::from_raw(function.index(), *fold),
-                statements: FunctionStatements {
-                    dae,
-                    function,
-                    statements,
-                    next: 0,
-                },
-                provenance: *provenance,
-            },
-        }
-    }
-}
-
-#[derive(Clone)]
 pub struct FunctionStatements<'dae> {
     dae: &'dae Dae,
     function: FunctionId<'dae>,
@@ -1352,6 +1254,8 @@ impl<'dae> ExpressionView<'dae> {
             ExprNode::Array { .. } => ExpressionKind::Array,
             ExprNode::Record { .. } => ExpressionKind::Record,
             ExprNode::Field { .. } => ExpressionKind::Field,
+            ExprNode::PassAssigned { .. } => ExpressionKind::PassAssigned,
+            ExprNode::AssignedParameter { .. } => ExpressionKind::AssignedParameter,
             ExprNode::Range { .. } => ExpressionKind::Range,
             ExprNode::Comprehension { .. } => ExpressionKind::Comprehension,
             ExprNode::Index { .. } => ExpressionKind::Index,
@@ -1378,6 +1282,8 @@ impl<'dae> ExpressionView<'dae> {
             | ExprNode::Array { .. }
             | ExprNode::Record { .. }
             | ExprNode::Field { .. }
+            | ExprNode::PassAssigned { .. }
+            | ExprNode::AssignedParameter { .. }
             | ExprNode::Range { .. }
             | ExprNode::Comprehension { .. } => self.aggregate_operation(),
             ExprNode::Index { .. }
@@ -1426,6 +1332,17 @@ impl<'dae> ExpressionView<'dae> {
             ExprNode::Field { base, field } => ExpressionOperation::Field {
                 base: ExprId::from_raw(*base),
                 field: *field,
+            },
+            ExprNode::PassAssigned { operand } => ExpressionOperation::PassAssigned {
+                operand: ExprId::from_raw(*operand),
+            },
+            ExprNode::AssignedParameter {
+                function,
+                ordinal,
+                checked,
+            } => ExpressionOperation::AssignedParameter {
+                parameter: FunctionParameterId::from_raw(*function, *ordinal),
+                checked: *checked,
             },
             ExprNode::Range {
                 start,
@@ -1780,6 +1697,17 @@ pub enum ExpressionOperation<'dae> {
         base: ExprId<'dae>,
         field: u32,
     },
+    /// The operand's value or its absence, forwarded unchecked to a call
+    /// argument whose parameter may arrive absent.
+    PassAssigned {
+        operand: ExprId<'dae>,
+    },
+    /// A parameter that may arrive absent: its checked read, or its value
+    /// or absence forwarded to a call argument.
+    AssignedParameter {
+        parameter: FunctionParameterId<'dae>,
+        checked: bool,
+    },
     Range(RangeView<'dae>),
     Comprehension {
         domain: DomainId<'dae>,
@@ -1892,6 +1820,8 @@ pub enum ExpressionKind {
     Array,
     Record,
     Field,
+    PassAssigned,
+    AssignedParameter,
     Range,
     Comprehension,
     Index,

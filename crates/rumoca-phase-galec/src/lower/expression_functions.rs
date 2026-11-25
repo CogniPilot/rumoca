@@ -81,6 +81,7 @@ pub(super) fn for_each_eager_call<'dae>(
         | dae::ExpressionOperation::FunctionValue { .. }
         | dae::ExpressionOperation::FunctionFoldParameter { .. }
         | dae::ExpressionOperation::FunctionFoldOutput { .. }
+        | dae::ExpressionOperation::AssignedParameter { .. }
         | dae::ExpressionOperation::FunctionConditionalOutput { .. } => {}
         dae::ExpressionOperation::Call {
             owner, arguments, ..
@@ -91,7 +92,8 @@ pub(super) fn for_each_eager_call<'dae>(
             });
             children.extend(arguments.iter());
         }
-        dae::ExpressionOperation::Unary { operand, .. } => children.push(operand),
+        dae::ExpressionOperation::Unary { operand, .. }
+        | dae::ExpressionOperation::PassAssigned { operand } => children.push(operand),
         dae::ExpressionOperation::Binary { lhs, rhs, .. } => children.extend([lhs, rhs]),
         dae::ExpressionOperation::Array(operands)
         | dae::ExpressionOperation::Record(operands)
@@ -1289,7 +1291,8 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
                         conditional.declaration().span(),
                     ));
                 }
-                dae::FunctionStatementView::RequireAssigned { provenance, .. } => {
+                dae::FunctionStatementView::RequireAssigned { provenance, .. }
+                | dae::FunctionStatementView::CarryAssigned { provenance, .. } => {
                     return Err(unsupported(
                         "function-assigned-state",
                         "inline assertion projection does not represent an optional executed-path value".to_owned(),
