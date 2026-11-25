@@ -1127,3 +1127,80 @@ fn jacobian_rows_answer_a_whole_call_with_one_batch() {
         assert_eq!(selected.to_bits(), expected.to_bits(), "program {program}");
     }
 }
+
+/// #683: a whole-call entry lowers no program body a second time. Each program
+/// of a selectable residual or Jacobian row set is emitted once, into its own
+/// function; whole calls reach it through that function.
+#[test]
+fn whole_call_entries_lower_each_program_body_once() {
+    let residual = product_rows(5, false);
+    let before = super::lowered_program_bodies_on_this_thread();
+    let selectable = compile_selectable_residual_rows(&residual, None).unwrap();
+    assert_eq!(
+        super::lowered_program_bodies_on_this_thread() - before,
+        residual.len(),
+        "selectable residual rows"
+    );
+    let jacobian = product_rows(5, true);
+    let before = super::lowered_program_bodies_on_this_thread();
+    let directional = compile_jacobian_rows(&jacobian).unwrap();
+    assert_eq!(
+        super::lowered_program_bodies_on_this_thread() - before,
+        jacobian.len(),
+        "Jacobian rows"
+    );
+    let y = [0.5, -1.25, 3.0, 1e-300, -0.0];
+    let seed = [2.0, -0.5, 0.0, 1e300, 7.0];
+    let (mut whole, mut tangent) = ([f64::NAN; 5], [f64::NAN; 5]);
+    selectable.call(&y, &[], 0.0, &mut whole).unwrap();
+    directional.call(&y, &[], 0.0, &seed, &mut tangent).unwrap();
+    for program in 0..5 {
+        let value = selectable
+            .call_program_output((program, 0), &y, &[], 0.0, &[])
+            .unwrap()
+            .expect("selectable rows answer one program");
+        let derivative = directional
+            .call_program_output((program, 0), &y, &[], 0.0, &seed, &[])
+            .unwrap();
+        assert_eq!(
+            whole[program].to_bits(),
+            value.to_bits(),
+            "program {program}"
+        );
+        assert_eq!(
+            tangent[program].to_bits(),
+            derivative.to_bits(),
+            "program {program}"
+        );
+    }
+}
+
+/// Every call emitted into JIT code is a far call (`owned_jit_module.rs`): a
+/// colocated callee gets a 32-bit displacement, which overflows once a module's
+/// code lies far enough apart (seen on x86-64 with #683's whole-call batches).
+/// No file but the helper's may declare a callee directly.
+#[test]
+fn every_emitted_call_declares_its_callee_through_the_far_call_helper() {
+    let direct = concat!("declare_func", "_in_func(");
+    let mut pending = vec![std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src")];
+    let mut offenders = Vec::new();
+    while let Some(dir) = pending.pop() {
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                pending.push(path);
+            } else if path.extension().is_some_and(|extension| extension == "rs")
+                && path
+                    .file_name()
+                    .is_some_and(|name| name != "owned_jit_module.rs")
+                && std::fs::read_to_string(&path).unwrap().contains(direct)
+            {
+                offenders.push(path);
+            }
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "direct callee declarations: {offenders:?}"
+    );
+}
