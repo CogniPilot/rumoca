@@ -91,6 +91,11 @@ or scalar-type-incompatible projection is rejected at this owner.
 
 Solve keeps compact Map and AffineStencil tensor nodes; scalar rows are derived views, never the authority. [SPEC_0043 catalog §18](SPEC_0043_CONSTRUCTION_CATALOG.md#18-solve-tensor-nodes-catalog) is normative by reference.
 
+| Rule | Owner/Where | Brief Justification |
+|---|---|---|
+| A single-body continuous algebraic family matched only to algebraic rows retains one `Map` when every domain point proves the same complete scalar program with affine parameter, input, and constant strides | Solve lowering | A regular image kernel or dense layer reaches native backends as a bounded tensor loop rather than extent-sized scalar code |
+| The retained map writes the family's consecutive residual rows and uses the ordinary scalar compiler for its base program | Solve lowering | Compact execution and scalar semantics share one arithmetic owner |
+
 ### 5. Ownership Boundaries
 
 | Thing | Owner/Where | Brief Justification |

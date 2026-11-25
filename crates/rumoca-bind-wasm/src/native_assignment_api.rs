@@ -163,14 +163,26 @@ fn checked_real_stages(
     Ok(schedule)
 }
 
+fn checked_wgsl_stages(
+    model: &rumoca_ir_solve::SolveModel,
+) -> Result<&rumoca_ir_solve::NativeRefreshAssignmentSchedule, WasmError> {
+    let schedule = checked_native_schedule(model)?;
+    if !schedule.derived_outputs().is_empty() || !schedule.input_runs().is_empty() {
+        return Err(WasmError::new(
+            "typed lanes belong to the callable WGSL Real-value ABI",
+        ));
+    }
+    Ok(schedule)
+}
+
 /// Compile a small, stateless, Real-valued model to a callable WGSL function
 /// with lane-indexed P arguments and Y results. It declares no GPU bindings.
 #[wasm_bindgen]
 pub fn prepare_gpu_value_function(source: &str, model_name: &str) -> Result<String, WasmError> {
     with_prepared_native_model(source, model_name, |model, source, name| {
-        let schedule = checked_real_stages(model)?;
+        let schedule = checked_wgsl_stages(model)?;
         let layout = schedule.work_layout();
-        let wgsl = rumoca_compile::codegen::render_wgsl_value_function(schedule)
+        let wgsl = rumoca_compile::codegen::render_wgsl_value_function(schedule, &model.pure_calls)
             .map_err(|e| WasmError::new(format!("GPU value function rejected: {e}")))?;
         Ok(
             serde_json::json!({"profile":"wgsl-value-function-f32-v1", "model_name":name,

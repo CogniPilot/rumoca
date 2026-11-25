@@ -38,9 +38,9 @@ pub(super) use jax_family::render_solve_native_family_jax_function;
 pub(super) use jax_plan::jax_plan_value;
 pub(super) use mlir_family::render_solve_native_family_mlir_function;
 pub(super) use template_partition::{
-    RenderNativeAffineFamily, SolveNativeDenseNodesValue, SolveNativeFamiliesValue, SolveRowsValue,
-    SolveScalarFallbackRowsValue, native_family_template_partition,
-    render_solve_native_family_output_index_wgsl_function,
+    RenderNativeAffineFamily, SolveNativeDenseNodesValue, SolveNativeFamiliesValue,
+    SolveNativeFamilyValue, SolveRowsValue, SolveScalarFallbackRowsValue,
+    native_family_template_partition, render_solve_native_family_output_index_wgsl_function,
     render_solve_native_family_output_map_start_function, render_solve_native_family_wgsl_function,
     render_wgsl_kernel_schedule_json_function, render_wgsl_kernel_workgroup_total_function,
     render_wgsl_native_family_inventory_json_function,
@@ -213,6 +213,299 @@ fn render_native_family_expr_wgsl(
         overrides.insert(op_position, value_expr);
     }
     render_solve_row_typed_with_overrides(&family.base_ops, &overrides, &cfg, SolveRowDialect::Wgsl)
+}
+
+fn native_family_access_overrides(
+    family: &RenderNativeAffineFamily,
+    cfg: &SolveRowCConfig,
+) -> Result<std::collections::HashMap<usize, String>, minijinja::Error> {
+    validate_native_family_metadata(family)?;
+    let mut overrides = std::collections::HashMap::new();
+    for (op_position, op) in family.base_ops.iter().enumerate() {
+        let terms = family_load_terms(family, op_position)?;
+        if terms.is_empty() {
+            continue;
+        }
+        let (source, base_index) = match op {
+            solve::LinearOp::LoadY { index, .. } => (NativeFamilyLoadSource::Y, *index),
+            solve::LinearOp::LoadP { index, .. } => (NativeFamilyLoadSource::P, *index),
+            solve::LinearOp::LoadSeed { index, .. } => (NativeFamilyLoadSource::Seed, *index),
+            other => {
+                return Err(render_err(format!(
+                    "native family stride targets a non-load op: {}",
+                    other.kind_name()
+                )));
+            }
+        };
+        let index_expr = affine_load_index_expr(base_index, &terms, &family.domain)?;
+        let access = match source {
+            NativeFamilyLoadSource::Y => cfg.y_access_expr(&index_expr),
+            NativeFamilyLoadSource::P => cfg.p_access_expr(&index_expr),
+            NativeFamilyLoadSource::Seed => cfg.seed_access_expr(&index_expr).ok_or_else(|| {
+                render_err("native family LoadSeed requires a `seed` access pattern")
+            })?,
+        };
+        overrides.insert(op_position, access);
+    }
+    for (op_position, op) in family.base_ops.iter().enumerate() {
+        let terms = family_const_terms(family, op_position)?;
+        if terms.is_empty() {
+            continue;
+        }
+        let base_value = match op {
+            solve::LinearOp::Const { value, .. } => *value,
+            other => {
+                return Err(render_err(format!(
+                    "native family const stride targets a non-const op: {}",
+                    other.kind_name()
+                )));
+            }
+        };
+        overrides.insert(
+            op_position,
+            affine_const_expr(base_value, &terms, &family.domain)?,
+        );
+    }
+    Ok(overrides)
+}
+
+fn materialize_changed_wgsl_registers(
+    before: &[String],
+    regs: &mut [String],
+    statement_index: &mut usize,
+    statements: &mut String,
+) {
+    for (register, expression) in regs.iter_mut().enumerate() {
+        if expression.is_empty() || before.get(register) == Some(expression) {
+            continue;
+        }
+        let name = format!("rumoca_v{}_{}", *statement_index, register);
+        statements.push_str(&format!("let {name} = {expression};\n"));
+        *expression = name;
+        *statement_index += 1;
+    }
+}
+
+fn render_solve_row_typed_wgsl_statements(
+    ops: &[solve::LinearOp],
+    access_overrides: &std::collections::HashMap<usize, String>,
+    output_ordinal: usize,
+    target: &str,
+    cfg: &SolveRowCConfig,
+) -> RenderResult {
+    let mut regs = Vec::<String>::new();
+    let mut statements = String::new();
+    let mut statement_index = 0usize;
+    let mut seen_outputs = 0usize;
+    for (position, op) in ops.iter().enumerate() {
+        if let solve::LinearOp::StoreOutputRange {
+            start,
+            count,
+            stride,
+        } = *op
+        {
+            let range_end = seen_outputs
+                .checked_add(count)
+                .ok_or_else(|| render_err("solve output range ordinal overflows host range"))?;
+            if (seen_outputs..range_end).contains(&output_ordinal) {
+                let local = output_ordinal - seen_outputs;
+                let source = typed_solve_output_range_source(start, stride, local)?;
+                statements.push_str(&format!("{target} = {};", solve_reg(&regs, source)?));
+                return Ok(statements);
+            }
+            seen_outputs = range_end;
+            continue;
+        }
+
+        let before = regs.clone();
+        let output = if let Some(access) = access_overrides.get(&position) {
+            let dst = match op {
+                solve::LinearOp::LoadY { dst, .. }
+                | solve::LinearOp::LoadP { dst, .. }
+                | solve::LinearOp::LoadSeed { dst, .. }
+                | solve::LinearOp::Const { dst, .. } => *dst,
+                other => {
+                    return Err(render_err(format!(
+                        "native family override targets a non-load/non-const op: {}",
+                        other.kind_name()
+                    )));
+                }
+            };
+            store_solve_reg(
+                &mut regs,
+                solve_reg_index(dst, "native override destination register")?,
+                access.clone(),
+            )?;
+            None
+        } else {
+            render_solve_op_typed(op, cfg, SolveRowDialect::Wgsl, &mut regs, None)?
+        };
+        materialize_changed_wgsl_registers(
+            &before,
+            &mut regs,
+            &mut statement_index,
+            &mut statements,
+        );
+        if matches!(op, solve::LinearOp::StoreOutput { .. }) {
+            if seen_outputs == output_ordinal {
+                let value =
+                    output.ok_or_else(|| render_err("solve StoreOutput did not yield a value"))?;
+                statements.push_str(&format!("{target} = {value};"));
+                return Ok(statements);
+            }
+            seen_outputs = next_store_output_ordinal(seen_outputs)?;
+        }
+    }
+    missing_store_output_ordinal(output_ordinal)
+}
+
+pub(in crate::codegen) fn render_solve_native_family_wgsl_statements_function(
+    family: Value,
+    target: Value,
+    config: Value,
+) -> RenderResult {
+    let Some(family) = family.downcast_object_ref::<SolveNativeFamilyValue>() else {
+        return Err(render_err(
+            "render_solve_native_family_wgsl_statements expects a native family from solve_blocks",
+        ));
+    };
+    let target = target
+        .as_str()
+        .ok_or_else(|| render_err("native family WGSL statement target must be a string"))?;
+    let cfg = SolveRowCConfig::from_value(&config);
+    let overrides = native_family_access_overrides(family.family(), &cfg)?;
+    render_solve_row_typed_wgsl_statements(&family.family().base_ops, &overrides, 0, target, &cfg)
+}
+
+pub(in crate::codegen) fn render_solve_row_output_wgsl_statements_function(
+    row: Value,
+    output_ordinal: Value,
+    target: Value,
+    config: Value,
+) -> RenderResult {
+    let typed = row
+        .downcast_object_ref::<SolveRowValue>()
+        .ok_or_else(|| render_err("WGSL statement rendering requires a typed solve row"))?;
+    let output_ordinal = output_ordinal
+        .as_usize()
+        .ok_or_else(|| render_err("solve row output ordinal must be a non-negative integer"))?;
+    let target = target
+        .as_str()
+        .ok_or_else(|| render_err("solve row WGSL statement target must be a string"))?;
+    let cfg = SolveRowCConfig::from_value(&config);
+    render_solve_row_typed_wgsl_statements(
+        typed.ops(),
+        &std::collections::HashMap::new(),
+        output_ordinal,
+        target,
+        &cfg,
+    )
+}
+
+fn render_solve_program_wgsl_statements(
+    ops: &[solve::LinearOp],
+    targets: &std::collections::HashMap<usize, String>,
+    cfg: &SolveRowCConfig,
+) -> RenderResult {
+    let mut regs = Vec::<String>::new();
+    let mut statements = String::new();
+    let mut statement_index = 0usize;
+    let mut seen_outputs = 0usize;
+    for op in ops {
+        if let solve::LinearOp::StoreOutputRange {
+            start,
+            count,
+            stride,
+        } = *op
+        {
+            seen_outputs = render_wgsl_output_range_targets(
+                &regs,
+                targets,
+                seen_outputs,
+                start,
+                count,
+                stride,
+                &mut statements,
+            )?;
+            continue;
+        }
+
+        let before = regs.clone();
+        let output = render_solve_op_typed(op, cfg, SolveRowDialect::Wgsl, &mut regs, None)?;
+        materialize_changed_wgsl_registers(
+            &before,
+            &mut regs,
+            &mut statement_index,
+            &mut statements,
+        );
+        if matches!(op, solve::LinearOp::StoreOutput { .. }) {
+            if let Some(target) = targets.get(&seen_outputs) {
+                let value =
+                    output.ok_or_else(|| render_err("solve StoreOutput did not yield a value"))?;
+                statements.push_str(&format!("{target} = {value};\n"));
+            }
+            seen_outputs = next_store_output_ordinal(seen_outputs)?;
+        }
+    }
+    Ok(statements)
+}
+
+fn render_wgsl_output_range_targets(
+    regs: &[String],
+    targets: &std::collections::HashMap<usize, String>,
+    first_ordinal: usize,
+    start: solve::Reg,
+    count: usize,
+    stride: usize,
+    statements: &mut String,
+) -> Result<usize, minijinja::Error> {
+    for local in 0..count {
+        let ordinal = first_ordinal
+            .checked_add(local)
+            .ok_or_else(|| render_err("solve output range ordinal overflows host range"))?;
+        let Some(target) = targets.get(&ordinal) else {
+            continue;
+        };
+        let source = typed_solve_output_range_source(start, stride, local)?;
+        statements.push_str(&format!("{target} = {};\n", solve_reg(regs, source)?));
+    }
+    first_ordinal
+        .checked_add(count)
+        .ok_or_else(|| render_err("solve output range ordinal overflows host range"))
+}
+
+pub(in crate::codegen) fn render_solve_fallback_wgsl_statements_function(
+    programs: Value,
+    fallback_rows: Value,
+    config: Value,
+) -> RenderResult {
+    let programs = programs
+        .downcast_object_ref::<SolveRowsValue>()
+        .ok_or_else(|| render_err("WGSL fallback statement rendering requires typed programs"))?;
+    let fallback_rows = fallback_rows
+        .downcast_object_ref::<SolveScalarFallbackRowsValue>()
+        .ok_or_else(|| render_err("WGSL fallback statement rendering requires typed rows"))?;
+    let cfg = SolveRowCConfig::from_value(&config);
+    let mut targets_by_program =
+        std::collections::BTreeMap::<usize, std::collections::HashMap<usize, String>>::new();
+    for row in fallback_rows.rows() {
+        targets_by_program
+            .entry(row.row_index)
+            .or_default()
+            .insert(row.output_ordinal, format!("next[{}u]", row.output_index));
+    }
+    let mut statements = String::new();
+    for (program_index, targets) in targets_by_program {
+        let ops = programs.programs().get(program_index).ok_or_else(|| {
+            render_err(format!(
+                "WGSL fallback row references missing program {program_index}"
+            ))
+        })?;
+        statements.push_str("{\n");
+        statements.push_str(&render_solve_program_wgsl_statements(ops, &targets, &cfg)?);
+        statements.push_str("}\n");
+    }
+    Ok(statements)
 }
 
 enum NativeFamilyLoadSource {

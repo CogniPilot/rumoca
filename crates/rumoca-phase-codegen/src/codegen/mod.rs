@@ -825,6 +825,18 @@ fn create_environment() -> Environment<'static> {
         render_solve::render_solve_native_family_wgsl_function,
     );
     env.add_function(
+        "render_solve_native_family_wgsl_statements",
+        render_solve::render_solve_native_family_wgsl_statements_function,
+    );
+    env.add_function(
+        "render_solve_row_output_wgsl_statements",
+        render_solve::render_solve_row_output_wgsl_statements_function,
+    );
+    env.add_function(
+        "render_solve_fallback_wgsl_statements",
+        render_solve::render_solve_fallback_wgsl_statements_function,
+    );
+    env.add_function(
         "render_solve_native_family_mlir",
         render_solve::render_solve_native_family_mlir_function,
     );

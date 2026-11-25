@@ -17,6 +17,10 @@ impl SolveRowsValue {
             rows: SolveRowsStorage::Checked(block.clone()),
         }
     }
+
+    pub(in crate::codegen) fn programs(&self) -> &[Vec<solve::LinearOp>] {
+        self.rows.programs()
+    }
 }
 
 impl Object for SolveRowsValue {
@@ -333,7 +337,7 @@ impl SolveScalarFallbackRowsValue {
         }
     }
 
-    fn rows(&self) -> &[RenderScalarFallbackRow] {
+    pub(in crate::codegen) fn rows(&self) -> &[RenderScalarFallbackRow] {
         self.rows.as_ref()
     }
 }
