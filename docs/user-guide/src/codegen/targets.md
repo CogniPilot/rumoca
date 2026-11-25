@@ -119,6 +119,48 @@ The module needs Rust 1.86 or later. The event iteration keeps about twenty
 copies of `State` and `Parameters` on the stack, about 160 bytes per slot of
 `Y_LEN + P_LEN`; size the calling thread's stack for large models.
 
+### Generating rust-fixed-ode from `build.rs`
+
+A crate can render the module at build time with a prebuilt `rumoca`. Cargo
+rescans a `rerun-if-changed` directory recursively, so naming the model
+directory, every source root and the executable rebuilds exactly when one of
+them changes. The module starts with inner attributes, which `include!`
+rejects, so `build.rs` also writes a `#[path]` declaration for it:
+
+```rust
+// build.rs
+use std::{env, fs, path::PathBuf, process::Command};
+
+fn main() {
+    let rumoca = PathBuf::from(env::var_os("RUMOCA").expect("set RUMOCA"));
+    let out = PathBuf::from(env::var_os("OUT_DIR").unwrap());
+    println!("cargo:rerun-if-env-changed=RUMOCA");
+    println!("cargo:rerun-if-env-changed=MODELICAPATH");
+    println!("cargo:rerun-if-changed={}", rumoca.display());
+    println!("cargo:rerun-if-changed=models");
+    // Also one rerun-if-changed per --source-root or MODELICAPATH entry.
+    let status = Command::new(&rumoca)
+        .args(["compile", "models/Plant.mo", "--model", "Plant"])
+        .args(["--target", "rust-fixed-ode", "--output"])
+        .arg(&out)
+        .status()
+        .unwrap();
+    assert!(status.success());
+    let module = out.join("Plant_fixed_ode.rs");
+    fs::write(
+        out.join("plant.rs"),
+        format!("#[allow(clippy::all, unused_parens)]\n#[path = {module:?}]\npub mod plant;\n"),
+    )
+    .unwrap();
+}
+```
+
+```rust
+// lib.rs
+include!(concat!(env!("OUT_DIR"), "/plant.rs"));
+pub use plant::typed::{Inputs, Model, Parameters, States};
+```
+
 ## Codegen Scenarios
 
 Like simulations, generation jobs worth repeating belong in a `rumoca-scenario.toml`
