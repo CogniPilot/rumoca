@@ -50,6 +50,14 @@ pub trait EvalEnvironment {
     }
     /// Find a function definition under a registered call name.
     fn get_function(&self, name: &str) -> Option<&Function>;
+    /// The function a call names as instantiation resolved it (MLS 3.7 §5.3),
+    /// by its function instance, whatever its spelling: a package function
+    /// named like a built-in is that function, never the built-in.
+    fn resolved_function(&self, call: &rumoca_core::Reference) -> Option<&Function> {
+        let instance = call.resolved_function()?.instance_id;
+        self.get_function(call.as_str())
+            .filter(|function| function.instance_id == Some(instance))
+    }
     /// Read shape metadata without constructing array elements.
     fn get_array_dimensions(&self, name: &str) -> Option<&[i64]>;
     /// Identify declared parameters whose values await initialization.

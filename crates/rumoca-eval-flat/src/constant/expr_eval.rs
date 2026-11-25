@@ -42,7 +42,7 @@ pub fn eval_expr_with_span(
         Expression::BuiltinCall { function, args, .. } => {
             eval_builtin_call(function, args, ctx, span)
         }
-        Expression::FunctionCall { name, args, .. } => eval_fn_call(name.as_str(), args, ctx, span),
+        Expression::FunctionCall { name, args, .. } => eval_fn_call(name, args, ctx, span),
         Expression::StringConversion { .. } => Err(EvalError::UnsupportedExpression {
             kind: "predefined String conversion".to_string(),
             span,
@@ -251,11 +251,18 @@ fn eval_shape_builtin(
 
 /// Evaluate a function call expression.
 fn eval_fn_call(
-    name: &str,
+    call: &rumoca_core::Reference,
     args: &[Expression],
     ctx: &dyn EvalEnvironment,
     span: Span,
 ) -> Result<Value, EvalError> {
+    if let Some(func) = ctx.resolved_function(call) {
+        return eval_user_function(func, args, ctx, span);
+    }
+    let name = call.as_str();
+    if call.resolved_function().is_some() && is_builtin(name) {
+        return Err(super::builtins::unheld_resolved_call(name, span));
+    }
     if is_builtin(name) {
         let arg_values: Vec<Value> = args
             .iter()

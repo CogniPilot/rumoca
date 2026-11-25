@@ -277,6 +277,14 @@ impl EvalEnvironment for FunctionInventory<'_> {
             .find(|function| function.name.as_str() == name)
     }
 
+    fn resolved_function(&self, call: &Reference) -> Option<&Function> {
+        let instance = call.resolved_function()?.instance_id;
+        self.flat
+            .functions
+            .values()
+            .find(|function| function.instance_id == Some(instance))
+    }
+
     fn get_array_dimensions(&self, _name: &str) -> Option<&[i64]> {
         None
     }

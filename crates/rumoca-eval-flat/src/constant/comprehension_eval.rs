@@ -51,6 +51,10 @@ impl EvalEnvironment for BinderScope<'_> {
         self.outer.get_function(name)
     }
 
+    fn resolved_function(&self, call: &rumoca_core::Reference) -> Option<&Function> {
+        self.outer.resolved_function(call)
+    }
+
     fn get_array_dimensions(&self, name: &str) -> Option<&[i64]> {
         self.outer.get_array_dimensions(name)
     }
@@ -96,6 +100,10 @@ impl EvalEnvironment for IteratorDeclarations<'_> {
     }
     fn get_function(&self, name: &str) -> Option<&Function> {
         self.outer.get_function(name)
+    }
+
+    fn resolved_function(&self, call: &rumoca_core::Reference) -> Option<&Function> {
+        self.outer.resolved_function(call)
     }
     fn get_array_dimensions(&self, name: &str) -> Option<&[i64]> {
         self.outer.get_array_dimensions(name)

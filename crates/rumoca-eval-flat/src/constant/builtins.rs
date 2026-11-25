@@ -164,6 +164,16 @@ fn eval_scalar_math_builtin(
     })())
 }
 
+/// A call instantiation resolved to a function the evaluation does not hold,
+/// spelled like a built-in. It names that function (MLS 3.7 §5.3), so the
+/// built-in of the same spelling never stands in for it.
+pub(super) fn unheld_resolved_call(name: &str, span: Span) -> EvalError {
+    EvalError::not_constant(
+        format!("`{name}` resolves to a function this evaluation does not hold, not the built-in"),
+        span,
+    )
+}
+
 /// Check if a function name is a known built-in.
 pub fn is_builtin(name: &str) -> bool {
     matches!(

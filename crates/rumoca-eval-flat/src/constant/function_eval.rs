@@ -1501,12 +1501,11 @@ fn eval_fn_call_expr(
     env: &FunctionEnv,
     eval: &EvalState<'_>,
 ) -> Result<Value, EvalError> {
-    let func_name = name.as_str();
     let arg_values: Vec<Value> = args
         .iter()
         .map(|a| eval_expr_in_function(a, env, eval))
         .collect::<Result<_, _>>()?;
-    call_function(func_name, arg_values, eval)
+    call_resolved(name, arg_values, eval)
 }
 
 /// Evaluate an array expression.
@@ -1659,6 +1658,23 @@ fn eval_comprehension_recursive(
     }
 
     Ok(Value::Array(results))
+}
+
+/// Call the function `call` names: the one instantiation resolved it to
+/// (MLS 3.7 §5.3) when there is one, otherwise by its name.
+fn call_resolved(
+    call: &rumoca_core::Reference,
+    args: Vec<Value>,
+    eval: &EvalState<'_>,
+) -> Result<Value, EvalError> {
+    if let Some(func) = eval.ctx.resolved_function(call) {
+        return eval_function(func, args, eval.ctx, eval.limits, eval.depth + 1, eval.span);
+    }
+    let name = call.as_str();
+    if call.resolved_function().is_some() && super::is_builtin(name) {
+        return Err(super::builtins::unheld_resolved_call(name, eval.span));
+    }
+    call_function(name, args, eval)
 }
 
 /// Call a function (builtin or user-defined).

@@ -393,6 +393,7 @@ mod trajectory_adjoint_tensor_test;
 mod trajectory_sensitivity_test;
 mod translation_enumeration_literals;
 mod translation_file_reads;
+mod translation_package_functions_named_like_builtins;
 mod translation_string_functions;
 mod trial_residual_scale;
 mod type_attribute_inheritance;
