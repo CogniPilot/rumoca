@@ -623,7 +623,7 @@ pub(super) fn project_record_constant<'a>(
             }
             value = name
                 .target_def_id()
-                .and_then(|declaration| ctx.declaration_constant_value(declaration))
+                .and_then(|declaration| ctx.constant_values_by_def_id.get(&declaration))
                 .or_else(|| resolve_constant_value_expr(name.as_str(), ctx))?;
         }
         let rumoca_core::Expression::FunctionCall {

@@ -73,6 +73,31 @@ fn every_medium_takes_moist_air_reference_composition_on_every_flatten() {
     }
 }
 
+/// The flat starts above must also survive the rest of the pipeline: a
+/// constant left unresolved in flatten (`nS`, `dryair.R_s`) only fails when
+/// the DAE is built, which the flatten test alone cannot see. Each run
+/// builds the DAE, and every run gives the same one.
+#[test]
+fn psychrometric_data_compiles_to_the_same_dae_on_every_run() {
+    let root = super::native_linear_solve::msl_root().expect("the required MSL fixture exists");
+    let media = root.join("Modelica 4.1.0/Media/package.mo");
+    let mut shapes = Vec::new();
+    for run in 0..RUNS {
+        let compiled = Compiler::new()
+            .model("Modelica.Media.Examples.PsychrometricData")
+            .source_root(root.to_string_lossy().as_ref())
+            .compile_file(media.to_string_lossy().as_ref())
+            .unwrap_or_else(|error| {
+                panic!("run {run}: PsychrometricData compiles to a DAE: {error}")
+            });
+        shapes.push(format!("{:?}", compiled.balance_detail));
+    }
+    assert!(
+        shapes.windows(2).all(|pair| pair[0] == pair[1]),
+        "every run builds the same DAE: {shapes:?}"
+    );
+}
+
 /// The package a type is spelled through is the one Resolve resolves the
 /// first segment to (MLS 3.7 section 5.3: inherited elements before enclosing
 /// scopes). Here `M`'s `Medium` is the one `Base` declares (`A`), not the

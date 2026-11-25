@@ -156,24 +156,31 @@ impl Context {
             .map(|value| (package, value))
     }
 
-    /// The value of a constant by its declaration identity alone. When two
-    /// packages expose the declaration with different values the identity
-    /// does not determine it (MLS §7.3), and the answer is none rather than
-    /// whichever exposure was recorded last. One package that records the
-    /// same constant again in another form (folded, or through an alias) is
-    /// not a disagreement.
+    /// The value of a constant by its declaration identity alone: the last
+    /// exposure recorded, deterministic because the exposing scopes are
+    /// visited in sorted order. When two packages expose the declaration with
+    /// different values the identity does not determine it (MLS 3.7 section
+    /// 7.3), so callers ask the exposing package first; this answers only when
+    /// no exposing package can be found. Refusing here instead left references
+    /// unresolved that main resolves (`nS`, `dryair.R_s`).
+    /// Reporting that disagreement as a warning is the follow-up (r4 B).
     pub(crate) fn declaration_constant_value(
         &self,
         declaration: rumoca_core::DefId,
     ) -> Option<&rumoca_core::Expression> {
+        #[cfg(feature = "tracing")]
         if self.packages_disagree_on(declaration) {
-            return None;
+            tracing::debug!(
+                ?declaration,
+                "packages expose this constant with different values; the declaration-only value answers"
+            );
         }
         self.constant_values_by_def_id.get(&declaration)
     }
 
     /// Whether two packages currently expose `declaration` with values that
     /// are not the same expression.
+    #[cfg_attr(not(feature = "tracing"), allow(dead_code))]
     fn packages_disagree_on(&self, declaration: rumoca_core::DefId) -> bool {
         let Some(scopes) = self.constant_exposing_scopes.get(&declaration) else {
             return false;

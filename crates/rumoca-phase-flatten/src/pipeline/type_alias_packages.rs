@@ -32,27 +32,84 @@ pub(crate) fn component_type_alias_packages(
         .iter()
         .map(|(scope, class)| (*class, *scope))
         .collect();
+    // The model being flattened is no component: its constants are read
+    // through the package that declares it (`TwoPhaseWater.ExtendedProperties`
+    // simulated on its own reads TwoPhaseWater's `nS`).
+    let root = overlay
+        .classes
+        .values()
+        .filter(|class| class.owner_component_id.is_none())
+        .filter_map(|class| {
+            let model = class.class_def_id?;
+            let package = class_index.parent_def_id(model)?;
+            (package_def_ids.contains(&package)
+                && declares_or_inherits(class_index, package, model))
+            .then_some((class.instance_id, package))
+        });
     overlay
         .components
         .values()
         .filter(|component| component.type_reference_root_def_id.is_none())
         .filter_map(|component| {
             let type_class = component.type_def_id?;
-            let (first, rest) = component.type_name.split_once('.')?;
-            if rest.is_empty() {
-                return None;
-            }
             let scope = component
                 .declaration_source_scope
                 .as_ref()?
                 .to_flat_string();
-            let spelled = resolved_class(tree, &class_scopes, class_index, &scope, first)?;
-            let package = alias_target(class_index, spelled)?;
+            let package = match component.type_name.split_once('.') {
+                Some((first, rest)) if !rest.is_empty() => {
+                    let spelled = resolved_class(tree, &class_scopes, class_index, &scope, first)?;
+                    alias_target(class_index, spelled)?
+                }
+                Some(_) => return None,
+                None => member_package(
+                    tree,
+                    &class_scopes,
+                    class_index,
+                    &scope,
+                    &component.type_name,
+                )?,
+            };
             (package_def_ids.contains(&package)
                 && declares_or_inherits(class_index, package, type_class))
             .then_some((component.instance_id, package))
         })
+        .chain(root)
         .collect()
+}
+
+/// For a type named by one identifier (`ExtendedProperties medium` written
+/// inside the package that declares it), the class whose member the name is:
+/// the first scope, walking outward from where the component was declared,
+/// that declares or inherits it (MLS 3.7 section 5.3, in Resolve's order). A
+/// name an import supplies, or one found past an encapsulated boundary, has
+/// no enclosing package to read constants through, so there is no answer.
+fn member_package(
+    tree: &ast::ClassTree,
+    class_scopes: &FxHashMap<DefId, rumoca_core::ScopeId>,
+    class_index: &ast::ClassDefIndex<'_>,
+    scope: &str,
+    name: &str,
+) -> Option<DefId> {
+    let declaring = class_index.def_id_by_qualified_name(scope)?;
+    let name = rumoca_core::ComponentPath::from_flat_path(name);
+    let mut current = Some(*class_scopes.get(&declaring)?);
+    while let Some(scope_id) = current {
+        let scope = tree.scope_tree.get(scope_id)?;
+        if tree.scope_tree.lookup_member(scope_id, &name).is_some() {
+            return tree.scope_to_class.get(&scope_id).copied();
+        }
+        if scope
+            .imports
+            .iter()
+            .any(|import| import.resolves(&name).is_some())
+            || scope.is_encapsulated()
+        {
+            return None;
+        }
+        current = scope.parent;
+    }
+    None
 }
 
 /// The class `name` denotes where the component was declared, by Resolve's own
