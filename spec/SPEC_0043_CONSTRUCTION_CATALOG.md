@@ -63,15 +63,26 @@ valid LOC reductions.
 
 | Trigger | Threshold | Acknowledged ceiling | Reduction owner |
 |---|---|---|---|
-| `dae-core-loc` | 11,000 | 21,750 | Retain checked conditional/tensor/loop-region, selected coordinate ownership and initialization parameter identity; retire downstream recovery during Solve Algorithm Block cutover |
+| `dae-core-loc` | 11,000 | 22,000 | Retain checked conditional/tensor/loop-region, selected coordinate ownership and initialization parameter identity; retire downstream recovery during Solve Algorithm Block cutover |
 | `dae-wire-loc` | 3,250 | 6,750 | Operation-shaped replay; consolidate correlation replay after construction coverage lands |
-| `dae-total-loc` | 14,250 | 28,250 | Both items above; total follows their sum |
+| `dae-total-loc` | 14,250 | 28,750 | Both items above; total follows their sum |
 
 **Why:** the triggers were unenforced and all three were exceeded in silence.
 The gate makes exceedance loud without blocking a landing: any measured value is
 legal once its ledger row records it, and only crossing a 250-line step forces
 the row to be rewritten. Measured, checked, and stated as an acceptance contract
 in `crates/rumoca/tests/suite_gates/dae_loc_trigger_test.rs`.
+
+**2026-11-25 release-branch acknowledgment:** at `f516a32e` (#755), the §1a
+measurement is 21,972 core + 6,598 wire = 28,570 production lines. The §1b
+rule derives ceilings of 22,000 / 6,750 / 28,750, so the core and total rows
+move. Relative to the `4090805a` measurement below, the sources add 411 core
+and 95 wire lines: #733 issues refresh guarantees, #738 makes the fill of an
+array the array of its copies, and #686 step 1a checks a returned record's
+field where it is read. This records current source size; it adds no
+production code and does not discharge the required module review. Review
+triggers, counting exclusions, reduction owners and totality-debt ceilings
+remain unchanged.
 
 **2026-11-24 current-main acknowledgment:** at `4090805a`, the §1a
 measurement is 21,561 core + 6,503 wire = 28,064 production lines. The §1b
