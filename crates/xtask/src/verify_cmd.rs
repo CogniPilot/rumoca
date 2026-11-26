@@ -967,7 +967,10 @@ fn run_template_runtime_test(
 fn template_runtime_features(backend: TemplateRuntimeBackend) -> &'static [&'static str] {
     if matches!(
         backend,
-        TemplateRuntimeBackend::Render | TemplateRuntimeBackend::Fmi | TemplateRuntimeBackend::Wasm
+        TemplateRuntimeBackend::Render
+            | TemplateRuntimeBackend::Fmi
+            | TemplateRuntimeBackend::Wasm
+            | TemplateRuntimeBackend::Cuda
     ) {
         &[
             "--no-default-features",

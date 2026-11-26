@@ -64,7 +64,7 @@ mod static_assertions;
 mod tests;
 mod time_events;
 
-pub use binding_execution::FmiBindingProgram;
+pub use binding_execution::{FmiBindingProgram, SolveBindingExecution};
 pub use c_codegen::{FmiCCodegenError, FmiCCodegenView, FmiInstantiationBuffer};
 pub use co_simulation::{
     CoSimulationController, CoSimulationMethod, CoSimulationStepPlan, CoSimulationSubstep,

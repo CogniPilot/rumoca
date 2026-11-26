@@ -1,3 +1,9 @@
+{#- The storage class of a kernel function: every function of a device build
+    is local to its unit, callable on the device, and may go uncalled by the
+    lane kernel that includes it; a host function is exported or static. -#}
+{%- macro device_qualifier(device, exported=false) -%}
+{{ "RMC_UNUSED static __device__" if device else ("RMC_API" if exported else "static") }}
+{%- endmacro %}
 {#- The names a component's translation units share carry the model
     identifier the component names (RMC_MODEL_PREFIX), so two components link
     statically into one importer: RMC_PREFIXED(name) is the prefixed name, or
@@ -99,7 +105,7 @@
 { {% if observation_mode == 2 %}rmc_finish_assertion_observation(&warnings, 1); {% endif %}return {{ error_status }}; }
 {%- endmacro %}
 
-{%- macro scalar_op(op, output="m->derivative", error_status="fmi3Error", targets=none, observation_mode=1) %}
+{%- macro scalar_op(op, output="m->derivative", error_status="fmi3Error", targets=none, observation_mode=1, device=false) %}
 {%- if op.kind == "Const" %}    r[{{ op.dst }}] = {{ scalar_const(op) }};
 {%- elif op.kind == "LoadTime" %}    r[{{ op.dst }}] = rmc_now(m);
 {%- elif op.kind == "LoadY" %}    r[{{ op.dst }}] = m->y[{% if op.load_arg is defined %}a[{{ op.load_arg }}]{% else %}{{ op.index }}{% endif %}];
@@ -116,7 +122,14 @@
     {
     RmcModelAssertionContext context={m, {{ op.owner }}, {{ observation_mode }}, {% if op.kind == "PureCallObservation" %}&r[{{ op.dst }}]{% else %}NULL{% endif %}, {% if observation_mode == 2 %}warnings.notices{% else %}NULL{% endif %}};
     const RmcAssertionObserver observer={&context, rmc_model_assertion};
-    int status={{ "rumoca_scalar_observe_" if op.kind == "PureCallObservation" else ("rumoca_scalar_pure_directional_" if op.kind == "PureCallDirectional" else "rumoca_scalar_pure_") }}{{ pure_symbol(op.owner) }}((const double*[]){ {% for start in op.input_starts %}&r[{{ start }}],{% else %}NULL{% endfor %} }, &r[{{ op.dst }}], &observer);
+{%- set callee = ("rumoca_scalar_observe_" if op.kind == "PureCallObservation" else ("rumoca_scalar_pure_directional_" if op.kind == "PureCallDirectional" else "rumoca_scalar_pure_")) ~ pure_symbol(op.owner) %}
+{%- if device %}
+    {#- C++ takes no address of a compound literal: the inputs are a named array. #}
+    const double* call_in[]={ {% for start in op.input_starts %}&r[{{ start }}],{% else %}NULL{% endfor %} };
+    int status={{ callee }}(call_in, &r[{{ op.dst }}], &observer);
+{%- else %}
+    int status={{ callee }}((const double*[]){ {% for start in op.input_starts %}&r[{{ start }}],{% else %}NULL{% endfor %} }, &r[{{ op.dst }}], &observer);
+{%- endif %}
 {% if observation_mode == 2 %}
     warnings.notices=context.notices;
     if (status) { rmc_finish_assertion_observation(&warnings, status); return {{ error_status }}; }
@@ -288,14 +301,14 @@
             {
                 double r[{{ arm.condition.register_count if arm.condition.register_count > 0 else 1 }}];
 {%- for region_op in arm.condition.ops %}
-{{ scalar_op(region_op, "fc_cond", error_status, observation_mode=observation_mode) }}
+{{ scalar_op(region_op, "fc_cond", error_status, observation_mode=observation_mode, device=device) }}
 {%- endfor %}
             }
             if (fc_cond[0] != 0.0) {
                 double r[{{ arm.result.register_count if arm.result.register_count > 0 else 1 }}];
                 fc_taken = 1;
 {%- for region_op in arm.result.ops %}
-{{ scalar_op(region_op, "fc_out", error_status, observation_mode=observation_mode) }}
+{{ scalar_op(region_op, "fc_out", error_status, observation_mode=observation_mode, device=device) }}
 {%- endfor %}
             }
         }
@@ -303,7 +316,7 @@
         if (!fc_taken) {
             double r[{{ op.fallback.register_count if op.fallback.register_count > 0 else 1 }}];
 {%- for region_op in op.fallback.ops %}
-{{ scalar_op(region_op, "fc_out", error_status, observation_mode=observation_mode) }}
+{{ scalar_op(region_op, "fc_out", error_status, observation_mode=observation_mode, device=device) }}
 {%- endfor %}
         }
         for (size_t k=0; k<{{ op.result_count }}; ++k) fc_outer[{{ op.dst }}+k] = fc_out[k];
@@ -373,7 +386,7 @@
                 double fold_predicate[1];
                 double r[{{ [op.continuation.register_count, 1]|max }}]; (void)r;
 {%- for continuation_op in op.continuation.ops %}
-{{ scalar_op(continuation_op, "fold_predicate", error_status, observation_mode=observation_mode) }}
+{{ scalar_op(continuation_op, "fold_predicate", error_status, observation_mode=observation_mode, device=device) }}
 {%- endfor %}
                 fold_done = fold_predicate[0] == 0.0;
             }
@@ -383,7 +396,7 @@
             {
                 double r[{{ [op.update.register_count, 1]|max }}]; (void)r;
 {%- for update_op in op.update.ops %}
-{{ scalar_op(update_op, "fold_next", error_status, observation_mode=observation_mode) }}
+{{ scalar_op(update_op, "fold_next", error_status, observation_mode=observation_mode, device=device) }}
 {%- endfor %}
             }
             {%- if op.carried_count > 0 %}
@@ -925,8 +938,8 @@ RMC_UNUSED static inline bool rmc_own_text(ModelInstance* dst, const ModelInstan
     of largest magnitude; a zero or non-finite pivot, or a non-finite
     solution, refuses the evaluation. `work` holds the n x (n + 1) augmented
     matrix. -#}
-{%- macro linear_solve_kernel() %}
-static inline bool rmc_linear_solve_component(const double* matrix, const double* rhs, size_t n, size_t component, double* work, double* value) {
+{%- macro linear_solve_kernel(device=false) %}
+{{ device_qualifier(device) }} inline bool rmc_linear_solve_component(const double* matrix, const double* rhs, size_t n, size_t component, double* work, double* value) {
     size_t stride = n + 1;
     for (size_t row = 0; row < n; ++row) {
         for (size_t col = 0; col < n; ++col) work[row * stride + col] = matrix[row * n + col];
@@ -1105,12 +1118,12 @@ static {{ prefix }}Status {{ cs_integrator(fmi) }}(ModelInstance* m, double star
 
 {#- The one partial-pivot LU arithmetic owner, shared by primal projection
     and total sensitivities. No ModelInstance workspace or fallback policy. -#}
-{%- macro projection_lu_kernel() %}
+{%- macro projection_lu_kernel(device=false) %}
 /* nalgebra LU with partial pivoting on the row-major n x n matrix `a`. An
    exactly zero multiplier or pivot-row entry contributes nothing to a finite
    update, so those products are skipped; the arithmetic that remains is the
    dense factorization's, in its order. */
-static void rmc_lu(double* a, size_t n, size_t* ipiv, size_t* columns) {
+{{ device_qualifier(device) }} void rmc_lu(double* a, size_t n, size_t* ipiv, size_t* columns) {
     for (size_t i = 0; i < n; ++i) {
         size_t piv = i; double best = fabs(a[i * n + i]);
         for (size_t row = i + 1; row < n; ++row) { double value = fabs(a[row * n + i]); if (value > best) { best = value; piv = row; } }
@@ -1140,7 +1153,7 @@ static void rmc_lu(double* a, size_t n, size_t* ipiv, size_t* columns) {
     }
 }
 /* nalgebra LU::solve_mut */
-static bool rmc_lu_solve(const double* lu, size_t n, const size_t* ipiv, double* b) {
+{{ device_qualifier(device) }} bool rmc_lu_solve(const double* lu, size_t n, const size_t* ipiv, double* b) {
     for (size_t i = 0; i < n; ++i) if (ipiv[i] != i) { double tmp = b[i]; b[i] = b[ipiv[i]]; b[ipiv[i]] = tmp; }
     for (size_t i = 0; i < n; ++i) { double coeff = b[i]; for (size_t row = i + 1; row < n; ++row) b[row] += -coeff * lu[row * n + i]; }
     for (size_t i = n; i-- > 0;) {

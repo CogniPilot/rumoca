@@ -15,6 +15,8 @@ mod codegen_example_regression;
 mod fmi_ls_dae_contract;
 #[cfg(feature = "fmu-packaging")]
 mod fmi_ls_wasm_runtime;
+#[cfg(feature = "fmu-packaging")]
+mod me_projection_device;
 mod modelica_interchange_runtime;
 mod template_runtime_policy;
 mod template_target_ci;

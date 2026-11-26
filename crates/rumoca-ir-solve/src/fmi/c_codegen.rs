@@ -96,7 +96,7 @@ impl FmiCCodegenView {
         deployment: super::FmiDeploymentView,
     ) -> Result<Self, FmiCCodegenError> {
         let (view, deployment) = deployment.into_parts();
-        let (update_order, update_levels) = admit_kernel(&view.model, &view.metadata)?;
+        let (update_order, update_levels) = admit_kernel(&view.model, Some(&view.metadata))?;
         let binding_execution = super::binding_execution::BindingExecution::checked(
             view.model.problem.initialization.update_rhs(),
             view.model.problem.initialization.update_targets(),
@@ -125,7 +125,7 @@ impl TryFrom<FmiEventFreeCodegenView> for FmiCCodegenView {
         let deployment = super::FmiDeploymentCapabilities::default()
             .admit(&value.metadata)
             .map_err(|error| FmiCCodegenError(error.0))?;
-        let (update_order, update_levels) = admit_kernel(&value.model, &value.metadata)?;
+        let (update_order, update_levels) = admit_kernel(&value.model, Some(&value.metadata))?;
         let binding_execution = super::binding_execution::BindingExecution::checked(
             value.model.problem.initialization.update_rhs(),
             value.model.problem.initialization.update_targets(),
@@ -147,13 +147,18 @@ impl TryFrom<FmiEventFreeCodegenView> for FmiCCodegenView {
     }
 }
 
-fn admit_kernel(
+/// What the C kernel requires of a lowered model, and the dependency order
+/// and levels of its parameter bindings. `metadata` is the FMI component's;
+/// a kernel compiled without a component has none to check.
+pub(super) fn admit_kernel(
     model: &crate::SolveModel,
-    metadata: &FmiMetadata,
+    metadata: Option<&FmiMetadata>,
 ) -> Result<(Vec<usize>, usize), FmiCCodegenError> {
     super::initial_mode::validate(model).map_err(FmiCCodegenError)?;
     validate_initial_values(model)?;
-    validate_variables(metadata)?;
+    if let Some(metadata) = metadata {
+        validate_variables(metadata)?;
+    }
     refuse_recursive_groups(&model.pure_calls)?;
     typed_capabilities::admit(&model.pure_calls)?;
     super::parameter_updates::validate(&model.problem, &model.pure_calls).map_err(FmiCCodegenError)

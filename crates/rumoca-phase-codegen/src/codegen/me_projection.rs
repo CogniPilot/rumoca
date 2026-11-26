@@ -16,6 +16,7 @@ mod chart;
 mod initial;
 #[cfg(test)]
 mod lane_render_tests;
+mod source;
 mod table;
 #[cfg(test)]
 mod tests;
@@ -31,6 +32,7 @@ use rumoca_ir_solve as solve;
 use crate::errors::CodegenError;
 use assign::AssignmentCatalog;
 use block::{BlockRecord, BlockSources, block_record};
+pub(crate) use source::{AdmittedSolveModel, RefreshSource};
 use table::ProgramTable;
 
 /// The largest projection program, in operations, that the C kernel leaves
@@ -318,9 +320,7 @@ fn float_literal(value: f64) -> String {
 /// The runtime settles the bindings with at most this many simultaneous sweeps
 /// and fails beyond it (`eval_and_apply_update_rows`); a component that would
 /// succeed where the linked kernel fails is refused instead.
-fn require_settleable_bindings(
-    component: &solve::fmi::FmiCCodegenView,
-) -> Result<(), CodegenError> {
+fn require_settleable_bindings(component: &impl RefreshSource) -> Result<(), CodegenError> {
     let levels = component.parameter_binding_levels();
     if levels < policy::ALGEBRAIC_REFRESH_MAX_ITERS {
         return Ok(());
@@ -444,7 +444,7 @@ fn chart_value(
 
 /// The switching descriptors of every chart, in chart order.
 fn chart_records(
-    component: &solve::fmi::FmiCCodegenView,
+    component: &impl RefreshSource,
     systems: &[chart::ChartSystem<'_>],
     (implicits, seed_len): (&[PreparedScalarProgramBlock], usize),
     table: &mut ProgramTable,
@@ -476,10 +476,9 @@ fn chart_records(
     Ok(records)
 }
 
-/// The complete ME refresh view of one checked FMI C component.
-pub(super) fn me_refresh_value(
-    component: &solve::fmi::FmiCCodegenView,
-) -> Result<Value, CodegenError> {
+/// The complete ME refresh view of one checked model: an FMI C component, or
+/// a lowered model whose target builds the kernel for a device.
+pub(super) fn me_refresh_value(component: &impl RefreshSource) -> Result<Value, CodegenError> {
     let problem = component.problem();
     let artifacts = component.artifacts();
     require_settleable_bindings(component)?;
@@ -576,7 +575,7 @@ pub(super) fn me_refresh_value(
         lane_max => lane_max,
         variable_scales => variable_scales,
         policy => policy_value(),
-        seed_rule => importer_seed_rule(problem),
+        seed_rule => seed_rule(component),
     })
 }
 
@@ -663,15 +662,17 @@ fn block_folds(records: &[BlockRecord]) -> Value {
     minijinja::context! { pool => pool, offsets => offsets }
 }
 
-/// The warm-start rule the generated C translates: its component is
-/// importer-driven (SPEC_0044 ME-PROJ-005).
-fn importer_seed_rule(problem: &solve::SolveProblem) -> String {
+/// The warm-start rule the generated C translates: the rule the refresh
+/// owners state for whoever orders the source's evaluations (SPEC_0044
+/// ME-PROJ-005).
+fn seed_rule(source: &impl RefreshSource) -> String {
     format!(
         "{:?}",
-        problem
+        source
+            .problem()
             .continuous
             .refresh_owners
-            .seed_rule(solve::RefreshExecutor::ImporterDriven)
+            .seed_rule(source.executor())
     )
 }
 
