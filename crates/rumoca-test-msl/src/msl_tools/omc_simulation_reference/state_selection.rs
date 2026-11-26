@@ -387,6 +387,7 @@ mod tests {
             initial_condition: Default::default(),
             worst_variables: Vec::new(),
             undefined_phasor_channels: Vec::new(),
+            unbounded_channels: Vec::new(),
         }
     }
 }

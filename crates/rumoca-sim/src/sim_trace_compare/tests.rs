@@ -865,6 +865,7 @@ fn agreement_band_thresholds_classify_model_rollups_as_expected() {
         initial_condition: InitialConditionStats::default(),
         worst_variables: Vec::new(),
         undefined_phasor_channels: Vec::new(),
+        unbounded_channels: Vec::new(),
     };
     assert_eq!(
         classify_trace_metric(
@@ -896,6 +897,7 @@ fn agreement_band_thresholds_classify_model_rollups_as_expected() {
         initial_condition: InitialConditionStats::default(),
         worst_variables: Vec::new(),
         undefined_phasor_channels: Vec::new(),
+        unbounded_channels: Vec::new(),
     };
     assert_eq!(
         classify_trace_metric(
@@ -927,6 +929,7 @@ fn agreement_band_thresholds_classify_model_rollups_as_expected() {
         initial_condition: InitialConditionStats::default(),
         worst_variables: Vec::new(),
         undefined_phasor_channels: Vec::new(),
+        unbounded_channels: Vec::new(),
     };
     assert_eq!(
         classify_trace_metric(
@@ -1095,6 +1098,7 @@ fn channel_distribution_metric(
         initial_condition: InitialConditionStats::default(),
         worst_variables: Vec::new(),
         undefined_phasor_channels: Vec::new(),
+        unbounded_channels: Vec::new(),
     }
 }
 

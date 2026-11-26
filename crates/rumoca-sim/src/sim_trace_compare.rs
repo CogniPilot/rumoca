@@ -379,7 +379,19 @@ pub struct ModelDeviationMetric {
     /// verdict (see the `phasor` module).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub undefined_phasor_channels: Vec<String>,
+    /// Common channels whose every sample is at or above
+    /// [`UNBOUNDED_MAGNITUDE`] in both traces: each tool's `inf` constant
+    /// (MSL's ModelicaServices 1.8e308, OpenModelica's 1e60), which is
+    /// unbounded on both sides and has no finite difference to score. They
+    /// are recorded here and kept out of the channel bands.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unbounded_channels: Vec<String>,
 }
+
+/// The magnitude at and above which a sample stands for an unbounded value:
+/// OpenModelica's ModelicaServices `Machine.inf` (1e60), the smaller of the
+/// two `inf` constants the comparator meets.
+pub const UNBOUNDED_MAGNITUDE: f64 = 1e60;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -453,7 +465,11 @@ pub fn compare_model_traces(
     validate_trace("Rumoca", rumoca)?;
     validate_trace("OMC", omc)?;
 
-    let (mut channels, undefined_phasor_channels) = compare_common_channels(rumoca, omc)?;
+    let CommonChannels {
+        mut channels,
+        undefined_phasor_channels,
+        unbounded_channels,
+    } = compare_common_channels(rumoca, omc)?;
     channels.sort_by(|a, b| {
         b.bounded_normalized_l1_error
             .partial_cmp(&a.bounded_normalized_l1_error)
@@ -513,6 +529,7 @@ pub fn compare_model_traces(
         initial_condition,
         worst_variables,
         undefined_phasor_channels,
+        unbounded_channels,
     })
 }
 
@@ -526,11 +543,14 @@ pub fn compare_model_traces(
 fn compare_common_channels(
     rumoca: &SimTrace,
     omc: &SimTrace,
-) -> Result<(Vec<ChannelDeviationMetric>, Vec<String>), TraceCompareError> {
+) -> Result<CommonChannels, TraceCompareError> {
     let pair = TracePair::new(rumoca, omc)?;
-    let mut channels = pair
+    let (unbounded_channels, bounded): (Vec<&String>, Vec<&String>) = pair
         .common
         .iter()
+        .partition(|name| pair.is_unbounded_in_both(name));
+    let mut channels = bounded
+        .into_iter()
         .filter_map(|name| Some((name.clone(), pair.compare(name, None)?)))
         .collect::<BTreeMap<_, _>>();
     let mut undefined_phasor_channels = Vec::new();
@@ -553,7 +573,19 @@ fn compare_common_channels(
         return Err(TraceCompareError::NoComparableSamples);
     }
     undefined_phasor_channels.sort();
-    Ok((channels.into_values().collect(), undefined_phasor_channels))
+    Ok(CommonChannels {
+        channels: channels.into_values().collect(),
+        undefined_phasor_channels,
+        unbounded_channels: unbounded_channels.into_iter().cloned().collect(),
+    })
+}
+
+/// What comparing the common channels of two traces gives: the scored
+/// channels, and the common channels left out of the bands with the reason.
+struct CommonChannels {
+    channels: Vec<ChannelDeviationMetric>,
+    undefined_phasor_channels: Vec<String>,
+    unbounded_channels: Vec<String>,
 }
 
 /// The two traces' channels, keyed by name, with what comparing one of their
@@ -609,6 +641,30 @@ impl<'a> TracePair<'a> {
             ChannelSeries::new(&self.rumoca.times, self.rumoca_series.get(name)?),
             ChannelSeries::new(&self.omc.times, self.omc_series.get(name)?),
         ))
+    }
+
+    /// Whether every sample of the channel, in both traces, is at or above
+    /// [`UNBOUNDED_MAGNITUDE`]: each tool's `inf` constant, with no finite
+    /// difference to score. A channel with no sample on either side is not,
+    /// and neither is one unbounded in opposite directions (`+inf` against
+    /// `-inf`), which is a disagreement and is scored.
+    fn is_unbounded_in_both(&self, name: &str) -> bool {
+        // The direction of a channel all of whose samples are unbounded the
+        // same way.
+        let unbounded_sign = |values: Option<&&[Option<f64>]>| -> Option<bool> {
+            let mut present = values?.iter().flatten().peekable();
+            let positive = **present.peek()? > 0.0;
+            present
+                .all(|value| value.abs() >= UNBOUNDED_MAGNITUDE && (*value > 0.0) == positive)
+                .then_some(positive)
+        };
+        match (
+            unbounded_sign(self.rumoca_series.get(name)),
+            unbounded_sign(self.omc_series.get(name)),
+        ) {
+            (Some(rumoca), Some(omc)) => rumoca == omc,
+            _ => false,
+        }
     }
 
     fn is_discrete(&self, name: &str) -> bool {
@@ -1211,8 +1267,8 @@ fn compare_single_instant(
     }
     let scale = reference_scale(&[omc_value], rule.use_step_hold, rule.array_group_floor);
     let normalization_scale = scale.normalization_scale;
-    let normalized_l1_error = error / normalization_scale;
-    let bounded_normalized_l1_error = normalized_l1_error / (1.0 + normalized_l1_error);
+    let normalized_l1_error = saturate(error / normalization_scale);
+    let bounded_normalized_l1_error = bounded_error(normalized_l1_error);
     let shape = classify_channel_deviation_shape(
         &[(instant, rumoca_value, omc_value)],
         ChannelErrorSummary {
