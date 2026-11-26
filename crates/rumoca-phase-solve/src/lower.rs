@@ -346,8 +346,72 @@ struct ContinuousContext<'borrow, 'dae> {
 /// The two row streams a continuous lowering fills.
 #[derive(Default)]
 struct ContinuousOutput {
-    residual: ScalarRows,
+    residual: ContinuousResidualRows,
     derivative: DerivativeRows,
+}
+
+/// Continuous residual rows in source order. Structured algebraic families
+/// retain a tensor node when their scalar programs have one proven affine
+/// shape; scalar rows on either side are flushed without changing row
+/// ordinals.
+#[derive(Default)]
+struct ContinuousResidualRows {
+    nodes: Vec<solve::ComputeNode>,
+    scalars: ScalarRows,
+}
+
+impl ContinuousResidualRows {
+    fn push_component(
+        &mut self,
+        program: Vec<solve::LinearOp>,
+        span: Span,
+        occurrence: Option<rumoca_core::ComponentOccurrence>,
+        output: usize,
+    ) {
+        self.scalars
+            .push_component(program, span, occurrence, output);
+    }
+
+    fn push_outputs(
+        &mut self,
+        program: Vec<solve::LinearOp>,
+        span: Span,
+        outputs: impl IntoIterator<Item = usize>,
+    ) {
+        self.scalars.push_outputs(program, span, outputs);
+    }
+
+    fn push_output_range(
+        &mut self,
+        program: Vec<solve::LinearOp>,
+        span: Span,
+        outputs: std::ops::Range<usize>,
+    ) {
+        self.scalars.push_output_range(program, span, outputs);
+    }
+
+    fn tag_last(&mut self, occurrence: Option<rumoca_core::ComponentOccurrence>) {
+        self.scalars.tag_last(occurrence);
+    }
+
+    fn push_tensor(&mut self, node: solve::ComputeNode) -> Result<(), LowerError> {
+        self.flush()?;
+        self.nodes.push(node);
+        Ok(())
+    }
+
+    fn flush(&mut self) -> Result<(), LowerError> {
+        let scalars = std::mem::take(&mut self.scalars);
+        if scalars.len() > 0 {
+            self.nodes.extend(scalars.into_compute_block()?.nodes);
+        }
+        Ok(())
+    }
+
+    fn into_compute_block(mut self) -> Result<solve::ComputeBlock, LowerError> {
+        self.flush()?;
+        Ok(solve::ComputeBlock { nodes: self.nodes })
+    }
 }
 
 /// Give an existing compact tensor derivative owner precedence over the
@@ -594,13 +658,19 @@ fn lower_continuous<'dae>(
                     ));
                 }
                 let end = owner_rows.end;
-                row = if algebraic_family::lower_algebraic_family_call(
+                let compact = algebraic_family::lower_algebraic_family_map(
+                    context,
+                    &mut output,
+                    row,
+                    family,
+                )? || algebraic_family::lower_algebraic_family_call(
                     context,
                     &mut output,
                     row,
                     id,
                     family,
-                )? {
+                )?;
+                row = if compact {
                     end
                 } else {
                     lower_continuous_family(context, &mut output, row, family)?

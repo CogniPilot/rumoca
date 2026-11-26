@@ -7,12 +7,10 @@ fn rumoca_evaluate(p: array<f32, {{ p_count }}>, time: f32) -> array<f32, {{ y_c
         var next: array<f32, {{ stage.block.output_count }}>;
         {%- for family in stage.block.native_families %}
         for (var r = 0u; r < {{ family.count }}u; r++) {
-            next[{{ render_solve_native_family_output_index_wgsl(family) }}] = {{ render_solve_native_family_wgsl(family, cfg) }};
+            {{ render_solve_native_family_wgsl_statements(family, "next[" ~ render_solve_native_family_output_index_wgsl(family) ~ "]", cfg) }}
         }
         {%- endfor %}
-        {%- for row in stage.block.scalar_fallback_rows %}
-        next[{{ row.output_index }}u] = {{ render_solve_row_output_wgsl(stage.block.fallback_programs[row.row_index], row.output_ordinal, cfg) }};
-        {%- endfor %}
+        {{ render_solve_fallback_wgsl_statements(stage.block.fallback_programs, stage.block.scalar_fallback_rows, cfg) }}
         for (var i = 0u; i < {{ stage.block.output_count }}u; i++) {
             y[{{ stage.start }}u + i] = next[i];
         }

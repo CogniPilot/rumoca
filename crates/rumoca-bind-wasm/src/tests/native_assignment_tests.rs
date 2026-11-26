@@ -264,6 +264,116 @@ fn gpu_value_function_uses_the_native_layout_and_validates_as_wgsl() {
 }
 
 #[test]
+fn gpu_value_function_keeps_parameterized_dense_layer_compact() {
+    let _lock = session_test_guard();
+    let source = r#"
+model DenseLayer
+  input Real x[16];
+  output Real y[8];
+  parameter Real weight[8, 16] = fill(0.125, 8, 16);
+equation
+  for row in 1:8 loop
+    y[row] = sum(weight[row, column] * x[column] for column in 1:16);
+  end for;
+end DenseLayer;
+"#;
+    let gpu: serde_json::Value =
+        serde_json::from_str(&crate::prepare_gpu_value_function(source, "DenseLayer").unwrap())
+            .unwrap();
+    let wgsl = gpu["wgsl"].as_str().unwrap();
+    assert!(
+        wgsl.len() < 8_000,
+        "dense layer WGSL has {} bytes",
+        wgsl.len()
+    );
+    assert!(wgsl.contains("for (var r = 0u; r < 8u; r++)"));
+    let module = naga::front::wgsl::parse_str(wgsl).expect("valid compact dense-layer WGSL");
+    naga::valid::Validator::new(
+        naga::valid::ValidationFlags::all(),
+        naga::valid::Capabilities::empty(),
+    )
+    .validate(&module)
+    .expect("semantically valid compact dense-layer shader");
+}
+
+#[test]
+fn gpu_value_function_keeps_parameterized_convolution_compact() {
+    let _lock = session_test_guard();
+    let source = r#"
+model Convolution
+  input Real image[6, 6];
+  output Real feature[2, 4, 4];
+  parameter Real weight[2, 3, 3] = fill(0.125, 2, 3, 3);
+  parameter Real bias[2] = fill(0.25, 2);
+equation
+  for channel in 1:2 loop
+    for row in 1:4 loop
+      for column in 1:4 loop
+        feature[channel, row, column] = max(0, bias[channel] + sum(
+          image[row + kernelRow - 1, column + kernelColumn - 1]
+            * weight[channel, kernelRow, kernelColumn]
+          for kernelRow in 1:3, kernelColumn in 1:3));
+      end for;
+    end for;
+  end for;
+end Convolution;
+"#;
+    let gpu: serde_json::Value =
+        serde_json::from_str(&crate::prepare_gpu_value_function(source, "Convolution").unwrap())
+            .unwrap();
+    let wgsl = gpu["wgsl"].as_str().unwrap();
+    assert!(
+        wgsl.len() < 12_000,
+        "convolution WGSL has {} bytes",
+        wgsl.len()
+    );
+    assert!(wgsl.contains("for (var r = 0u; r < 32u; r++)"));
+    let module = naga::front::wgsl::parse_str(wgsl).expect("valid compact convolution WGSL");
+    naga::valid::Validator::new(
+        naga::valid::ValidationFlags::all(),
+        naga::valid::Capabilities::empty(),
+    )
+    .validate(&module)
+    .expect("semantically valid compact convolution shader");
+}
+
+#[test]
+fn gpu_value_function_lowers_conditional_padding_to_valid_imperative_wgsl() {
+    let _lock = session_test_guard();
+    let source = r#"
+model ConditionalPadding
+  input Real image[4];
+  output Real padded[4, 4];
+equation
+  for y in 1:4 loop
+    for x in 1:4 loop
+      padded[y, x] = if x == 1 or x == 4 or y == 1 or y == 4 then 0
+        else image[(y - 2) * 2 + x - 1];
+    end for;
+  end for;
+end ConditionalPadding;
+"#;
+    let gpu: serde_json::Value = serde_json::from_str(
+        &crate::prepare_gpu_value_function(source, "ConditionalPadding").unwrap(),
+    )
+    .unwrap();
+    let wgsl = gpu["wgsl"].as_str().unwrap();
+    assert!(
+        wgsl.len() < 20_000,
+        "conditional padding WGSL has {} bytes",
+        wgsl.len()
+    );
+    assert!(wgsl.contains("let rumoca_v"));
+    let module = naga::front::wgsl::parse_str(wgsl).expect("valid imperative padding WGSL");
+    naga::valid::Validator::new(
+        naga::valid::ValidationFlags::all(),
+        naga::valid::Capabilities::empty(),
+    )
+    .validate(&module)
+    .expect("semantically valid imperative padding shader");
+}
+
+#[test]
 fn gpu_value_function_requires_an_explicit_stateless_real_schedule() {
     let _lock = session_test_guard();
     for (source, name) in [
