@@ -2,12 +2,11 @@
 //! shared-value construction keys its values by and its checker evaluates
 //! both sides over.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 
 use super::super::*;
-use super::registers::{
-    RegisterTable, Role, read_registers, records_operand_offsets, renamable, visit_registers,
-};
+use super::registers::RegisterTable;
+use super::shape::{ShapeKey, value_shape};
 
 /// The id of one hash-consed symbolic value.
 pub(super) type Term = usize;
@@ -39,7 +38,7 @@ pub(super) struct ValueKey {
 pub(super) struct Terms {
     slots: HashMap<usize, Term>,
     operations: HashMap<OperationKey, ValueKey>,
-    shapes: BTreeMap<String, usize>,
+    shapes: HashMap<ShapeKey, usize>,
     /// The first term no value or slot owns yet.
     next: Term,
 }
@@ -57,14 +56,14 @@ impl Terms {
     /// outputs.
     pub(super) fn key(
         &mut self,
-        shape: &str,
+        shape: &ShapeKey,
         operands: Vec<(usize, Term)>,
         width: usize,
     ) -> ValueKey {
         let next = self.shapes.len();
         let shape = match self.shapes.get(shape) {
             Some(&id) => id,
-            None => *self.shapes.entry(shape.to_string()).or_insert(next),
+            None => *self.shapes.entry(shape.clone()).or_insert(next),
         };
         let next = ValueKey {
             id: self.operations.len(),
@@ -87,66 +86,6 @@ impl Terms {
     pub(super) fn value(key: &ValueKey, output: usize) -> Option<Term> {
         (output < key.width).then_some(key.base + output)
     }
-}
-
-/// The register-independent form of one value operation, derived once: its
-/// shape with register fields normalized, and each operand as (field or
-/// register offset, register). An operation whose sources are single
-/// registers keys each operand in field order; any other keys every register
-/// it reads by its offset from the lowest one, so a uniform shift of its
-/// registers keeps the key.
-#[derive(Clone, Debug)]
-pub(super) struct ValueShape {
-    pub(super) shape: String,
-    pub(super) operands: Vec<(usize, Reg)>,
-    /// Every register the operation reads, ascending.
-    pub(super) reads: Vec<Reg>,
-    /// Whether a source is a register range, which a segment gathers into
-    /// the operation's own layout.
-    pub(super) ranged: bool,
-}
-
-/// The shape of `op`; `None` when `op` cannot be validated at the top level.
-pub(super) fn value_shape(op: &LinearOp) -> Option<ValueShape> {
-    let reads = read_registers(op)?;
-    if !renamable(op) {
-        let lowest = reads.first().copied().unwrap_or(0);
-        let operands = reads.iter().map(|&r| ((r - lowest) as usize, r)).collect();
-        return Some(ValueShape {
-            shape: format!("{op:?}"),
-            operands,
-            reads,
-            ranged: true,
-        });
-    }
-    let ranged = records_operand_offsets(op);
-    let mut scalar = Vec::new();
-    let mut probe = op.clone();
-    visit_registers(&mut probe, &mut |role, register| {
-        if role == Role::Scalar {
-            scalar.push(*register);
-        }
-    });
-    let lowest = reads.first().copied().unwrap_or(0);
-    let mut normalized = op.clone();
-    visit_registers(&mut normalized, &mut |role, register| {
-        *register = match role {
-            Role::Destination => 0,
-            Role::Scalar if !ranged => 0,
-            _ => *register - lowest,
-        };
-    });
-    let operands = if ranged {
-        reads.iter().map(|&r| ((r - lowest) as usize, r)).collect()
-    } else {
-        scalar.into_iter().enumerate().collect()
-    };
-    Some(ValueShape {
-        shape: format!("{normalized:?}"),
-        operands,
-        reads,
-        ranged,
-    })
 }
 
 /// Symbolic evaluation of an ordered program sequence: the current term of
@@ -254,7 +193,7 @@ impl SymbolicSlots {
             }
             for (found, selected) in result.iter_mut().zip(selected) {
                 let key = terms.key(
-                    "checked conditional result",
+                    &ShapeKey::Conditional,
                     vec![(0, condition[0]), (1, selected), (2, *found)],
                     1,
                 );
