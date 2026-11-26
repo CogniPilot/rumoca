@@ -56,6 +56,7 @@ pub(crate) fn component() -> solve::fmi::FmiComponent {
         ..Default::default()
     };
     model.problem.continuous.implicit_rhs = assignment_source(span);
+    model.problem.continuous.residual = model.problem.continuous.implicit_rhs.clone();
     let blocks = solve::ProjectionBlocks::from_stages(vec![
         solve::ProjectionStage::SingletonDeclarationRun {
             source: solve::RefreshScalarProgramSource::checked(0, 0).unwrap(),

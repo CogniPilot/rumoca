@@ -46,6 +46,7 @@ mod affine_coefficient_from_a_function;
 mod affine_outside_coefficient_reuse;
 mod affine_switching_circuit;
 mod algebraic_family_compaction;
+mod algebraic_family_map;
 mod algebraic_family_paths;
 mod algebraic_observation_accuracy;
 mod algorithm_carried_loops;

@@ -338,7 +338,10 @@ pub(crate) fn any_stage_operation(
     found.0
 }
 
-/// The canonical Solve owner of one issued stage.
+/// The canonical Solve owner of one issued stage. `continuous_node` is a node
+/// index of the continuous residual; the compact residual and its refresh
+/// source hold the same rows in every node, so the index names the same rows
+/// in both.
 pub(crate) fn stage_source(
     stage: &rumoca_ir_solve::NativeRefreshAssignmentStage,
 ) -> serde_json::Value {

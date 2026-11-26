@@ -95,6 +95,7 @@ Solve keeps compact Map and AffineStencil tensor nodes; scalar rows are derived 
 |---|---|---|
 | A single-body continuous algebraic family matched only to algebraic rows retains one `Map` when every domain point proves the same complete scalar program with affine parameter, input, and constant strides | Solve lowering | A regular image kernel or dense layer reaches native backends as a bounded tensor loop rather than extent-sized scalar code |
 | The retained map writes the family's consecutive residual rows and uses the ordinary scalar compiler for its base program | Solve lowering | Compact execution and scalar semantics share one arithmetic owner |
+| A family retained as a `Map` is held twice, node for node: the `Map` in `continuous.residual`, and the same rows as scalar programs (the family's form without the map) in `continuous.implicit_rhs`. Lowering refuses a pair whose nodes do not hold the same rows, and a family with one domain point is not retained | Solve lowering | The exact refresh owners issue an assignment from a row's scalar program, and a row inside a `Map` has none; native backends read the compact form |
 
 ### 5. Ownership Boundaries
 

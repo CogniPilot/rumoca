@@ -173,6 +173,7 @@ fn build(
         .into();
     }
     model.problem.continuous.implicit_rhs = assignment_source(span, parameters);
+    model.problem.continuous.residual = model.problem.continuous.implicit_rhs.clone();
     if discrete_real {
         model.problem.discrete = stepped_system(span);
         model.problem.solve_layout.pre_param_bindings = vec![solve::PreParamBinding {

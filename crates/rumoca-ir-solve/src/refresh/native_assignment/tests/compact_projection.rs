@@ -175,6 +175,7 @@ fn compact_refresh_recipe_owns_complete_source_and_refuses_scalar_dispatch() {
         ..crate::SolveProblem::default()
     };
     problem.continuous.implicit_rhs = source;
+    problem.continuous.residual = problem.continuous.implicit_rhs.clone();
     problem.continuous.implicit_row_targets = ImplicitRowTargets::from_projection(&stages);
     problem.continuous.algebraic_projection_plan.blocks = stages;
     let owners = crate::ContinuousRefreshOwners::try_compact_for_problem(&problem)
@@ -276,6 +277,7 @@ fn a_compact_refresh_recipe_replays_inside_its_solve_problem() {
         ..crate::SolveProblem::default()
     };
     problem.continuous.implicit_rhs = source;
+    problem.continuous.residual = problem.continuous.implicit_rhs.clone();
     problem.continuous.implicit_row_targets = ImplicitRowTargets::from_projection(&stages);
     problem.continuous.algebraic_projection_plan.blocks = stages;
     problem.continuous.refresh_owners =
@@ -356,6 +358,7 @@ fn compact_refresh_refuses_a_fused_prefix_that_reads_another_owned_target() {
         ..crate::SolveProblem::default()
     };
     problem.continuous.implicit_rhs = source;
+    problem.continuous.residual = problem.continuous.implicit_rhs.clone();
     problem.continuous.implicit_row_targets = ImplicitRowTargets::from_projection(&stages);
     problem.continuous.algebraic_projection_plan.blocks = stages;
     let owners = crate::ContinuousRefreshOwners::try_compact_for_problem(&problem)
@@ -433,6 +436,7 @@ fn compact_source_owner_preserves_a_real_nonlinear_coupled_block() {
         ..crate::SolveProblem::default()
     };
     problem.continuous.implicit_rhs = source;
+    problem.continuous.residual = problem.continuous.implicit_rhs.clone();
     problem.continuous.implicit_row_targets = ImplicitRowTargets::from_projection(&stages);
     problem.continuous.algebraic_projection_plan.blocks = stages;
     let owners = crate::ContinuousRefreshOwners::try_compact_for_problem(&problem)

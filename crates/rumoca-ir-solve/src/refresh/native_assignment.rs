@@ -39,7 +39,10 @@ pub use typed_inputs::{
 /// The canonical Solve owner a native stage evaluates.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NativeStageSource {
-    /// A node of the continuous implicit residual block.
+    /// A node of the continuous residual. The compact residual and its
+    /// refresh source (`implicit_rhs`) hold the same rows in every node, so
+    /// the index names the same rows in both; the native schedule reads the
+    /// compact one, where a family kept as a `Map` is one node.
     Continuous { node: usize },
     /// A canonical discrete program, identified by its first derived-output row.
     Discrete { row: usize },
@@ -239,8 +242,10 @@ fn derive_in_context(
     let work_layout = problem.layout.with_private_y(derived.outputs.len()).ok_or(
         NativeRefreshAssignmentRefusal("native work layout overflows"),
     )?;
+    // The compact residual: a family kept as one `Map` is one bounded loop
+    // here. Its node indices agree with the scalar refresh source.
     let source = rebinding::rebind_block(
-        &problem.continuous.implicit_rhs,
+        &problem.continuous.residual,
         &derived.rebinding,
         problem.layout.p_scalars(),
     )?;

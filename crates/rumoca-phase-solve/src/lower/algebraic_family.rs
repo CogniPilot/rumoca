@@ -33,6 +33,11 @@ pub(super) fn lower_algebraic_family_map<'dae>(
             family.provenance().span(),
         )
     })?;
+    if points.len() < 2 {
+        // One domain point is one scalar equation, not a loop to keep
+        // compact: it stays a scalar row.
+        return Ok(false);
+    }
     let span = family.provenance().span();
     let body = family
         .bodies()

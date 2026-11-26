@@ -194,6 +194,7 @@ fn compact_component() -> solve::fmi::FmiComponent {
         ..Default::default()
     };
     model.problem.continuous.implicit_rhs = source;
+    model.problem.continuous.residual = model.problem.continuous.implicit_rhs.clone();
     let stages = solve::ProjectionBlocks::from_stages(vec![
         solve::ProjectionStage::SingletonDeclarationRun {
             source: solve::RefreshScalarProgramSource::checked(0, 0).unwrap(),
