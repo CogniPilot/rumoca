@@ -1,6 +1,11 @@
 //! Execute generated C with an incoming array that is also a read-only capture.
 use super::*;
 
+/// The array the fold body edits: the read-only capture, or the carried one.
+fn edited_array<T>(use_capture: bool, original: T, old: T) -> T {
+    if use_capture { original } else { old }
+}
+
 fn scatter(use_capture: bool, last: i64) -> solve::SolvePureCallTable {
     let ty =
         solve::SolveValueType::tensor(solve::SolveScalarType::real(profile()), vec![4]).unwrap();
@@ -34,7 +39,7 @@ fn scatter(use_capture: bool, last: i64) -> solve::SolvePureCallTable {
                         let x = b.project_element_dynamic(original, &[i], span(7))?;
                         let value = b.unary(solve::SolveUnaryOperator::Negate, x, span(8))?;
                         let updated = b.update_element(
-                            if use_capture { original } else { old },
+                            edited_array(use_capture, original, old),
                             value,
                             &[i],
                             span(9),
