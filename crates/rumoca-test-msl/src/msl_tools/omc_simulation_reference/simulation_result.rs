@@ -205,8 +205,17 @@ fn log_entries(messages: &str) -> Vec<Vec<&str>> {
 
 /// An info-level `LOG_ASSERT` entry that only reports variables outside their
 /// declared `min`/`max`: it states at least one assertion (`cond --> "text"`),
-/// and the text of every assertion it states opens with that notice. A model's
-/// own assertion that merely quotes the phrase is not one.
+/// and the text of every assertion it states opens with that notice, in any of
+/// OMC's three spellings (`min/max`, or `min` or `max` alone for a one-sided
+/// bound), followed by its colon. A model's own assertion that merely quotes
+/// the phrase is not one.
+/// The openings of OMC's declared-bound notices (`min`, `max` and `min/max`).
+const BOUND_NOTICES: [&str; 3] = [
+    "Variable violating min/max constraint:",
+    "Variable violating min constraint:",
+    "Variable violating max constraint:",
+];
+
 fn min_max_notice(entry: &[&str], level: Option<&str>) -> bool {
     let mut assertions = entry
         .iter()
@@ -216,8 +225,9 @@ fn min_max_notice(entry: &[&str], level: Option<&str>) -> bool {
         && level == Some("info")
         && assertions.peek().is_some()
         && assertions.all(|(_, text)| {
-            text.trim_start_matches(|c: char| c.is_whitespace() || c == '\\' || c == '"')
-                .starts_with("Variable violating min/max constraint")
+            let text =
+                text.trim_start_matches(|c: char| c.is_whitespace() || c == '\\' || c == '"');
+            BOUND_NOTICES.iter().any(|notice| text.starts_with(notice))
         })
 }
 
