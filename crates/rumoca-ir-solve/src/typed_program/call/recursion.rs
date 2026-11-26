@@ -236,6 +236,7 @@ pub(super) fn construct_group(
         .zip(coordinates)
     {
         owners.push(SolvePureCallOwner {
+            proof_issuer: Arc::new(()),
             articulated: None,
             quaternion: None,
             input_coordinate,

@@ -13,6 +13,7 @@
 //! and final slot terms.
 
 mod checking;
+mod operation_identity;
 mod registers;
 mod shape;
 mod symbolic;

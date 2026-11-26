@@ -290,6 +290,10 @@ pub struct SolvePureCallDirectionalOwner {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct SolvePureCallOwner {
+    /// Proofs compare calls within one issued owner. Clones share this
+    /// witness and wire replay issues a fresh one.
+    #[serde(skip)]
+    proof_issuer: Arc<()>,
     #[serde(skip)]
     articulated: Option<ArticulatedJointReduction>,
     #[serde(skip)]
@@ -322,6 +326,7 @@ pub struct SolvePureCallOwner {
 /// tangent typed values. Integer and Boolean values remain primal-only.
 #[derive(Debug, Clone, Eq)]
 pub struct SolvePureCallDirectionalSite {
+    proof_issuer: Arc<()>,
     dependencies: Arc<[Box<[SolveCallDependency]>]>,
     execution_reads: Arc<ExecutionReads>,
     projections: Option<Arc<ValueProjections>>,
@@ -345,6 +350,7 @@ pub struct SolvePureCallDirectionalSite {
 /// owner table and is resolved against it when the site is read.
 #[derive(Debug, Clone, Eq)]
 pub struct SolvePureCallSite {
+    proof_issuer: Arc<()>,
     quaternion: Option<BodyQuaternionKinematics>,
     dependencies: Arc<[Box<[SolveCallDependency]>]>,
     execution_reads: Arc<ExecutionReads>,
@@ -383,6 +389,10 @@ impl PartialEq for SolvePureCallSite {
 }
 
 impl SolvePureCallSite {
+    pub(crate) fn proof_issuer(&self) -> &Arc<()> {
+        &self.proof_issuer
+    }
+
     /// Owner-derived source fact, shared without inspecting the body again.
     #[must_use]
     pub fn body_quaternion_kinematics(&self) -> Option<&BodyQuaternionKinematics> {
@@ -452,6 +462,10 @@ impl SolvePureCallSite {
 }
 
 impl SolvePureCallDirectionalSite {
+    pub(crate) fn proof_issuer(&self) -> &Arc<()> {
+        &self.proof_issuer
+    }
+
     pub(crate) fn output_degrees(
         &self,
         inputs: &[crate::affinity::Degree],
@@ -571,8 +585,13 @@ impl SolvePureCallDirectionalOwner {
         }
     }
 
-    fn call_site(&self, owner: SolvePureCallOwnerId) -> SolvePureCallDirectionalSite {
+    fn call_site(
+        &self,
+        owner: SolvePureCallOwnerId,
+        issuer: &Arc<()>,
+    ) -> SolvePureCallDirectionalSite {
         SolvePureCallDirectionalSite {
+            proof_issuer: Arc::clone(issuer),
             dependencies: self.dependencies.clone(),
             execution_reads: self.execution_reads.clone(),
             projections: self.projections.clone(),
@@ -725,6 +744,7 @@ impl SolvePureCallOwner {
     #[must_use]
     pub fn call_site(&self) -> SolvePureCallSite {
         SolvePureCallSite {
+            proof_issuer: self.proof_issuer.clone(),
             quaternion: self.quaternion,
             dependencies: self.dependencies.clone(),
             execution_reads: self.execution_reads.clone(),
@@ -736,7 +756,7 @@ impl SolvePureCallOwner {
             directional: self
                 .directional
                 .as_ref()
-                .map(|directional| Box::new(directional.call_site(self.id))),
+                .map(|directional| Box::new(directional.call_site(self.id, &self.proof_issuer))),
         }
     }
 }
@@ -992,6 +1012,7 @@ impl SolvePureCallTableBuilder {
         let affinity = derive_affinity(&body, inputs.len(), outputs.len(), &self.owners);
         let assertion_flow = assertion_flow::derive(&body, inputs.len(), &outputs, interfaces);
         self.owners.push(SolvePureCallOwner {
+            proof_issuer: Arc::new(()),
             articulated: articulated::derive(&body, &inputs, &outputs),
             quaternion: quaternion::derive(&body, &inputs, &outputs),
             input_coordinate,
@@ -1289,6 +1310,7 @@ fn replay_single_owner(
     let assertion_flow =
         assertion_flow::derive(&body, owner.inputs.len(), &owner.outputs, interfaces);
     Ok(SolvePureCallOwner {
+        proof_issuer: Arc::new(()),
         articulated: articulated::derive(&body, &owner.inputs, &owner.outputs),
         quaternion: quaternion::derive(&body, &owner.inputs, &owner.outputs),
         input_coordinate,

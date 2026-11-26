@@ -1,24 +1,23 @@
 //! Exact register-independent operation identity for shared-value proofs.
 
 use super::super::*;
+use super::operation_identity::OperationIdentity;
 use super::registers::{Role, read_registers, records_operand_offsets, renamable, visit_registers};
 
 /// Shapes of compiler operations and the builder's solver-slot reads occupy
 /// distinct domains. Operation identity uses the complete typed IR encoding,
-/// including floating-point bits.
+/// including floating-point bits, and the in-process issuers of call sites.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(super) enum ShapeKey {
     Slot,
     Slots,
     Conditional,
-    Operation(Box<[u8]>),
+    Operation(OperationIdentity),
 }
 
 impl ShapeKey {
     fn operation(op: &LinearOp) -> Option<Self> {
-        bincode::serialize(op)
-            .ok()
-            .map(|bytes| Self::Operation(bytes.into_boxed_slice()))
+        OperationIdentity::new(std::slice::from_ref(op)).map(Self::Operation)
     }
 }
 

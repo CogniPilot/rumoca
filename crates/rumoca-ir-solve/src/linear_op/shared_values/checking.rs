@@ -92,16 +92,10 @@ fn exact_identity(segment: &super::SharedValueSegment, source: &AssignmentProgra
     if segment.targets != source.targets || ScalarProgramRegisterFlow::derive(source.ops).is_err() {
         return false;
     }
-    // The complete canonical operation wire includes register/input/output
-    // identities, typed call owners, nested regions and IEEE literal bits.
-    // Ordinary floating-point PartialEq cannot distinguish signed zeros.
-    match (
-        bincode::serialize(&segment.ops),
-        bincode::serialize(source.ops),
-    ) {
-        (Ok(candidate), Ok(original)) => candidate == original,
-        _ => false,
-    }
+    use super::operation_identity::OperationIdentity;
+    OperationIdentity::new(&segment.ops)
+        .zip(OperationIdentity::new(source.ops))
+        .is_some_and(|(candidate, original)| candidate == original)
 }
 
 impl SharedValueSegments {
