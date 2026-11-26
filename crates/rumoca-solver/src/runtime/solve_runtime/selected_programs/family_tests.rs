@@ -72,6 +72,8 @@ impl CompiledSolveExpression for Entries<dyn CompiledSolveExpression> {
     ) -> Result<Option<Rc<dyn CompiledSolveExpression>>, String> {
         Ok(self.programs.get(program).cloned())
     }
+    // Required by the trait; the tests call the bound per-program entries.
+    #[cfg_attr(coverage_nightly, coverage(off))]
     fn call(
         &self,
         y: &[f64],
@@ -85,6 +87,8 @@ impl CompiledSolveExpression for Entries<dyn CompiledSolveExpression> {
 }
 
 impl CompiledSolveJacobianExpression for Entries<dyn CompiledSolveJacobianExpression> {
+    // Required by the trait; the tests never ask for committing programs.
+    #[cfg_attr(coverage_nightly, coverage(off))]
     fn programs_committing(self: Rc<Self>) -> Option<Rc<dyn crate::CompiledProgramsCommitting>> {
         None
     }
@@ -95,6 +99,8 @@ impl CompiledSolveJacobianExpression for Entries<dyn CompiledSolveJacobianExpres
     ) -> Result<Option<Rc<dyn CompiledSolveJacobianExpression>>, String> {
         Ok(self.programs.get(program).cloned())
     }
+    // Required by the trait; the tests call the bound per-program entries.
+    #[cfg_attr(coverage_nightly, coverage(off))]
     fn call(
         &self,
         y: &[f64],

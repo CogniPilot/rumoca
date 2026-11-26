@@ -84,6 +84,8 @@ impl ImplicitProjectionModel for CoordinateScaledCycle {
         block.iter_mut().for_each(|value| *value *= y[COEFFICIENT]);
         Ok(())
     }
+    // Required by the trait; the projection under test never calls it.
+    #[cfg_attr(coverage_nightly, coverage(off))]
     fn eval_jacobian_v(
         &self,
         y: &[f64],
@@ -123,11 +125,10 @@ impl ImplicitProjectionModel for CoordinateScaledCycle {
     fn implicit_target(&self, row: usize) -> Option<solve::ScalarSlot> {
         self.cycle.implicit_target(row)
     }
+    // Required by the trait; the projection under test never calls it.
+    #[cfg_attr(coverage_nightly, coverage(off))]
     fn algebraic_projection_plan(&self) -> &solve::AlgebraicProjectionPlan {
         &self.cycle.plan
-    }
-    fn target_name_for_row(&self, _: usize) -> Option<String> {
-        None
     }
     fn algebraic_projection_block_is_affine(&self, _: usize) -> bool {
         true
