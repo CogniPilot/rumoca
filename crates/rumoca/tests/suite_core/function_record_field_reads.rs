@@ -254,3 +254,111 @@ fn the_dae_evaluator_fails_at_the_read_of_a_field_the_path_never_wrote() {
         );
     }
 }
+
+#[test]
+fn the_template_context_projects_the_carried_field_states() {
+    let dae = compile_dae("Static", &static_source("pick", 0.75));
+    let context = rumoca_phase_codegen::dae_template_json(&dae).expect("the checked DAE projects");
+    let expressions = context["expressions"]
+        .as_array()
+        .expect("the template context lists every expression");
+    let of_kind = |kind: &str| {
+        expressions
+            .iter()
+            .filter(|expression| expression["operation"]["kind"] == kind)
+            .collect::<Vec<_>>()
+    };
+    let passes = of_kind("pass_assigned");
+    assert_eq!(passes.len(), 2, "the call forwards both fields");
+    assert!(
+        passes
+            .iter()
+            .all(|pass| pass["operation"]["operand"].is_u64()),
+        "{passes:?}"
+    );
+    let reads = of_kind("assigned_parameter");
+    assert_eq!(reads.len(), 2, "pick reads each field");
+    assert!(
+        reads.iter().all(|read| read["operation"]["checked"] == true
+            && read["operation"]["function"].is_u64()
+            && read["operation"]["ordinal"].is_u64()),
+        "{reads:?}"
+    );
+}
+
+/// A state demoted by a constraint rebuilds the whole DAE, functions
+/// included: `make` keeps carrying its two field states unchecked.
+const DEMOTED: &str = r#"
+model Demoted
+  record R
+    Real a;
+    Real b;
+  end R;
+  function make
+    input Real x;
+    output R r;
+  algorithm
+    if x > 0 then
+      r.a := x;
+    else
+      r.b := -x;
+    end if;
+  end make;
+  function first
+    input R r;
+    output Real y;
+  algorithm
+    y := 2*r.a;
+  end first;
+  parameter Real p = 1.5;
+  parameter Real k = first(make(p));
+  Real x;
+  Real v;
+equation
+  der(x) = v;
+  x = sin(time)*k;
+end Demoted;
+"#;
+
+fn carried_statements(dae: &rumoca_ir_dae::Dae, name: &str) -> usize {
+    use rumoca_ir_dae as dae;
+    dae.inspect(|view| {
+        (0..view.function_count())
+            .filter_map(|index| view.function(view.function_id(index)?))
+            .find(|function| function.name().as_str().ends_with(name))
+            .unwrap_or_else(|| panic!("{name} is constructed"))
+            .statements()
+            .filter(|statement| {
+                matches!(statement, dae::FunctionStatementView::CarryAssigned { .. })
+            })
+            .count()
+    })
+}
+
+#[test]
+fn index_reduction_rebuilds_a_function_that_carries_field_states() {
+    let dae = compile_dae("Demoted", DEMOTED);
+    assert_eq!(carried_statements(&dae, "make"), 2);
+    let prepared = rumoca_phase_structural::prepare_for_solve(&dae)
+        .unwrap_or_else(|error| panic!("the constraint demotes x: {error}"));
+    assert!(
+        !std::ptr::eq(prepared.as_dae(), &*dae),
+        "the demotion rebuilt the DAE"
+    );
+    assert_eq!(carried_statements(prepared.as_dae(), "make"), 2);
+}
+
+/// Differentiation admits no carried field state, so a constraint whose
+/// derivative would pass through one is not reduced: it is refused.
+#[test]
+fn a_constraint_through_a_carried_field_state_is_not_differentiated() {
+    let source = DEMOTED
+        .replace("  parameter Real k = first(make(p));\n", "")
+        .replace("x = sin(time)*k;", "x = sin(time)*first(make(p));");
+    let dae = compile_dae("Demoted", &source);
+    let error = match rumoca_phase_structural::prepare_for_solve(&dae) {
+        Ok(_) => panic!("the constraint differentiates through a carried field state"),
+        Err(error) => error.to_string(),
+    };
+    assert!(error.contains("structurally singular"), "{error}");
+}
