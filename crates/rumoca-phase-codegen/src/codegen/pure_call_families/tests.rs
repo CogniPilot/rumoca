@@ -1,4 +1,6 @@
 mod assertion_carrier;
+#[cfg(target_os = "linux")]
+mod fold_edit;
 mod nocaptures_directional;
 #[cfg(target_os = "linux")]
 mod output_storage;

@@ -63,8 +63,14 @@ return status;
 {%- macro fold_inputs(op) -%}
 (const void*[]){ {{ fold_items(op) }} }
 {%- endmacro %}
-{%- macro operation(op, program, region_name, prefix="rumoca_pure_", assertion_outputs=[], source_predicate_outputs={}, device=false) -%}
-{% if op.operation == "assigned_state" -%}
+{%- macro operation(op, program, region_name, prefix="rumoca_pure_", assertion_outputs=[], source_predicate_outputs={}, device=false, fold_edit=none, edit=none) -%}
+{% if edit and edit.change.kind == "branch" -%}
+{ const void* call_in[]={ {% for input in op.captures %}r{{ input }},{% endfor %}NULL }; void* call_out[]={out[{{ edit.output }}]};
+int status;
+if (r{{ op.condition }}[0]) status={{ region_name }}_true(call_in,call_out,observer);
+else status={{ region_name }}_false(call_in,call_out,observer);
+if (status) return status; }
+{% elif op.operation == "assigned_state" -%}
 {% set x = op.state_operation -%}
 {% if x.state == "absent" %}present{{ x.destination }}=false;
 {% elif x.state == "present" %}present{{ x.destination }}=true; {{ copy("v" ~ x.destination,"r" ~ x.source) }}
@@ -141,10 +147,20 @@ if (i{{ loop.index0 }}) b{{ loop.index0 }}[0]+={{ integer(binder.step) }};
 {% endif -%}
 if (!fold_done)
 {% endif -%}
+{% if fold_edit -%}
+{ RmcFoldEdit delta; delta.index=SIZE_MAX;
+const void* call_in[]={ {{ fold_items(op) }} };
+void* call_out[]={ {% for output in op.destinations %}{% if loop.index0 == fold_edit.output %}&delta{% else %}r{{ output }}{% endif %},{% else %}NULL{% endfor %} };
+int status={{ region_name }}_fold(call_in, call_out, observer); if (status) return status;
+{% set dest="r" ~ op.destinations[fold_edit.output] -%}
+if (delta.index!=SIZE_MAX) memcpy(&{{ dest }}[delta.index], &delta.value, sizeof({{ dest }}[0]));
+}
+{% else -%}
 {% if device -%}
 { const void* call_in[]={ {{ fold_items(op) }} }; void* call_out[]={ {% for output in op.destinations %}r{{ output }},{% else %}NULL{% endfor %} }; int status={{ region_name }}_fold(call_in, call_out, observer); if (status) return status; }
 {% else -%}
 { int status={{ region_name }}_fold({{ fold_inputs(op) }}, (void*[]){ {% for output in op.destinations %}r{{ output }},{% else %}NULL{% endfor %} }, observer); if (status) return status; }
+{% endif -%}
 {% endif -%}
 {% for binder in op.domain.binders %} } {% endfor %}
 }
@@ -168,26 +184,28 @@ if (i{{ loop.index0 }}) b{{ loop.index0 }}[0]+={{ integer(binder.step) }};
 }
 {% else -%}
 {% if op.destination is undefined %}{{ fail("unsupported-feature:fmi.c.pure-call: " ~ op.operation) }}{% endif -%}
-{{ tensor(op, program) -}}
+{{ tensor(op, program, edit) -}}
 {% endif -%}
 {% endmacro %}
 
-{%- macro definition(program, name, prefix="rumoca_pure_", assertion_outputs=[], source_predicate_outputs={}, device=false) -%}
+{%- macro definition(program, name, prefix="rumoca_pure_", assertion_outputs=[], source_predicate_outputs={}, device=false, edit=none) -%}
 {% for issued in program.operations -%}
 {% set op = issued.operation -%}
 {% set child = name ~ "_region_" ~ loop.index0 -%}
+{% set edits=program.print.fold_edits|default({}) -%}
+{% set conditional_edit=edit and edit.producer == loop.index0 and edit.change.kind == "branch" -%}
 {% if op.operation == "check_assertion" and op.message.kind == "captures" -%}
 {{ definition(op.message.program.body, child ~ "_message", prefix, assertion_outputs, source_predicate_outputs, device) -}}
 {% elif op.operation == "assigned_conditional" -%}
 {{ definition(op.program.if_true.body, child ~ "_true", prefix, assertion_outputs, source_predicate_outputs, device) -}}
 {{ definition(op.program.if_false.body, child ~ "_false", prefix, assertion_outputs, source_predicate_outputs, device) -}}
 {% elif op.operation == "conditional" -%}
-{{ definition(op.if_true.body, child ~ "_true", prefix, assertion_outputs, source_predicate_outputs, device) -}}
-{{ definition(op.if_false.body, child ~ "_false", prefix, assertion_outputs, source_predicate_outputs, device) -}}
+{{ definition(op.if_true.body, child ~ "_true", prefix, assertion_outputs, source_predicate_outputs, device, edit.change.yes if conditional_edit else none) -}}
+{{ definition(op.if_false.body, child ~ "_false", prefix, assertion_outputs, source_predicate_outputs, device, edit.change.no if conditional_edit else none) -}}
 {% elif op.operation == "map" -%}
 {{ definition(op.body.body, child ~ "_map", prefix, assertion_outputs, source_predicate_outputs, device) -}}
 {% elif op.operation == "fold" -%}
-{{ definition(op.transition.body, child ~ "_fold", prefix, assertion_outputs, source_predicate_outputs, device) -}}
+{{ definition(op.transition.body, child ~ "_fold", prefix, assertion_outputs, source_predicate_outputs, device, edits[loop.index0|string]|default(none)) -}}
 {% if op.continuation -%}
 {{ definition(op.continuation.body, child ~ "_continue", prefix, assertion_outputs, source_predicate_outputs, device) -}}
 {% endif -%}
@@ -199,7 +217,8 @@ if (i{{ loop.index0 }}) b{{ loop.index0 }}[0]+={{ integer(binder.step) }};
 {% for slot in program.slots -%}
 {% set stored = namespace(value=false) -%}
 {% for issued in program.operations %}{% if issued.operation.operation == "store" and issued.operation.slot == slot.id %}{% set stored.value = true %}{% endif %}{% endfor -%}
-{% if slot.storage == "input" and not stored.value and slot.value_type.scalar_count > 0 -%}
+{% if edit and edit.slot == slot.id %}{# The caller owns this fold carry. #}
+{% elif slot.storage == "input" and not stored.value and slot.value_type.scalar_count > 0 -%}
 {#- An input slot the body never writes reads the caller's array. -#}
 const {{ ctype(slot.value_type) }}* s{{ slot.id }} = {% if device %}(const {{ ctype(slot.value_type) }}*){% endif %}in[{{ input.index }}]; (void)s{{ slot.id }};
 {% set input.index = input.index + 1 -%}
@@ -225,13 +244,16 @@ memcpy(s{{ slot.id }}, in[{{ input.index }}], sizeof(s{{ slot.id }}));
 {% if op.operation == "load" and op.slot in input.pointers and written.ids|select("equalto", op.destination)|list|length == 1 %}{% set alias.ids = alias.ids + [op.destination] %}{% endif -%}
 {% endfor -%}
 {% for ty in program.assigned_states.types|default([]) %}bool present{{ loop.index0 }}=false; (void)present{{ loop.index0 }}; {{ declaration("v" ~ loop.index0, ty) }}{% endfor %}
-{% for ty in program.register_types %}{% if loop.index0 not in alias.ids %}{{ declaration("r" ~ loop.index0, ty) }}{% endif %}{% endfor %}
+{% for ty in program.register_types %}{% if loop.index0 not in alias.ids and not (edit and loop.index0 == edit.result and edit.change.kind != "unchanged") %}{{ declaration("r" ~ loop.index0, ty) }}{% endif %}{% endfor %}
 {% for issued in program.operations %}{% set op = issued.operation %}{% if op.operation == "load" and op.destination in alias.ids %}const {{ ctype(program.register_types[op.destination]) }}* r{{ op.destination }} = s{{ op.slot }}; (void)r{{ op.destination }};
-{% else %}{{ operation(op, program, name ~ "_region_" ~ loop.index0, prefix, assertion_outputs, source_predicate_outputs, device) }}{% endif %}{% endfor -%}
+{% elif not edit or loop.index0 != edit.store -%}
+{% set edits=program.print.fold_edits|default({}) -%}
+{{ operation(op, program, name ~ "_region_" ~ loop.index0, prefix, assertion_outputs, source_predicate_outputs, device, edits[loop.index0|string]|default(none), edit if edit and loop.index0 == edit.producer else none) }}{% endif %}{% endfor -%}
 {% set output = namespace(index=0) -%}
 {% for slot in program.slots -%}
 {% if slot.storage == "output" -%}
-if (out[{{ output.index }}]) memcpy(out[{{ output.index }}], s{{ slot.id }}, sizeof(s{{ slot.id }}));
+{% if not edit or edit.slot != slot.id %}if (out[{{ output.index }}]) memcpy(out[{{ output.index }}], s{{ slot.id }}, sizeof(s{{ slot.id }}));
+{% endif -%}
 {% set output.index = output.index + 1 -%}
 {% endif -%}
 {% endfor -%}
@@ -271,6 +293,7 @@ if (!out) return 1;
     unit's interface. -#}
 {%- macro functions(table, directional=[], device=false) -%}
 {% if table.owners|length > 0 -%}
+typedef struct { size_t index; union { double real; int64_t integer; bool boolean; } value; } RmcFoldEdit;
 {#- Only typed constants call it, so a unit without one must not trip
     `-Wunused-function` under the wasm build's `-Werror`. #}
 #if defined(__GNUC__) || defined(__clang__)

@@ -4,7 +4,7 @@
 if (r{{ index }}[0]<1 || r{{ index }}[0]>{{ extent }}) return 1;
 {% endmacro %}
 
-{%- macro tensor(op, program) -%}
+{%- macro tensor(op, program, edit=none) -%}
 {% set dst = "r" ~ op.destination -%}
 {% set ty = program.register_types[op.destination] -%}
 {% if op.operation in ["scale", "matrix_multiply", "cross"] and (ty.scalar.kind != "real" or ty.scalar.profile.format != "binary64") %}{{ fail("unsupported-feature:fmi.c.pure-call: non-Real tensor arithmetic") }}{% endif -%}
@@ -100,8 +100,13 @@ index=index*{{ shape[loop.index0] }}+(size_t)(r{{ index }}[0]-1);
 {% endif -%}
 {% endfor -%}
 {% if op.operation == "update_element" -%}
+{% if edit -%}
+RmcFoldEdit* delta=(RmcFoldEdit*)out[{{ edit.output }}];
+delta->index=index; memcpy(&delta->value, r{{ op.value }}, sizeof(r{{ op.value }}[0]));
+{% else -%}
 {{ copy(dst, "r" ~ op.aggregate) -}}
 {{ dst }}[index]=r{{ op.value }}[0];
+{% endif -%}
 {% else -%}
 {{ dst }}[0]=r{{ op.aggregate }}[index];
 {% endif -%}

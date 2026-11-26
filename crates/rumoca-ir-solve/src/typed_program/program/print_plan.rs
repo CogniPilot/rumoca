@@ -7,6 +7,7 @@
 //! again. An operation whose printing has not moved here yet is a `Legacy`
 //! item naming the audit ledger row that owns its remaining printer decision.
 
+mod fold_edit;
 mod scalar;
 mod tensor;
 
@@ -238,6 +239,8 @@ pub struct SolvePrintPlan {
     registers: Box<[SolveRegisterFrame]>,
     body: Box<[SolveBodyItem]>,
     outputs: Box<[SolveOutputCopy]>,
+    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    fold_edits: std::collections::BTreeMap<usize, fold_edit::FoldEdit>,
 }
 
 impl super::TypedProgram {
@@ -325,6 +328,11 @@ impl SolvePrintPlan {
             registers: register_items,
             body,
             outputs,
+            fold_edits: operations
+                .iter()
+                .enumerate()
+                .filter_map(|(i, op)| Some((i, fold_edit::plan(op.operation())?)))
+                .collect(),
         }
     }
 
