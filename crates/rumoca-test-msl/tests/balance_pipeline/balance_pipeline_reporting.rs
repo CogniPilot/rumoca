@@ -588,6 +588,36 @@ fn build_msl_package_pass_rate_report_with_parity(
     }
 }
 
+/// Every model metric in a trace comparison's `models` that reads back.
+///
+/// A metric that does not (a value its writer could not represent, written as
+/// `null`) leaves that one model unmeasured, with a warning naming it, instead
+/// of stopping every report built from the comparison.
+fn readable_trace_metrics(
+    models: &serde_json::Map<String, serde_json::Value>,
+) -> Vec<ModelDeviationMetric> {
+    models
+        .iter()
+        .filter_map(|(model_name, model_payload)| {
+            match serde_json::from_value::<ModelDeviationMetric>(model_payload.clone()) {
+                Ok(mut metric) => {
+                    if metric.model_name.is_empty() {
+                        metric.model_name.clone_from(model_name);
+                    }
+                    Some(metric)
+                }
+                Err(error) => {
+                    eprintln!(
+                        "warning: trace metric for {model_name} does not read back ({error}); \
+                         the model is reported as unmeasured"
+                    );
+                    None
+                }
+            }
+        })
+        .collect()
+}
+
 fn pass_rate_parity_from_trace_payload(
     payload: &serde_json::Value,
 ) -> io::Result<MslPackagePassRateParity> {
@@ -598,16 +628,7 @@ fn pass_rate_parity_from_trace_payload(
             io::Error::other("trace comparison JSON is missing object field 'models'")
         })?;
     let mut parity = MslPackagePassRateParity::default();
-    for (model_name, model_payload) in models {
-        let mut metric = serde_json::from_value::<ModelDeviationMetric>(model_payload.clone())
-            .map_err(|error| {
-                io::Error::other(format!(
-                    "failed to parse trace metric for {model_name}: {error}"
-                ))
-            })?;
-        if metric.model_name.is_empty() {
-            metric.model_name.clone_from(model_name);
-        }
+    for metric in readable_trace_metrics(models) {
         parity.models.insert(
             metric.model_name.clone(),
             MslPackagePassRateParityModel {
@@ -790,16 +811,7 @@ fn build_msl_package_trace_accuracy_report(
             io::Error::other("trace comparison JSON is missing object field 'models'")
         })?;
 
-    for (model_name, model_payload) in models {
-        let mut metric = serde_json::from_value::<ModelDeviationMetric>(model_payload.clone())
-            .map_err(|error| {
-                io::Error::other(format!(
-                    "failed to parse trace metric for {model_name}: {error}"
-                ))
-            })?;
-        if metric.model_name.is_empty() {
-            metric.model_name.clone_from(model_name);
-        }
+    for metric in readable_trace_metrics(models) {
         let Some(package_name) = root_msl_package_name(&metric.model_name) else {
             continue;
         };
@@ -1617,5 +1629,34 @@ mod tests {
         assert_eq!(report.overall.compared - report.overall.no_severe_models, 1);
         assert!(!markdown.contains("Channel OK"));
         assert!(markdown.contains("- `Severe`: % of n with at least one channel at bounded normalized L1 error 0.8 or more, in any band"), "{markdown}");
+    }
+
+    #[test]
+    fn a_model_metric_that_does_not_read_back_leaves_that_model_unmeasured() {
+        // #755 MSL shard 3: RoomCO2's metric carried `null` for a mean its
+        // writer could not represent, and every report stopped on it.
+        let readable = "Modelica.Electrical.Analog.Examples.ChuaCircuit";
+        let unreadable = "Modelica.Fluid.Examples.TraceSubstances.RoomCO2";
+        let mut summary = empty_summary(0, 0);
+        summary.model_results = vec![
+            model_result(readable, "Success", Some("sim_ok")),
+            model_result(unreadable, "Success", Some("sim_ok")),
+        ];
+        let mut broken = trace_metric_json(unreadable, 10, 0, 0, 0);
+        broken["mean_channel_bounded_normalized_l1"] = serde_json::Value::Null;
+        let payload = serde_json::json!({
+            "models": {
+                readable: trace_metric_json(readable, 10, 0, 0, 0),
+                unreadable: broken,
+            }
+        });
+
+        let report = build_msl_package_trace_accuracy_report(&summary, &payload)
+            .expect("a null metric does not stop the trace accuracy report");
+        assert_eq!(report.overall.compared, 1);
+        let parity = pass_rate_parity_from_trace_payload(&payload)
+            .expect("a null metric does not stop the pass-rate report");
+        assert!(parity.models.contains_key(readable));
+        assert!(!parity.models.contains_key(unreadable));
     }
 }

@@ -1113,16 +1113,20 @@ fn compare_channel(
         return None;
     }
 
-    let mean_abs_error = acc.integral_abs_error / acc.integral_duration;
+    // Finite samples can still overflow here: two libraries' `inf` constants
+    // (MSL's ModelicaServices 1.8e308 against OpenModelica's 1e60) differ by
+    // about f64::MAX, and integrating that over the run is infinite. Each
+    // derived error saturates at f64::MAX, so the channel scores a full
+    // deviation (bounded 1.0) and the metric stays finite.
+    let integral_abs_error = saturate(acc.integral_abs_error);
+    let mean_abs_error = saturate(integral_abs_error / acc.integral_duration);
     let scale = reference_scale(&acc.ref_samples, use_step_hold, rule.array_group_floor);
     let normalization_scale = scale.normalization_scale;
-    let normalized_l1_error = mean_abs_error / normalization_scale;
-    let bounded_normalized_l1_error = normalized_l1_error / (1.0 + normalized_l1_error);
+    let normalized_l1_error = saturate(mean_abs_error / normalization_scale);
+    let bounded_normalized_l1_error = bounded_error(normalized_l1_error);
     let initial_abs_error = initial_abs_error(rumoca, omc, rule.phasor);
-    let initial_bounded_normalized_error = initial_abs_error.map(|error| {
-        let normalized = error / normalization_scale;
-        normalized / (1.0 + normalized)
-    });
+    let initial_bounded_normalized_error =
+        initial_abs_error.map(|error| bounded_error(saturate(error / normalization_scale)));
     let shape = classify_channel_deviation_shape(
         &acc.paired_samples,
         ChannelErrorSummary {
@@ -1138,7 +1142,7 @@ fn compare_channel(
         shape,
         samples: acc.ref_samples.len(),
         integral_duration: acc.integral_duration,
-        integral_abs_error: acc.integral_abs_error,
+        integral_abs_error,
         mean_abs_error,
         normalization_scale,
         reference_range: scale.range,
@@ -1146,11 +1150,30 @@ fn compare_channel(
         reference_array_group_floor: scale.array_group_floor,
         normalized_l1_error,
         bounded_normalized_l1_error,
-        normalized_max_abs_error: acc.max_abs_error / normalization_scale,
+        normalized_max_abs_error: saturate(acc.max_abs_error / normalization_scale),
         initial_abs_error,
         initial_bounded_normalized_error,
         phasor: rule.phasor.map(|phasor| phasor.evidence(undefined_samples)),
     })
+}
+
+/// An error that overflowed to infinity, held at the largest finite value.
+fn saturate(value: f64) -> f64 {
+    if value.is_infinite() {
+        f64::MAX.copysign(value)
+    } else {
+        value
+    }
+}
+
+/// Map a non-negative normalized error onto `[0, 1]`; the largest finite
+/// error maps to 1, where `n / (1 + n)` would be `inf / inf`.
+fn bounded_error(normalized: f64) -> f64 {
+    if normalized >= f64::MAX {
+        1.0
+    } else {
+        normalized / (1.0 + normalized)
+    }
 }
 
 /// The one instant both traces cover, when each has every sample at it: an

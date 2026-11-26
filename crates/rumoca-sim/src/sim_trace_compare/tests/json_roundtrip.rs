@@ -84,3 +84,48 @@ fn json_roundtrip_does_not_manufacture_a_continuous_event_ramp() {
         original_metric.integral_abs_error
     );
 }
+
+#[test]
+fn a_model_metric_stays_finite_when_two_finite_inf_constants_differ_by_f64_max() {
+    // MSL RoomCO2 (#755 MSL shard 3): `volume.m_flow_turbulent` is
+    // `Modelica.Constants.inf`, which MSL's ModelicaServices gives as
+    // 1.7976931348623157e308 and OpenModelica's as 1e60. Both are finite, but
+    // their difference integrated over the run overflows; the bounded score
+    // was then `inf / inf`, the model mean NaN, and its JSON `null` stopped
+    // the quality report.
+    let times = (0..7).map(|i| 600.0 * f64::from(i)).collect::<Vec<_>>();
+    let flat = |value: f64| vec![value; times.len()];
+    let rumoca = trace(
+        "RoomCO2",
+        times.clone(),
+        vec!["m_flow_turbulent", "C"],
+        vec![
+            flat(f64::MAX),
+            times.iter().map(|t| 1.5e-3 - 1e-8 * t).collect(),
+        ],
+    );
+    let omc = trace(
+        "RoomCO2",
+        times.clone(),
+        vec!["m_flow_turbulent", "C"],
+        vec![
+            flat(1e60),
+            times.iter().map(|t| 1.5e-3 - 1e-8 * t).collect(),
+        ],
+    );
+    let metric = compare_model_traces("RoomCO2", &rumoca, &omc).unwrap();
+    let channel = metric
+        .worst_variables
+        .iter()
+        .find(|channel| channel.name == "m_flow_turbulent")
+        .unwrap();
+    assert_eq!(
+        channel.bounded_normalized_l1_error, 1.0,
+        "a disagreement too large to integrate is a full deviation, not hidden"
+    );
+    assert!(metric.mean_channel_bounded_normalized_l1.is_finite());
+    let decoded: ModelDeviationMetric =
+        serde_json::from_value(serde_json::to_value(&metric).unwrap())
+            .expect("the metric of a finite comparison reads back from its JSON");
+    assert_eq!(decoded.compared_variables, 2);
+}
