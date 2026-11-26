@@ -76,7 +76,7 @@ fn construction_result_preserves_current_wire_balance_selections_and_refusals() 
 fn retained_current_wire_replays_and_refuses_other_versions() {
     for case in fixtures::FIXTURES.iter().filter(|case| case.success) {
         let expected = baseline(case)["dae"].clone();
-        assert_eq!(expected["schema_version"], 53, "{}", case.name);
+        assert_eq!(expected["schema_version"], 54, "{}", case.name);
         let replayed: dae::Dae = serde_json::from_value(expected.clone()).unwrap();
         assert_eq!(
             serde_json::to_value(replayed).unwrap(),
@@ -84,13 +84,13 @@ fn retained_current_wire_replays_and_refuses_other_versions() {
             "{}",
             case.name
         );
-        for version in [52, 54] {
+        for version in [53, 55] {
             let mut invalid = expected.clone();
             invalid["schema_version"] = json!(version);
             let error = serde_json::from_value::<dae::Dae>(invalid).unwrap_err();
             assert!(
                 error.to_string().contains(&format!(
-                    "unsupported DAE schema version {version}; expected 53"
+                    "unsupported DAE schema version {version}; expected 54"
                 )),
                 "{}: {error}",
                 case.name

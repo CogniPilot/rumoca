@@ -1,6 +1,6 @@
 {
   "dae": {
-    "schema_version": 53,
+    "schema_version": 54,
     "source_map": {
       "files": [
         [
@@ -397,6 +397,7 @@
           "external": null,
           "derivatives": [],
           "inline": "Unstated",
+          "absent_parameters": [],
           "declaration": {
             "origin": "source",
             "span": {
