@@ -136,6 +136,48 @@ package Lib
   equation
     der(x) = ind;
   end AssertFirst;
+  pure function unknownTable
+    output Real table[3];
+  external "C" rumocaTestUnknownTable(table);
+  end unknownTable;
+  model SizeBound
+    constant String names[3] = {"N2", "CO2", "H2O"};
+    parameter String wanted = "CO2";
+    parameter Real table[3] = unknownTable() annotation(Evaluate = true);
+    parameter Integer ind(fixed = false);
+    Real x(start = 0, fixed = true);
+  initial algorithm
+    ind := -1;
+    for i in 1:3 loop
+      if names[i] == wanted then
+        ind := i;
+      end if;
+    end for;
+    assert(ind <= size(table, 1), "the index fits the table");
+  equation
+    der(x) = ind;
+  end SizeBound;
+  pure function unknownStart
+    output Integer start;
+  external "C" start = rumocaTestUnknownStart();
+  end unknownStart;
+  model UnknownStart
+    constant String names[3] = {"N2", "CO2", "H2O"};
+    parameter String wanted = "CO2";
+    parameter Integer start = unknownStart() annotation(Evaluate = true);
+    parameter Integer ind(fixed = false);
+    Real x(start = 0, fixed = true);
+  initial algorithm
+    ind := -1;
+    for i in 1:3 loop
+      if names[i] == wanted then
+        ind := i;
+      end if;
+    end for;
+    assert(ind >= start, "the index is past the start");
+  equation
+    der(x) = ind;
+  end UnknownStart;
 end Lib;
 "#;
 
@@ -264,6 +306,47 @@ fn an_assertion_before_the_last_assignment_leaves_the_algorithm_as_it_is() {
         .model("Lib.AssertFirst")
         .compile_str_flat(PACKAGE, "Lib.mo")
         .unwrap_or_else(|error| panic!("Lib.AssertFirst flattens: {error:?}"));
+    let ind = &flat.variables[&rumoca_core::VarName::new("ind")];
+    assert!(
+        ind.binding.is_none(),
+        "ind is not decided: {:?}",
+        ind.binding
+    );
+    assert_eq!(flat.initial_algorithms.len(), 1, "the algorithm stays");
+}
+
+/// An assertion after the loop reads the shape of a fixed array whose values
+/// the translation cannot compute (`size(table, 1)`): its declared shape
+/// decides the assertion, and the algorithm with it.
+#[test]
+fn an_assertion_on_the_size_of_a_fixed_array_is_decided_by_its_shape() {
+    let flat = Compiler::new()
+        .model("Lib.SizeBound")
+        .compile_str_flat(PACKAGE, "Lib.mo")
+        .unwrap_or_else(|error| panic!("Lib.SizeBound flattens: {error:?}"));
+    let ind = &flat.variables[&rumoca_core::VarName::new("ind")];
+    assert!(
+        matches!(
+            ind.binding,
+            Some(rumoca_core::Expression::Literal {
+                value: rumoca_core::Literal::Integer(2),
+                ..
+            })
+        ),
+        "ind is decided as 2: {:?}",
+        ind.binding
+    );
+}
+
+/// An assertion reading a fixed name the translation cannot evaluate (an
+/// evaluated parameter bound to an external call) cannot be decided, so the
+/// algorithm stays as it is.
+#[test]
+fn an_assertion_reading_a_fixed_value_the_translation_cannot_evaluate_keeps_the_algorithm() {
+    let flat = Compiler::new()
+        .model("Lib.UnknownStart")
+        .compile_str_flat(PACKAGE, "Lib.mo")
+        .unwrap_or_else(|error| panic!("Lib.UnknownStart flattens: {error:?}"));
     let ind = &flat.variables[&rumoca_core::VarName::new("ind")];
     assert!(
         ind.binding.is_none(),

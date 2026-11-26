@@ -94,15 +94,11 @@ fn decide(
     let Some((target, value, asserts)) = run(flat, inventory, index, algorithm) else {
         return Ok(None);
     };
-    let environment = FixedReads {
+    let with_target = FixedReads {
         flat,
         inventory,
         target: &target,
-    };
-    let with_target = WithTarget {
-        inner: &environment,
-        target: &target,
-        value: &value,
+        decided: Some(&value),
     };
     let mut warnings = Vec::new();
     for statement in asserts {
@@ -203,6 +199,7 @@ fn run<'a>(
         flat,
         inventory,
         target,
+        decided: None,
     };
     let mut reads = Reads {
         environment: &environment,
@@ -236,46 +233,6 @@ fn run<'a>(
     )
     .ok()?;
     Some((target.clone(), value, asserts))
-}
-
-/// [`FixedReads`] with the target's decided value.
-struct WithTarget<'e, 'a> {
-    inner: &'e FixedReads<'a>,
-    target: &'e VarName,
-    value: &'e Value,
-}
-
-impl EvalEnvironment for WithTarget<'_, '_> {
-    fn get_value(&self, name: &str) -> Option<Cow<'_, Value>> {
-        if name == self.target.as_str() {
-            return Some(Cow::Borrowed(self.value));
-        }
-        self.inner.get_value(name)
-    }
-
-    fn get_enum(&self, name: &str) -> Option<&(String, String)> {
-        self.inner.get_enum(name)
-    }
-
-    fn enumeration_type(&self, declaration: rumoca_core::DefId) -> Option<&str> {
-        self.inner.enumeration_type(declaration)
-    }
-
-    fn get_function(&self, name: &str) -> Option<&Function> {
-        self.inner.get_function(name)
-    }
-
-    fn get_array_dimensions(&self, name: &str) -> Option<&[i64]> {
-        self.inner.get_array_dimensions(name)
-    }
-
-    fn deferred_parameter(&self, name: &str) -> Option<DeferredParameterSource> {
-        self.inner.deferred_parameter(name)
-    }
-
-    fn translation_resources(&self) -> Option<&ResourceRoots> {
-        self.inner.translation_resources()
-    }
 }
 
 /// The local name the target takes in the function the algorithm runs as.
@@ -479,11 +436,14 @@ fn is_string(flat: &flat::Model, variable: &flat::Variable) -> bool {
 }
 
 /// The model's names the algorithm may read: those fixed at translation, as
-/// their literal values. The target is the algorithm's own output.
+/// their literal values. The target is the algorithm's own output; once the
+/// algorithm has run, `decided` is its value, which the algorithm's
+/// top-level assertions read.
 struct FixedReads<'a> {
     flat: &'a flat::Model,
     inventory: &'a FunctionInventory<'a>,
     target: &'a VarName,
+    decided: Option<&'a Value>,
 }
 
 impl FixedReads<'_> {
@@ -509,6 +469,11 @@ impl FixedReads<'_> {
 
 impl EvalEnvironment for FixedReads<'_> {
     fn get_value(&self, name: &str) -> Option<Cow<'_, Value>> {
+        if let Some(value) = self.decided
+            && name == self.target.as_str()
+        {
+            return Some(Cow::Borrowed(value));
+        }
         let binding = self.fixed(name)?.binding.as_ref()?;
         eval_expr(binding, self.inventory).ok().map(Cow::Owned)
     }
