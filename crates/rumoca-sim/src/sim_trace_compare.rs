@@ -382,7 +382,7 @@ pub struct ModelDeviationMetric {
     /// Common channels whose every sample is at or above
     /// [`UNBOUNDED_MAGNITUDE`] in both traces: each tool's `inf` constant
     /// (MSL's ModelicaServices 1.8e308, OpenModelica's 1e60), which is
-    /// unbounded on both sides and has no finite difference to score. They
+    /// unbounded on both sides and has no finite error to score. They
     /// are recorded here and kept out of the channel bands.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub unbounded_channels: Vec<String>,

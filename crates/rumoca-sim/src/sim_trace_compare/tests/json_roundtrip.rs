@@ -129,7 +129,7 @@ fn a_model_metric_stays_finite_when_finite_samples_overflow_the_integral() {
 fn a_channel_unbounded_in_both_traces_is_recorded_and_kept_out_of_the_bands() {
     // `Modelica.Constants.inf` is 1.7976931348623157e308 in MSL's
     // ModelicaServices and 1e60 in OpenModelica's: both say unbounded, and
-    // there is no finite difference to score. RoomCO2's `m_flow_turbulent`
+    // there is no finite error to score. RoomCO2's `m_flow_turbulent`
     // made the model near agreement and failed the merge gate (#755).
     let (rumoca, omc) = room_traces(f64::MAX, 1e60);
     let metric = compare_model_traces("RoomCO2", &rumoca, &omc).unwrap();
