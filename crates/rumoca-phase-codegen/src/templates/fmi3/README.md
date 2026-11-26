@@ -61,8 +61,19 @@ product (`J * der(w) = f`) lowers to a Solve IR `LinSolve` that the state
 derivative kernel evaluates by the linked kernel's Gauss-Jordan elimination
 with partial pivoting; a singular matrix fails the evaluation. A `LinSolve` in
 a residual, projection, or initialization block is refused. Algebraic systems
-run the shared ME projection kernel of SPEC_0044 ME-PROJ-001. Non-finite
-refreshed values fail the FMI call and a failed CS step rolls back its state.
+run the shared ME projection kernel of SPEC_0044 ME-PROJ-001, which logs each
+site whose fallback rate crosses the policy rate and each fault
+(ME-PROJ-003). Built with `RMC_LANE_STATUS`, the kernel logs neither: it
+keeps the counts of each site's first crossing, its first fault and its
+fault count in the instance's `rmc_lane_status`, which the host copies alone
+for `rmc_lane_report` (every crossed site in site order, then the first
+fault). A directional derivative's private point reports to its instance,
+and restoring an FMU state keeps the reports. The macro adds a member to
+`ModelInstance`, so it goes in every translation unit: the units of a lane
+build share names of their own and do not link with units built without it,
+and its `rmc_lane_report` is a hidden symbol for a host linked with them.
+Non-finite refreshed values fail the FMI call and a failed CS step rolls
+back its state.
 Unimplemented FMI capabilities are absent from metadata and reject at the ABI.
 
 The C sources are split into translation units that compile in parallel:

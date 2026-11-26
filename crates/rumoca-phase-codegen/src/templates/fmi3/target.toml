@@ -124,3 +124,7 @@ name = "fmi-scalar-events.jinja"
 [[partials]]
 template = "total_tangent.jinja"
 name = "fmi-total-tangent.jinja"
+
+[[files]]
+path = "sources/rmc_cuda_step.c.inc"
+template = "cuda_step.c.jinja"

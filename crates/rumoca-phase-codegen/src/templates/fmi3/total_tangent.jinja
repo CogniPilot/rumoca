@@ -428,6 +428,13 @@ static {{ prefix }}Status rmc_tangent_request({{ instance_type }} instance,
     if (noutput) memcpy(output, result, noutput*sizeof(double));
     status = {{ prefix }}OK;
 cleanup:
+{%- if me.kernel or me.assign.plan.programs|length > 0 %}
+#if defined(RMC_LANE_STATUS)
+    /* SPEC_0044 ME-PROJ-003: the private point's status started as the live
+       one, so it holds the live reports and those of the request. */
+    if (owns_point) live->rmc_lane_status = point->rmc_lane_status;
+#endif
+{%- endif %}
     if (owns_point) rmc_release_text(point);
     rmc_instance_free(live, point); rmc_instance_free(live, sizes);
     rmc_instance_free(live, work); rmc_instance_free(live, result);

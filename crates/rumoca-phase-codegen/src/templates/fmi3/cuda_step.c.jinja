@@ -1,0 +1,22 @@
+/* Optional nvptx64 co-simulation entry. Compile this file as C and mark
+   rmc_fmi3_step as the PTX kernel. Each thread owns one initialized component.
+   These diagnostics-only callbacks must be null on the device. */
+#include "model.c"
+void rmc_fmi3_step(void* instances, double current, double dt, int* statuses, int count) {
+    const unsigned lane = __nvvm_read_ptx_sreg_ctaid_x() * __nvvm_read_ptx_sreg_ntid_x()
+                        + __nvvm_read_ptx_sreg_tid_x();
+    if (lane >= (unsigned)count) return;
+    ModelInstance* instance = (ModelInstance*)instances + lane;
+    bool event = false, terminate = false, early = false;
+    double last = current;
+    if (instance->logger || instance->environment) {
+        statuses[lane] = fmi3Error;
+        return;
+    }
+    fmi3Status status = fmi3DoStep(instance, current, dt, true, &event, &terminate, &early, &last);
+    statuses[lane] = (event || terminate || early) ? fmi3Error : status;
+}
+
+/* Host/device instance copies require matching ABI and instantiation token. */
+__attribute__((address_space(1),used)) const char rmc_fmi3_token[] = "{{ artifact.identities.fmu }}";
+__attribute__((address_space(1),used)) const unsigned long long rmc_fmi3_instance_bytes = sizeof(ModelInstance);

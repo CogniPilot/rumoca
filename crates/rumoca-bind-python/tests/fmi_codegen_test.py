@@ -91,10 +91,13 @@ def test_codegen_fmi2_sources_and_metadata() -> None:
 
 def test_codegen_fmi3_sources_and_metadata() -> None:
     expected = {
-        "modelDescription.xml", "sources/buildDescription.xml", "sources/model.h"
+        "modelDescription.xml", "sources/buildDescription.xml", "sources/model.h",
+        # CUDA ensemble entry, included by a device build; not a translation unit.
+        "sources/rmc_cuda_step.c.inc",
     }
     expected.update("sources/" + name for name in TRANSLATION_UNITS)
     files = _render("fmi3", expected)
+    assert "rmc_cuda_step" not in files["sources/buildDescription.xml"]
     root = _description(files, "3.0")
     by_name = {node.attrib["name"]: node for node in root.find("ModelVariables")}
     assert by_name["x"].tag == by_name["gain"].tag == "Float64"

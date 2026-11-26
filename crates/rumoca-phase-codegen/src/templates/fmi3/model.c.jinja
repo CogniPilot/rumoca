@@ -301,8 +301,10 @@ FMI_EXPORT fmi3Status fmi3GetVariableDependencies(fmi3Instance i,fmi3ValueRefere
 /* An FMU state is a copy of the instance: values, parameters, texts, the
    refresh policy, and the active reduced chart with any latched basis change.
    The lifecycle state, interface, logging environment and retained factors
-   stay the instance's own: a state holds their address only, and the factors
-   are a function of the bits they are bound to (ME-PROJ-001). */
+   stay the instance's own: a state holds the factors' address only, and they
+   are a function of the bits they are bound to (ME-PROJ-001). So do a lane
+   build's reports (SPEC_0044 ME-PROJ-003), which, like what the component
+   logged, restoring a state does not undo. */
 FMI_EXPORT fmi3Status fmi3GetFMUState(fmi3Instance i, fmi3FMUState* state) {
     ModelInstance* m = i; if (!m || !state) return fmi3Error;
     ModelInstance* saved = *state ? (ModelInstance*)*state : malloc(sizeof(ModelInstance));
@@ -315,9 +317,19 @@ FMI_EXPORT fmi3Status fmi3GetFMUState(fmi3Instance i, fmi3FMUState* state) {
 FMI_EXPORT fmi3Status fmi3SetFMUState(fmi3Instance i, fmi3FMUState state) {
     ModelInstance* m = i; const ModelInstance* saved = state; if (!m || !saved) return fmi3Error;
     enum ModelState mode = m->state; enum InterfaceType type = m->type; fmi3InstanceEnvironment environment = m->environment; fmi3LogMessageCallback logger = m->logger;{% if me_refresh.keep.doubles > 0 %} double* keep_d = m->rmc_keep_d; size_t* keep_s = m->rmc_keep_s;{% endif %}
+{%- if me_refresh.kernel or me_refresh.assign.plan.programs|length > 0 %}
+#if defined(RMC_LANE_STATUS)
+    RmcLaneStatus reports = m->rmc_lane_status;
+#endif
+{%- endif %}
     rmc_release_text(m);
     memcpy(m, saved, sizeof(ModelInstance));
     m->state = mode; m->type = type; m->environment = environment; m->logger = logger;{% if me_refresh.keep.doubles > 0 %} m->rmc_keep_d = keep_d; m->rmc_keep_s = keep_s;{% endif %}
+{%- if me_refresh.kernel or me_refresh.assign.plan.programs|length > 0 %}
+#if defined(RMC_LANE_STATUS)
+    m->rmc_lane_status = reports;
+#endif
+{%- endif %}
     return rmc_own_text(m, saved) ? fmi3OK : fmi3Error;
 }
 FMI_EXPORT fmi3Status fmi3FreeFMUState(fmi3Instance i, fmi3FMUState* state) {
