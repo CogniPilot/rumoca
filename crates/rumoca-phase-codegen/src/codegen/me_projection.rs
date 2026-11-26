@@ -537,8 +537,9 @@ pub(super) fn me_refresh_value(component: &impl RefreshSource) -> Result<Value, 
     let ComponentTables {
         mut table,
         assignments,
-        records,
+        mut records,
     } = tables;
+    let keep = place_retained(&mut records);
     let lane_max = records.iter().map(BlockRecord::lane_max).max().unwrap_or(0);
     let (block_doubles, block_sizes) = records
         .iter()
@@ -571,6 +572,7 @@ pub(super) fn me_refresh_value(component: &impl RefreshSource) -> Result<Value, 
         assign => assignments.into_value()?,
         init => init,
         work => minijinja::context! { doubles => doubles, sizes => sizes },
+        keep => minijinja::context! { doubles => keep.0.0, sizes => keep.0.1, flags => keep.1 },
         seed_len => seed_len,
         lane_max => lane_max,
         variable_scales => variable_scales,
@@ -599,6 +601,24 @@ fn arena_doubles(
         y_doubles + workspace.unwrap_or(0)
     });
     refresh_doubles + init_doubles.max(chart_frame)
+}
+
+/// Lay the retained factorizations of the affine blocks end to end in the
+/// retained storage of an instance, within its budget
+/// (`block::grant_retention`): the total (doubles, size indices), zero when
+/// no block keeps one, and the size offset of each retaining block, where
+/// its flags lead its sizes.
+fn place_retained(records: &mut [BlockRecord]) -> (block::Retained, Vec<usize>) {
+    let storage: Vec<_> = records.iter().map(BlockRecord::retained).collect();
+    let (offsets, total) = block::grant_retention(&storage);
+    let mut flags = Vec::new();
+    for (record, offset) in records.iter_mut().zip(offsets) {
+        if let Some(offset) = offset {
+            record.keep_at(offset);
+            flags.push(offset.1);
+        }
+    }
+    (total, flags)
 }
 
 /// The one numerical policy both executors read.

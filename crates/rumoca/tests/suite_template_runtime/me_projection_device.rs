@@ -60,7 +60,8 @@ fn render_device_unit(
     .expect("render the device unit")
 }
 
-/// The test models: an affine block with its reduced elimination, a torn loop
+/// The test models: an affine block with its reduced elimination, an affine
+/// chain on its retained dense factorization, a torn loop
 /// with causal runs, an array equation whose rows are sliced singletons, a
 /// loop through a pure function with a loop, a loop through a function whose
 /// assertion fails at some points, an initialization residual that
@@ -94,6 +95,10 @@ pub(crate) fn models() -> Vec<(rumoca::CompilationResult, &'static str)> {
         (
             compile(INITIAL_FUNCTION, "DeviceInitialFunction"),
             "DeviceInitialFunction",
+        ),
+        (
+            compile(AFFINE_CHAIN, "DeviceAffineChain"),
+            "DeviceAffineChain",
         ),
         (
             compile(
@@ -230,6 +235,24 @@ initial equation
 equation
   der(x) = -p*x;
 end DeviceInitialFunction;";
+
+/// A resistive chain: one coupled affine block without an elimination layout,
+/// whose dense factorization the lane keeps from one refresh to the next.
+const AFFINE_CHAIN: &str = "model DeviceAffineChain
+  parameter Integer N = 12;
+  parameter Real R = 1.0;
+  parameter Real Rm = 10;
+  parameter Real C = 1e-3;
+  Real vC[N](start={0.1*i for i in 1:N}, each fixed=true);
+  Real v[N];
+equation
+  (sin(time) - v[1]) / 0.1 + (v[2] - v[1]) / R = (v[1] - vC[1]) / Rm;
+  for i in 2:N - 1 loop
+    (v[i - 1] - v[i]) / R + (v[i + 1] - v[i]) / R = (v[i] - vC[i]) / Rm;
+  end for;
+  (v[N - 1] - v[N]) / R = (v[N] - vC[N]) / Rm;
+  C * der(vC) = (v - vC) / Rm;
+end DeviceAffineChain;";
 
 /// The perturbed state points every comparison refreshes.
 pub(crate) const POINTS: usize = 5;

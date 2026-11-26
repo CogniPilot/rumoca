@@ -146,7 +146,7 @@ int main(void) {
 
 /// The FMI 3 headers the generated `model.c` includes, from the pinned FMI
 /// standards tree.
-fn fmi3_header_directory() -> Option<PathBuf> {
+pub(super) fn fmi3_header_directory() -> Option<PathBuf> {
     let headers = standard_roots().1.root.join("headers");
     headers.join("fmi3Functions.h").is_file().then_some(headers)
 }
