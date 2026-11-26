@@ -171,6 +171,8 @@ pub(super) struct ShapeEnvironment {
     /// once analysis settles them; a guard reading any other parameter is a
     /// run-time guard under SPEC_0040 DAE-C22. `None` in function scopes.
     evaluable: Option<Arc<std::collections::HashSet<VarName>>>,
+    /// [`crate::ToDaeOptions::retain_parameter_guards`], in the model scope.
+    retain_parameter_guards: bool,
     /// Equation conditionals whose run-time arms could not be certified, so
     /// their parameter guard is a structural selection.
     structural_selections: Arc<HashSet<Span>>,
@@ -194,8 +196,15 @@ impl ShapeEnvironment {
             specialized: false,
             attribute_scope: false,
             evaluable: None,
+            retain_parameter_guards: false,
             structural_selections: Arc::default(),
         }
+    }
+
+    /// Whether every equation conditional under a tunable parameter guard
+    /// stays a run-time branch ([`crate::ToDaeOptions::retain_parameter_guards`]).
+    pub(super) fn retains_every_parameter_guard(&self) -> bool {
+        self.retain_parameter_guards
     }
 
     /// Whether the equation conditional at `span` is a structural selection
@@ -794,7 +803,7 @@ impl FunctionShapeAnalysis {
 
     #[cfg(test)]
     pub(super) fn analyze(flat: &flat::Model, constants: &EvalContext) -> Result<Self, ToDaeError> {
-        Self::analyze_model(flat, constants, None)
+        Self::analyze_model(flat, constants, None, crate::ToDaeOptions::default())
     }
 
     /// Analyze with the model's evaluable parameters known, so discovery keeps
@@ -804,6 +813,7 @@ impl FunctionShapeAnalysis {
         flat: &flat::Model,
         constants: &EvalContext,
         evaluable: Option<&std::collections::HashSet<VarName>>,
+        options: crate::ToDaeOptions,
     ) -> Result<Self, ToDaeError> {
         let record_array_fields = Arc::new(analysis::analyze_record_array_field_plans(
             flat,
@@ -813,6 +823,7 @@ impl FunctionShapeAnalysis {
         let mut model_values = concrete_model_shapes(flat, constants)?;
         model_values.functions = Some(Arc::new(function_table(constants)));
         model_values.evaluable = evaluable.map(|evaluable| Arc::new(evaluable.clone()));
+        model_values.retain_parameter_guards = options.retain_parameter_guards;
         model_values.record_array_fields = Some(record_array_fields);
         let constructor_instances = flat
             .functions
@@ -1236,7 +1247,13 @@ impl ShapeAnalyzer<'_> {
         // the attempt is rolled back and only the reachable arms are kept.
         let run_time = !self.analysis.structural_selections.contains(&span)
             && values.evaluable().is_some_and(|evaluable| {
-                retains_flat_guard(self.flat, evaluable, branches, else_branch)
+                retains_flat_guard(
+                    self.flat,
+                    evaluable,
+                    values.retains_every_parameter_guard(),
+                    branches,
+                    else_branch,
+                )
             });
         if run_time {
             let checkpoint = self.checkpoint();

@@ -81,6 +81,7 @@ pub(in crate::construction) fn attribute_conditional_folds(
 pub(super) fn retains_equation_guard<'dae>(
     coordinates: &HashMap<VarName, Coordinate<'dae>>,
     evaluable: &std::collections::HashSet<VarName>,
+    every_guard: bool,
     branches: &[(Expression, Expression)],
     else_branch: &Expression,
 ) -> bool {
@@ -104,6 +105,7 @@ pub(super) fn retains_equation_guard<'dae>(
         &GuardClasses {
             tunable_parameter: &tunable,
             unknown: &unknown,
+            every_guard,
         },
     )
 }
@@ -115,6 +117,9 @@ pub(in crate::construction) struct GuardClasses<'a> {
     /// An unknown of the equation system: a state, algebraic, or discrete
     /// variable.
     pub(in crate::construction) unknown: &'a dyn Fn(&VarName) -> bool,
+    /// Compare the arms only by what they read under `der` or `pre`
+    /// ([`crate::ToDaeOptions::retain_parameter_guards`]).
+    pub(in crate::construction) every_guard: bool,
 }
 
 /// Whether a conditional whose guard reads a tunable parameter is kept as a
@@ -136,7 +141,13 @@ pub(in crate::construction) fn retains_parameter_guard(
     let incidence = |arm: &Expression| {
         let mut scan = ArmScan::incidence(classes.unknown);
         rumoca_core::ExpressionVisitor::visit_expression(&mut scan, arm);
-        scan.reads
+        let mut reads = scan.reads;
+        if classes.every_guard {
+            // The arms may read different unknowns by value, but they must
+            // differentiate the same ones: the states do not depend on the arm.
+            reads.retain(IncidenceRead::is_differentiated_or_previous);
+        }
+        reads
     };
     let first = incidence(else_branch);
     branches
@@ -153,6 +164,15 @@ struct IncidenceRead {
 }
 
 impl IncidenceRead {
+    fn is_differentiated_or_previous(&self) -> bool {
+        self.operators.iter().any(|operator| {
+            matches!(
+                operator,
+                rumoca_core::BuiltinFunction::Der | rumoca_core::BuiltinFunction::Pre
+            )
+        })
+    }
+
     fn same(&self, other: &Self) -> bool {
         self.operators == other.operators
             && self
@@ -272,6 +292,7 @@ impl rumoca_core::ExpressionVisitor for ArmScan<'_> {
 pub(in crate::construction) fn retains_flat_guard(
     flat: &flat::Model,
     evaluable: &std::collections::HashSet<VarName>,
+    every_guard: bool,
     branches: &[(Expression, Expression)],
     else_branch: &Expression,
 ) -> bool {
@@ -290,6 +311,7 @@ pub(in crate::construction) fn retains_flat_guard(
         &GuardClasses {
             tunable_parameter: &tunable,
             unknown: &unknown,
+            every_guard,
         },
     )
 }

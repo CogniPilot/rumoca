@@ -10,6 +10,7 @@ use rumoca_core::{ComponentReference, FallibleExpressionRewriter, FallibleStatem
 /// resolved to declared storage coordinates. Borrowed when no change is needed.
 pub(super) fn prepared_flat(
     flat: &flat::Model,
+    options: crate::ToDaeOptions,
 ) -> Result<(Cow<'_, flat::Model>, Option<ParameterBindings>), ToDaeError> {
     let carrying = model_algorithm_loops::has_carrying_loops(flat);
     if !carrying && !has_decidable_conditionals(flat) {
@@ -18,8 +19,12 @@ pub(super) fn prepared_flat(
     }
     let mut bindings = ParameterBindings::evaluate(flat)?;
     register_deferred_parameters(flat, &mut bindings.constants);
-    let shapes =
-        FunctionShapeAnalysis::analyze_model(flat, &bindings.constants, Some(&bindings.evaluable))?;
+    let shapes = FunctionShapeAnalysis::analyze_model(
+        flat,
+        &bindings.constants,
+        Some(&bindings.evaluable),
+        options,
+    )?;
     let unrolled =
         model_algorithm_loops::unroll_carrying_algorithm_loops(flat, shapes.model_values())?;
     let selected = select_structural_branches(unrolled, shapes.model_values());

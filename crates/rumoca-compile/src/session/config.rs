@@ -10,6 +10,11 @@ pub struct SessionConfig {
     pub parallel: bool,
     /// Maximum concrete class/component nesting allowed during instantiation.
     pub instantiation_depth_limit: usize,
+    /// Keep an equation conditional whose guard reads a tunable parameter as a
+    /// run-time branch also where its arms read different unknowns by value
+    /// but differentiate the same ones (`rumoca compile
+    /// --retain-parameter-guards`, `rumoca_phase_dae::ToDaeOptions`).
+    pub retain_parameter_guards: bool,
 }
 
 impl Default for SessionConfig {
@@ -17,6 +22,7 @@ impl Default for SessionConfig {
         Self {
             parallel: false,
             instantiation_depth_limit: DEFAULT_INSTANTIATION_DEPTH_LIMIT,
+            retain_parameter_guards: false,
         }
     }
 }
@@ -26,6 +32,12 @@ impl SessionConfig {
         InstantiateOptions {
             depth_limit: self.instantiation_depth_limit,
             ..InstantiateOptions::default()
+        }
+    }
+
+    pub(super) fn dae_options(&self) -> rumoca_phase_dae::ToDaeOptions {
+        rumoca_phase_dae::ToDaeOptions {
+            retain_parameter_guards: self.retain_parameter_guards,
         }
     }
 }

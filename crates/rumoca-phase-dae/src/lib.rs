@@ -32,6 +32,20 @@ impl DaeConstructionResult {
     }
 }
 
+/// Options of the Flat-to-DAE construction.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ToDaeOptions {
+    /// Keep an equation conditional whose guard reads a tunable parameter as a
+    /// run-time branch also where its arms read different unknowns by value,
+    /// as long as they read the same unknowns under `der` and `pre`
+    /// (SPEC_0040 DAE-C22 otherwise selects the arm at translation and fixes
+    /// the parameters the guard reads). The states and the number of
+    /// equations then do not depend on the arm. For a host that sets
+    /// parameters at run time and evaluates the equations, such as a Base
+    /// Modelica reader or an FMU in DAE mode.
+    pub retain_parameter_guards: bool,
+}
+
 /// Construct the canonical DAE while transferring the source-map snapshot that
 /// resolves every retained provenance range.
 pub fn to_dae(flat: &flat::Model, source_map: SourceMap) -> Result<dae::Dae, ToDaeError> {
@@ -43,7 +57,16 @@ pub fn to_dae_with_evidence(
     flat: &flat::Model,
     source_map: SourceMap,
 ) -> Result<DaeConstructionResult, ToDaeError> {
-    construction::construct_with_evidence(flat, source_map)
+    construction::construct_with_evidence(flat, source_map, ToDaeOptions::default())
+}
+
+/// [`to_dae_with_evidence`] under the given [`ToDaeOptions`].
+pub fn to_dae_with_options(
+    flat: &flat::Model,
+    source_map: SourceMap,
+    options: ToDaeOptions,
+) -> Result<DaeConstructionResult, ToDaeError> {
+    construction::construct_with_evidence(flat, source_map, options)
 }
 
 pub use construction::StructuralSelection;

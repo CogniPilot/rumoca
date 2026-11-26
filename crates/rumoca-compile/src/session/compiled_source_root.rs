@@ -453,6 +453,7 @@ impl CompiledSourceRoot {
             failures,
             &closure.compile_targets,
             InstantiateOptions::default(),
+            rumoca_phase_dae::ToDaeOptions::default(),
         )
     }
 
