@@ -1,6 +1,6 @@
 {%- set model_identifier = "Rumoca_" ~ (artifact.identities.fmu | replace("-", "_")) %}
 {%- from "fmi-c-kernel.jinja" import text_fields, warning_fields, linear_solve_kernel %}
-{%- from "fmi-me-projection.jinja" import storage_lengths, workspace_fields, kernel_declarations %}
+{%- from "fmi-me-projection.jinja" import storage_lengths, lane_status_type, workspace_fields, kernel_declarations %}
 {%- from "fmi-typed-functions.jinja" import function_prototypes %}
 {%- from "fmi-scalar-events.jinja" import event_fields, event_now %}
 /* Declarations shared by the component's translation units. */
@@ -25,13 +25,20 @@
 
 #define FMI2_FUNCTION_PREFIX {{ model_identifier }}_
 /* The prefix of the symbols the component's translation units share, in
-   every build (shared_prefix). */
+   every build (shared_prefix). A lane build (RMC_LANE_STATUS, SPEC_0044
+   ME-PROJ-003) adds a member to ModelInstance, so its units share names of
+   their own: a unit built without it does not link with one built with it. */
+#if defined(RMC_LANE_STATUS)
+#define RMC_MODEL_PREFIX {{ model_identifier }}_lane_
+#else
 #define RMC_MODEL_PREFIX {{ model_identifier }}_
+#endif
 #include "fmi2Functions.h"
 #define FMI_EXPORT FMI2_Export
 
 enum ModelState { MODEL_INSTANTIATED, MODEL_INITIALIZATION, MODEL_EVENT, MODEL_CONTINUOUS, MODEL_STEP, MODEL_TERMINATED, MODEL_ERROR };
 {{ storage_lengths(solve) }}
+{{- lane_status_type(me_refresh) }}
 typedef struct {
     bool assertions_initialized; bool assertion_failed; bool parameters_dirty; bool rmc_nonfinite;
     double time; double tolerance; double rmc_cs_substep;
