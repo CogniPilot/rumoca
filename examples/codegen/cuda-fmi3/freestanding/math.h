@@ -1,0 +1,30 @@
+#define isnan(x) __builtin_isnan(x)
+#define isfinite(x) __builtin_isfinite(x)
+#define isinf(x) __builtin_isinf(x)
+#define INFINITY __builtin_inf()
+#define NAN __builtin_nan("")
+#define fabs __builtin_fabs
+#define fmax __builtin_fmax
+#define fmin __builtin_fmin
+#define sqrt __builtin_sqrt
+#define trunc __builtin_trunc
+#define floor __builtin_floor
+#define ceil __builtin_ceil
+#define signbit __builtin_signbit
+#define copysign __builtin_copysign
+#define exp __nv_exp
+#define log __nv_log
+#define sin __nv_sin
+#define cos __nv_cos
+#define tanh __nv_tanh
+#define tan __nv_tan
+#define asin __nv_asin
+#define acos __nv_acos
+#define atan2 __nv_atan2
+#define pow __nv_pow
+#define fmod __nv_fmod
+double exp(double),log(double),sin(double),cos(double),tanh(double),tan(double),asin(double),acos(double),atan2(double,double),pow(double,double),fmod(double,double);
+#define log10 __nv_log10
+#define nextafter __nv_nextafter
+#define round __builtin_round
+double log10(double),nextafter(double,double);
