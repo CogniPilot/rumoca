@@ -375,6 +375,22 @@
       "retired_by": "near_zero_channel_scaling"
     },
     {
+      "model_name": "Modelica.Fluid.Examples.TraceSubstances.RoomCO2WithControls",
+      "kind": "reference_failure",
+      "reason": "The OMC a96aa1a-cmake reference carries isolated single-sample spikes in the duct and volume energy-balance terms (Hb_flows, Hb_flow) while every flow, enthalpy flow and temperature they are computed from agrees with the Rumoca trace, so the near band reflects reference noise, not a model difference. Retire this exception once an OMC reference shows smooth balance terms for this model.",
+      "evidence": {
+        "facts": [
+          "ductIn.m_flows[1] = 0.0389 kg/s and ductIn.H_flows[1] = 1762 W in both traces at t = 54777.6 s; peak ductIn.H_flows[1] 5583 W (Rumoca) vs 5586 W (OMC) at t = 32486 s",
+          "OMC ductIn.Hb_flows[1] at t = 54432, 54605, 54778, 54950 s: -0.0046, -0.0097, -30.0, +9.04 W; Rumoca at the same instants: -0.0001, -0.0051, -0.0007, -0.0001 W",
+          "OMC volume.Hb_flow jumps to +8.28 and -7.70 W at t = 54778 and 54950 s where Rumoca gives 0.35 and 0.27 W; its run peak agrees (12.65 W Rumoca vs 12.69 W OMC at t = 46829 s)",
+          "largest |Hb_flows| over the run: 0.023 W in Rumoca against 30.0 W in OMC (ductIn.Hb_flows[1]) and 11.9 W (ductIn.Hb_flows[2], t = 55642 s)",
+          "duct and volume temperatures 293.14-293.15 K in both traces; the other deviating channels (mb_flows near 1e-11, PID.I.u near 1e-11) are near-zero noise in both",
+          "band without the exception: near (590 of 602 channels high, 11 deviation, 4 severe); m_flow_turbulent[1..4] are unbounded in both traces and kept out of the bands"
+        ],
+        "artifact": "msl:Modelica.Fluid.Examples.TraceSubstances.RoomCO2WithControls"
+      }
+    },
+    {
       "model_name": "Modelica.Magnetic.FluxTubes.Examples.SolenoidActuator.ComparisonPullInStroke",
       "kind": "model_issue",
       "reason": "Only the two stopper_xMin.lossPower channels are non-high (477 of 479 channels high). Both traces reach the stopper at the same instants and dissipate the same impact energy; the channels differ in the damped bounce tail of the stiff elastic stopper, whose loss power is not converged at the annotation tolerance: Rumoca at rtol=atol=1e-9 differs from its own 1e-6 trace by more than either differs from OMC. Pointwise comparison of this unconverged event-local observable is non-identifying, while every position, velocity, flux, current and force channel is high.",

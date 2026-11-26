@@ -12,6 +12,25 @@ pub(super) struct ReferenceBoundaryMigration {
 }
 
 fn reviewed_migration() -> ReferenceBoundaryMigration {
+    let mut migration = v14_migration();
+    migration.previous = Some(Box::new(migration.clone()));
+    migration.metric.from_quality_gate_version = 14;
+    migration.metric.to_quality_gate_version = 15;
+    migration.metric.change = "typed-trace-exceptions-v7".to_string();
+    migration.metric.strict_high_before = 304;
+    migration.metric.strict_high_after = 304;
+    migration.metric.policy_excluded_after = 54;
+    migration.metric.excluded_strict_high_before = 0;
+    migration.metric.excluded_non_high_before = 1;
+    migration.metric.exclusions_sha256 =
+        "dbd79465290de942e805cbb369bb805e9eba0b42effeef3237a0f0d093e2c11f".to_string();
+    migration.evidence_git_commit = "128f70a6ea97334cef5a18ae8546a57abaf50168".to_string();
+    migration.evidence_run = "roomco2withcontrols-focused".to_string();
+    migration.policy_excluded_before = 53;
+    migration
+}
+
+fn v14_migration() -> ReferenceBoundaryMigration {
     let mut migration = v13_migration();
     migration.previous = Some(Box::new(migration.clone()));
     migration.metric.from_quality_gate_version = 13;
@@ -208,7 +227,8 @@ fn base_reference_boundary_migration() -> ReferenceBoundaryMigration {
 fn reviewed_boundary_migration(version: u64) -> Option<ReferenceBoundaryMigration> {
     match version {
         MSL_QUALITY_GATE_VERSION => Some(reviewed_migration()),
-        PREVIOUS_REFERENCE_BOUNDARY_VERSION => Some(v13_migration()),
+        PREVIOUS_REFERENCE_BOUNDARY_VERSION => Some(v14_migration()),
+        13 => Some(v13_migration()),
         12 => Some(v12_migration()),
         11 => Some(v11_migration()),
         10 => Some(v10_migration()),
@@ -343,6 +363,7 @@ mod tests {
         assert!(schema_target_reaches_current(11, &baseline));
         assert!(schema_target_reaches_current(12, &baseline));
         assert!(schema_target_reaches_current(13, &baseline));
+        assert!(schema_target_reaches_current(14, &baseline));
         assert!(!schema_target_reaches_current(3, &baseline));
         let migration = baseline.reference_boundary_migration.as_mut().unwrap();
         migration
@@ -350,7 +371,7 @@ mod tests {
             .as_mut()
             .unwrap()
             .metric
-            .to_quality_gate_version = 14;
+            .to_quality_gate_version = 15;
         assert!(!schema_target_reaches_current(4, &baseline));
         assert!(validate_reference_boundary_migration(&baseline).is_err());
     }

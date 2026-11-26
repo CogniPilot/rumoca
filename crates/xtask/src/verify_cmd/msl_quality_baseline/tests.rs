@@ -235,12 +235,12 @@ fn same_omc_context_keeps_promoted_baseline() {
 }
 
 #[test]
-fn checked_in_v14_baseline_preserves_historical_migrations_and_reference_boundary() {
+fn checked_in_v15_baseline_preserves_historical_migrations_and_reference_boundary() {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../rumoca-test-msl/tests/msl_tests/msl_quality_baseline.json");
-    let baseline = load_baseline_header(&path).expect("checked v14 baseline must validate");
+    let baseline = load_baseline_header(&path).expect("checked v15 baseline must validate");
 
-    assert_eq!(baseline.quality_gate_version, 14);
+    assert_eq!(baseline.quality_gate_version, 15);
     assert!(baseline.reference_boundary_migration.is_some());
     assert_eq!(baseline.partial_models, 13);
     assert_eq!(baseline.partial_model_names, reviewed_partial_model_names());
@@ -516,7 +516,7 @@ fn actual_header_binds_new_candidates_and_defers_historical_reader_activation() 
         .join("../rumoca-test-msl/tests/msl_tests/msl_quality_baseline.json");
     let original: serde_json::Value = serde_json::from_slice(&fs::read(&source).unwrap()).unwrap();
     let good = load_baseline_header(&source).unwrap();
-    assert_eq!(good.cohort_snapshot().quality_gate_version, Some(14));
+    assert_eq!(good.cohort_snapshot().quality_gate_version, Some(15));
     let root = std::env::temp_dir().join(format!("msl-header-schema-{}", std::process::id()));
     fs::create_dir(&root).unwrap();
     let path = root.join("baseline.json");

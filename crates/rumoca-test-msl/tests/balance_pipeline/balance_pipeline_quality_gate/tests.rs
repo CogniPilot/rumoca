@@ -1,6 +1,8 @@
 use super::*;
 
 mod gate_hole;
+mod reference_boundary;
+use reference_boundary::v14_below_the_v15_boundary;
 mod phase_budgets;
 mod runtime_evidence;
 mod timing_margin;
@@ -1753,6 +1755,7 @@ fn checked_quality_baseline_has_versioned_oracle_policy_migration_and_tensor_kpi
         .reference_boundary_migration
         .expect("reviewed v4-to-v8 boundary chain");
     assert_eq!(reference, reviewed_reference_boundary_migration());
+    let reference = v14_below_the_v15_boundary(reference);
     // The v14 boundary is a comparator-policy change: angle and power-factor
     // channels compare under the SPEC_0050 phasor rule, which makes the six
     // QuasiStatic angle comparator-limitation rows strict-high and retires
@@ -1940,9 +1943,11 @@ fn roster_additions_name_their_defect_and_join_the_roster() {
     let head = baseline
         .reference_boundary_migration
         .as_ref()
-        .expect("checked v14 boundary");
+        .expect("checked v15 boundary");
     assert!(head.roster_additions.is_empty());
-    let v13 = head.previous.as_deref().expect("checked v13 boundary");
+    let v14 = head.previous.as_deref().expect("checked v14 boundary");
+    assert!(v14.roster_additions.is_empty());
+    let v13 = v14.previous.as_deref().expect("checked v13 boundary");
     assert!(v13.roster_additions.is_empty());
     let v12 = v13.previous.as_deref().expect("checked v12 boundary");
     assert!(v12.roster_additions.is_empty());
@@ -1969,6 +1974,7 @@ fn roster_additions_name_their_defect_and_join_the_roster() {
         .and_then(|migration| migration.previous.as_mut())
         .and_then(|migration| migration.previous.as_mut())
         .and_then(|migration| migration.previous.as_mut())
+        .and_then(|migration| migration.previous.as_mut())
         .unwrap()
         .roster_additions[0]
         .cause = " ".to_string();
@@ -1978,6 +1984,7 @@ fn roster_additions_name_their_defect_and_join_the_roster() {
     let mut outside = baseline;
     outside.reference_boundary_migration = outside
         .reference_boundary_migration
+        .and_then(|migration| migration.previous.map(|previous| *previous))
         .and_then(|migration| migration.previous.map(|previous| *previous))
         .and_then(|migration| migration.previous.map(|previous| *previous))
         .and_then(|migration| migration.previous.map(|previous| *previous))

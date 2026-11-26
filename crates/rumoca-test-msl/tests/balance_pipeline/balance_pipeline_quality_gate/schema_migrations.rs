@@ -18,6 +18,26 @@ pub(super) fn quality_gate_v3_metric_schema_migration() -> MslMetricSchemaMigrat
 }
 
 pub(super) fn reviewed_reference_boundary_migration() -> MslReferenceBoundaryMigration {
+    let mut migration = v14_reference_boundary_migration();
+    migration.previous = Some(Box::new(migration.clone()));
+    migration.metric.from_quality_gate_version = 14;
+    migration.metric.to_quality_gate_version = 15;
+    migration.metric.change = "typed-trace-exceptions-v7".to_string();
+    migration.metric.strict_high_before = 304;
+    migration.metric.strict_high_after = 304;
+    migration.metric.policy_excluded_after = 54;
+    migration.metric.excluded_strict_high_before = 0;
+    migration.metric.excluded_non_high_before = 1;
+    migration.metric.exclusions_sha256 =
+        "dbd79465290de942e805cbb369bb805e9eba0b42effeef3237a0f0d093e2c11f".to_string();
+    migration.evidence_git_commit = "128f70a6ea97334cef5a18ae8546a57abaf50168".to_string();
+    migration.evidence_run = "roomco2withcontrols-focused".to_string();
+    migration.policy_excluded_before = 53;
+    migration.roster_additions = Vec::new();
+    migration
+}
+
+pub(super) fn v14_reference_boundary_migration() -> MslReferenceBoundaryMigration {
     let mut migration = v13_reference_boundary_migration();
     migration.previous = Some(Box::new(migration.clone()));
     migration.metric.from_quality_gate_version = 13;
