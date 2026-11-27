@@ -771,7 +771,7 @@ fn trace_output_summary_rolls_up_initial_condition_stats() {
         variable_meta: None,
         certification_profile: None,
     };
-    let metric = compare_model_traces("M", &rumoca, &omc).expect("compare traces");
+    let metric = compare_model_traces("M", &rumoca, &omc, None).expect("compare traces");
     let mut report = TraceQuantification::default();
     report.models.insert(
         "M".to_string(),
@@ -806,8 +806,8 @@ fn trace_output_summary_does_not_call_missing_initial_evidence_accurate() {
         variable_meta: None,
         certification_profile: None,
     };
-    let metric =
-        compare_model_traces("M", &trace(f64::from_bits(1)), &trace(0.0)).expect("compare traces");
+    let metric = compare_model_traces("M", &trace(f64::from_bits(1)), &trace(0.0), None)
+        .expect("compare traces");
     assert_eq!(metric.initial_condition.channels_compared, 0);
     let mut report = TraceQuantification::default();
     report.models.insert(

@@ -34,6 +34,7 @@ mod speed_report;
 mod state_selection;
 #[cfg(test)]
 mod tests;
+mod tight_reference;
 use omc_session::{OmcEvalError, OmcSession, OmcSimOutcome};
 use output::{
     build_sim_output_payload, compute_trace_output_summary, print_summary, write_trace_report,
@@ -908,14 +909,18 @@ fn run_one_session_worker(ctx: SessionWorkerCtx<'_>) {
         let start = Instant::now();
         let sim = live.simulate_model(model, ctx.stop_time, ctx.use_experiment, ctx.sim_timeout);
         let elapsed = start.elapsed().as_secs_f64();
-        let (result, timed_out) = match sim {
-            Ok(outcome) => (build_session_model_result(&outcome, elapsed), false),
+        let (result, timed_out, settings) = match sim {
+            Ok(outcome) => (
+                build_session_model_result(&outcome, elapsed),
+                false,
+                Some(outcome.settings),
+            ),
             Err(OmcEvalError::Timeout) => {
                 // Poisoned REQ socket after a hung model: kill and respawn.
                 if let Some(mut dead) = session.take() {
                     dead.kill();
                 }
-                (session_timeout_result(elapsed, ctx.sim_timeout), true)
+                (session_timeout_result(elapsed, ctx.sim_timeout), true, None)
             }
             Err(OmcEvalError::Io(error)) => {
                 if let Some(mut dead) = session.take() {
@@ -924,9 +929,11 @@ fn run_one_session_worker(ctx: SessionWorkerCtx<'_>) {
                 (
                     session_error_result(format!("omc session io error: {error}")),
                     false,
+                    None,
                 )
             }
         };
+        let succeeded = result.status == "success";
         let _ = ctx.tx.send(SessionModelOutcome {
             idx,
             model: model.clone(),
@@ -934,6 +941,26 @@ fn run_one_session_worker(ctx: SessionWorkerCtx<'_>) {
             elapsed_seconds: elapsed,
             timed_out,
         });
+        // A flagged model's tight reference, after its timed result is sent so the
+        // rerun stays out of the speed report (see `tight_reference`). A hung or
+        // broken rerun kills the session like a normal run; the model is then
+        // scored without a tight reference.
+        let rerun_failed = match (succeeded, settings.as_ref(), session.as_mut()) {
+            (true, Some(settings), Some(live)) => {
+                tight_reference::simulate_tight_reference_if_flagged(
+                    live,
+                    ctx.work_dir,
+                    model,
+                    settings,
+                    ctx.sim_timeout,
+                )
+                .is_err()
+            }
+            _ => false,
+        };
+        if rerun_failed && let Some(mut dead) = session.take() {
+            dead.kill();
+        }
         // `session` is still alive only on the success path (timeout/io already
         // took and killed it). Recycle it once it has handled enough models.
         if session.is_some() {
@@ -1519,17 +1546,20 @@ fn compare_one_candidate(
             format!("failed to load omc trace: {error}"),
         )
     })?;
-    let metric = compare_model_traces(model_name, &rumoca_trace, &omc_trace).map_err(|error| {
-        // "nothing was comparable" is a property of the two traces; every other
-        // error is a defect in the comparison itself. The distinction is decided
-        // here, where the typed error is in hand, so no reader downstream has to
-        // recover it from the message text.
-        let kind = match error {
-            TraceCompareError::NoComparableSamples => TraceExitKind::NoComparableSamples,
-            _ => TraceExitKind::ComparatorFailed,
-        };
-        TraceExitRecord::new(kind, format!("trace compare failed: {error}"))
-    })?;
+    let normal_csv = resolve_result_file_path(paths, model_name, omc_model.result_file.as_deref());
+    let omc_tight = tight_reference::load_tight_reference(paths, model_name, normal_csv.as_deref());
+    let metric = compare_model_traces(model_name, &rumoca_trace, &omc_trace, omc_tight.as_ref())
+        .map_err(|error| {
+            // "nothing was comparable" is a property of the two traces; every other
+            // error is a defect in the comparison itself. The distinction is decided
+            // here, where the typed error is in hand, so no reader downstream has to
+            // recover it from the message text.
+            let kind = match error {
+                TraceCompareError::NoComparableSamples => TraceExitKind::NoComparableSamples,
+                _ => TraceExitKind::ComparatorFailed,
+            };
+            TraceExitRecord::new(kind, format!("trace compare failed: {error}"))
+        })?;
     Ok(TraceModelMetric {
         metric,
         state_selection: state_selection::compare_model_state_selection(

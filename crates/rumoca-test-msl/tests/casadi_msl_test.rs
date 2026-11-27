@@ -563,7 +563,7 @@ fn run_single_model(source_root: &CompiledSourceRoot, model_name: &str) -> Model
     };
 
     // 4. Compare traces
-    match compare_model_traces(model_name, &rumoca_trace, &casadi_trace) {
+    match compare_model_traces(model_name, &rumoca_trace, &casadi_trace, None) {
         Ok(metric) => ModelOutcome::Pass {
             metric: Box::new(metric),
         },

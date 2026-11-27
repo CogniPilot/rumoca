@@ -128,7 +128,7 @@ fn a_single_instant_experiment_compares_at_its_instant() {
         vec!["x_zero"],
         vec![vec![x_zero, x_zero]],
     );
-    let metric = compare_model_traces("Inverse_sine", &rumoca, &omc).expect("comparable");
+    let metric = compare_model_traces("Inverse_sine", &rumoca, &omc, None).expect("comparable");
     assert_eq!(metric.compared_variables, 1);
     assert_eq!(metric.samples_compared, 1);
     assert_eq!(metric.max_channel_bounded_normalized_l1, 0.0);
@@ -140,7 +140,7 @@ fn a_single_instant_experiment_compares_at_its_instant() {
         vec!["x_zero"],
         vec![vec![2.0 * x_zero]],
     );
-    let metric = compare_model_traces("Inverse_sine", &wrong, &omc).expect("comparable");
+    let metric = compare_model_traces("Inverse_sine", &wrong, &omc, None).expect("comparable");
     assert_eq!(metric.channel_high_count, 0);
     assert!(metric.max_channel_bounded_normalized_l1 > 0.4);
 }
@@ -561,7 +561,7 @@ fn model_score_uses_median_bounded_l1() {
         ],
     );
 
-    let metric = compare_model_traces("M", &rumoca, &omc).expect("model compare");
+    let metric = compare_model_traces("M", &rumoca, &omc, None).expect("model compare");
     assert_eq!(metric.compared_variables, 3);
     let mut channel_scores = metric
         .worst_variables
@@ -584,7 +584,7 @@ fn model_score_uses_median_bounded_l1() {
 fn compare_model_requires_common_variables() {
     let rumoca = trace("M", vec![0.0, 1.0], vec!["x"], vec![vec![0.0, 1.0]]);
     let omc = trace("M", vec![0.0, 1.0], vec!["z"], vec![vec![0.0, 1.0]]);
-    let err = compare_model_traces("M", &rumoca, &omc).expect_err("no common vars");
+    let err = compare_model_traces("M", &rumoca, &omc, None).expect_err("no common vars");
     assert!(matches!(err, TraceCompareError::NoCommonVariables));
 }
 
@@ -603,14 +603,14 @@ fn compare_model_rejects_nonfinite_and_decreasing_time_axes() {
     let valid = trace("M", vec![0.0, 1.0], vec!["x"], vec![vec![0.0, 1.0]]);
     let nonfinite = trace("M", vec![0.0, f64::NAN], vec!["x"], vec![vec![0.0, 1.0]]);
     assert_malformed_trace(
-        compare_model_traces("M", &nonfinite, &valid)
+        compare_model_traces("M", &nonfinite, &valid, None)
             .expect_err("non-finite time axis must fail closed"),
         "not finite",
     );
 
     let decreasing = trace("M", vec![1.0, 0.0], vec!["x"], vec![vec![1.0, 0.0]]);
     assert_malformed_trace(
-        compare_model_traces("M", &decreasing, &valid)
+        compare_model_traces("M", &decreasing, &valid, None)
             .expect_err("decreasing time axis must fail closed"),
         "regressed",
     );
@@ -621,14 +621,14 @@ fn compare_model_rejects_nonrectangular_channel_data() {
     let valid = trace("M", vec![0.0, 1.0], vec!["x"], vec![vec![0.0, 1.0]]);
     let width_mismatch = trace("M", vec![0.0, 1.0], vec!["x", "y"], vec![vec![0.0, 1.0]]);
     assert_malformed_trace(
-        compare_model_traces("M", &width_mismatch, &valid)
+        compare_model_traces("M", &width_mismatch, &valid, None)
             .expect_err("channel width mismatch must fail closed"),
         "channel names do not match",
     );
 
     let length_mismatch = trace("M", vec![0.0, 1.0], vec!["x"], vec![vec![0.0]]);
     assert_malformed_trace(
-        compare_model_traces("M", &length_mismatch, &valid)
+        compare_model_traces("M", &length_mismatch, &valid, None)
             .expect_err("channel length mismatch must fail closed"),
         "values for 2 time rows",
     );
@@ -644,7 +644,7 @@ fn compare_model_rejects_duplicate_channel_names() {
         vec![vec![0.0, 1.0], vec![0.0, 1.0]],
     );
     assert_malformed_trace(
-        compare_model_traces("M", &duplicate, &valid)
+        compare_model_traces("M", &duplicate, &valid, None)
             .expect_err("duplicate channel names must fail closed"),
         "duplicate channel name",
     );
@@ -659,7 +659,7 @@ fn trajectory_and_initial_metric_use_settled_exact_start_time_value() {
         vec!["x"],
         vec![vec![0.0, 1.0, 1.0]],
     );
-    let metric = compare_model_traces("M", &rumoca, &omc).expect("model compare");
+    let metric = compare_model_traces("M", &rumoca, &omc, None).expect("model compare");
     assert!(
         metric.bounded_normalized_l1_score < 1.0e-12,
         "trajectory comparison should use the settled event value"
@@ -683,7 +683,7 @@ fn common_left_limit_is_not_replaced_by_different_start_event_grids() {
         vec![vec![0.0, 0.0, 1.0, 1.0]],
     );
 
-    let metric = compare_model_traces("M", &rumoca, &omc).expect("model compare");
+    let metric = compare_model_traces("M", &rumoca, &omc, None).expect("model compare");
 
     assert_eq!(metric.initial_condition.channels_compared, 1);
     assert_eq!(metric.initial_condition.high_count, 1);
@@ -701,7 +701,7 @@ fn exact_start_time_event_rows_settle_before_initial_comparison() {
         vec![vec![0.0, 0.0, 1.0, 1.0]],
     );
 
-    let metric = compare_model_traces("M", &rumoca, &omc).expect("model compare");
+    let metric = compare_model_traces("M", &rumoca, &omc, None).expect("model compare");
 
     assert_eq!(metric.initial_condition.channels_compared, 1);
     assert_eq!(metric.initial_condition.high_count, 1);
@@ -751,7 +751,7 @@ fn event_discontinuous_real_channel_uses_step_hold_interpolation() {
         certification_profile: None,
     };
 
-    let metric = compare_model_traces("M", &rumoca, &omc)
+    let metric = compare_model_traces("M", &rumoca, &omc, None)
         .expect("event-discontinuous Real trace should compare");
     assert!(
         metric.bounded_normalized_l1_score < 1.0e-12,
@@ -794,7 +794,7 @@ fn discrete_only_model_traces_contribute_to_metrics() {
         certification_profile: None,
     };
 
-    let metric = compare_model_traces("M", &rumoca, &omc)
+    let metric = compare_model_traces("M", &rumoca, &omc, None)
         .expect("discrete-only traces should still produce comparison metrics");
     assert_eq!(metric.compared_variables, 1);
     assert_eq!(metric.samples_compared, 4);
@@ -816,7 +816,7 @@ fn initial_condition_stats_use_first_comparable_sample() {
         vec![vec![0.0, 1.0, 1.0], vec![2.0, 2.0, 2.0]],
     );
 
-    let metric = compare_model_traces("M", &rumoca, &omc).expect("model compare");
+    let metric = compare_model_traces("M", &rumoca, &omc, None).expect("model compare");
 
     assert_eq!(metric.initial_condition.channels_compared, 2);
     assert_eq!(metric.initial_condition.high_count, 1);
@@ -962,7 +962,7 @@ fn synthetic_metrics_produce_expected_agreement_counts() {
         vec!["x"],
         vec![vec![1.0, 1.0, 1.0]],
     );
-    let high = compare_model_traces("high", &high_rumoca, &high_omc).expect("high compare");
+    let high = compare_model_traces("high", &high_rumoca, &high_omc, None).expect("high compare");
 
     let minor_rumoca = trace(
         "minor",
@@ -984,7 +984,8 @@ fn synthetic_metrics_produce_expected_agreement_counts() {
             vec![2.0, 2.0, 2.0],
         ],
     );
-    let minor = compare_model_traces("minor", &minor_rumoca, &minor_omc).expect("minor compare");
+    let minor =
+        compare_model_traces("minor", &minor_rumoca, &minor_omc, None).expect("minor compare");
     assert!(minor.max_channel_bounded_normalized_l1 <= MINOR_AGREEMENT_MAX_CHANNEL_THRESHOLD);
     assert!(minor.max_channel_bounded_normalized_l1 > HIGH_AGREEMENT_MAX_CHANNEL_THRESHOLD);
     assert!(minor.mean_channel_bounded_normalized_l1 <= MINOR_AGREEMENT_MEAN_CHANNEL_THRESHOLD);
@@ -1001,7 +1002,7 @@ fn synthetic_metrics_produce_expected_agreement_counts() {
         vec!["x"],
         vec![vec![0.0, 1.0, 2.0]],
     );
-    let dev = compare_model_traces("dev", &dev_rumoca, &dev_omc).expect("dev compare");
+    let dev = compare_model_traces("dev", &dev_rumoca, &dev_omc, None).expect("dev compare");
     assert!(dev.max_channel_bounded_normalized_l1 > MINOR_AGREEMENT_MAX_CHANNEL_THRESHOLD);
 
     let metrics = [high, minor, dev];
@@ -1143,7 +1144,7 @@ fn curated_fixture_traces_produce_expected_agreement_counts() {
             .expect("load rumoca curated fixture trace");
         let omc = load_trace_json(&fixture_path(&format!("omc/{slug}.json")))
             .expect("load omc curated fixture trace");
-        let metric = compare_model_traces(model_name, &rumoca, &omc)
+        let metric = compare_model_traces(model_name, &rumoca, &omc, None)
             .expect("compare curated fixture traces should succeed");
         metrics.push(metric);
     }
@@ -1381,7 +1382,7 @@ fn information_free_array_element_normalizes_against_its_siblings() {
         vec![big, small, vec![2.9e-5; len], vec![2.9e-5; len]],
     );
 
-    let metric = compare_model_traces("M", &rumoca, &omc).expect("model compare");
+    let metric = compare_model_traces("M", &rumoca, &omc, None).expect("model compare");
     let component = channel_metric(&metric, "frame_b.f[3]");
     let sibling_floor = component
         .reference_array_group_floor
@@ -1430,7 +1431,7 @@ fn real_error_on_information_free_array_element_is_still_reported() {
         vec![sibling, vec![200.0; len]],
     );
 
-    let metric = compare_model_traces("M", &rumoca, &omc).expect("model compare");
+    let metric = compare_model_traces("M", &rumoca, &omc, None).expect("model compare");
     let component = channel_metric(&metric, "frame_b.f[2]");
     assert!(
         component.bounded_normalized_l1_error > MINOR_AGREEMENT_CHANNEL_THRESHOLD,
@@ -1462,7 +1463,7 @@ fn array_group_floor_takes_the_smallest_usable_sibling_range() {
         vec![loud, quiet, vec![5.0e-3; len]],
     );
 
-    let metric = compare_model_traces("M", &rumoca, &omc).expect("model compare");
+    let metric = compare_model_traces("M", &rumoca, &omc, None).expect("model compare");
     let component = channel_metric(&metric, "s.v[3]");
     assert!(
         component.normalization_scale < 0.02,
@@ -1499,7 +1500,7 @@ fn array_element_with_a_level_keeps_its_own_magnitude_scale() {
         vec![sibling, vec![5.0; len]],
     );
 
-    let metric = compare_model_traces("M", &rumoca, &omc).expect("model compare");
+    let metric = compare_model_traces("M", &rumoca, &omc, None).expect("model compare");
     let component = channel_metric(&metric, "s.v[2]");
     let expected_scale = MAGNITUDE_SCALE_FRACTION * 0.5;
     assert!(
@@ -1531,7 +1532,7 @@ fn array_without_a_usable_sibling_keeps_the_absolute_floor() {
         vec![vec![2.9e-5; len], vec![0.0; len]],
     );
 
-    let metric = compare_model_traces("M", &rumoca, &omc).expect("model compare");
+    let metric = compare_model_traces("M", &rumoca, &omc, None).expect("model compare");
     let component = channel_metric(&metric, "s.v[1]");
     assert_eq!(component.reference_array_group_floor, None);
     assert_eq!(
@@ -1580,7 +1581,7 @@ fn discrete_array_elements_ignore_the_group_floor() {
         certification_profile: None,
     };
 
-    let metric = compare_model_traces("M", &rumoca, &omc).expect("model compare");
+    let metric = compare_model_traces("M", &rumoca, &omc, None).expect("model compare");
     let component = channel_metric(&metric, "q[2]");
     assert_eq!(component.reference_array_group_floor, None);
     assert_eq!(component.normalization_scale, DISCRETE_SCALE_FLOOR);

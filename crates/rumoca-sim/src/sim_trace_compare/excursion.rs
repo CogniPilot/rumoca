@@ -27,7 +27,10 @@
 //! * **Unclassified** (no tighter reference, or it has no such channel): the
 //!   channel is scored exactly as before. No evidence, no change.
 
-use super::normalization::{CONTINUOUS_ABSOLUTE_SCALE_FLOOR, ReferenceScale, reference_scale};
+use super::normalization::{
+    CONTINUOUS_ABSOLUTE_SCALE_FLOOR, ReferenceScale, reference_is_information_free,
+    reference_scale, robust_reference_percentiles,
+};
 use super::{ChannelRule, interp_channel, saturate};
 use serde::{Deserialize, Serialize};
 
@@ -160,36 +163,37 @@ pub(super) fn dominant_run(ordered_reference: &[f64], p05: f64, p95: f64) -> Opt
         })
 }
 
-/// Classify `run` against the tighter-tolerance reference, resampled onto the
-/// same grid as the reference `run` was found in and judged against the same
-/// robust band: an event when a supported run of the tighter reference
-/// overlaps it with at least [`EVENT_SURVIVAL_AMPLITUDE_FRACTION`] of its
-/// amplitude.
-pub(super) fn classify_run(
-    run: SupportedRun,
+/// The runs of the reference that survive at the tighter tolerance: those a
+/// supported run of the tighter reference (resampled onto the same grid and
+/// judged against the same robust band) overlaps with at least
+/// [`EVENT_SURVIVAL_AMPLITUDE_FRACTION`] of their amplitude. Every run is
+/// classified on its own, so a second event on the same channel is an event
+/// too, and noise beside an event stays noise.
+pub(super) fn event_runs(
+    runs: &[SupportedRun],
     tight_on_grid: &[f64],
     p05: f64,
     p95: f64,
-) -> ExcursionClass {
-    let survives = supported_runs(tight_on_grid, p05, p95)
-        .into_iter()
-        .any(|tight| {
-            tight.overlaps(run)
-                && tight.amplitude >= EVENT_SURVIVAL_AMPLITUDE_FRACTION * run.amplitude
-        });
-    if survives {
-        ExcursionClass::Event
-    } else {
-        ExcursionClass::Noise
-    }
+) -> Vec<SupportedRun> {
+    let tight_runs = supported_runs(tight_on_grid, p05, p95);
+    runs.iter()
+        .copied()
+        .filter(|run| {
+            tight_runs.iter().any(|tight| {
+                tight.overlaps(*run)
+                    && tight.amplitude >= EVENT_SURVIVAL_AMPLITUDE_FRACTION * run.amplitude
+            })
+        })
+        .collect()
 }
 
 /// The scale an excursion gives a channel whose robust statistics have none,
-/// given `fallback`, the scale the channel would have without it.
-pub(super) fn excursion_scale(excursion: ReferenceExcursion, fallback: f64) -> f64 {
-    match excursion.class {
-        ExcursionClass::Event => excursion.run.amplitude.max(CONTINUOUS_ABSOLUTE_SCALE_FLOOR),
-        ExcursionClass::Noise => fallback.max(excursion.run.amplitude),
+/// given `amplitude` (the largest event's amplitude for an event, the largest
+/// run's for noise) and `fallback`, the scale the channel would have without it.
+pub(super) fn excursion_scale(class: ExcursionClass, amplitude: f64, fallback: f64) -> f64 {
+    match class {
+        ExcursionClass::Event => amplitude.max(CONTINUOUS_ABSOLUTE_SCALE_FLOOR),
+        ExcursionClass::Noise => fallback.max(amplitude),
         ExcursionClass::Unclassified => fallback,
     }
 }
@@ -203,8 +207,9 @@ pub struct ExcursionChannel {
 }
 
 /// The normalization scale of one compared channel, with an
-/// information-free reference's excursion classified against the tighter
-/// reference when there is one.
+/// information-free reference's runs classified against the tighter reference
+/// when there is one, and the reference's event runs (empty unless the channel
+/// is scaled by an event).
 ///
 /// `ordered` is the channel's `(t, rumoca, omc)` samples in time order, one per
 /// grid point: `ref_samples` repeats every interior point, which would
@@ -214,7 +219,7 @@ pub(super) fn channel_reference_scale(
     ref_samples: &[f64],
     ordered: &[(f64, f64, f64)],
     rule: ChannelRule<'_>,
-) -> ReferenceScale {
+) -> (ReferenceScale, Vec<SupportedRun>) {
     let ordered_reference = if rule.phasor.is_none() {
         ordered.iter().map(|&(_, _, omc)| omc).collect::<Vec<_>>()
     } else {
@@ -226,26 +231,73 @@ pub(super) fn channel_reference_scale(
         rule.use_step_hold,
         rule.array_group_floor,
     );
-    match (scale.excursion, rule.omc_tight) {
-        (Some(_), Some(tight)) => {
-            // The same resampler the comparison grid uses, so both references
-            // are read at the same instants; a gap in the tight trace ends a run.
-            let tight_on_grid = ordered
-                .iter()
-                .map(|&(t, _, _)| {
-                    interp_channel(tight.times, tight.values, t, false).unwrap_or(f64::NAN)
-                })
-                .collect::<Vec<_>>();
-            scale.classified(&tight_on_grid)
-        }
-        _ => scale,
+    let (Some(_), Some(tight)) = (scale.excursion, rule.omc_tight) else {
+        return (scale, Vec::new());
+    };
+    // The same resampler the comparison grid uses, so both references are read
+    // at the same instants; a gap in the tight trace ends a run.
+    let tight_on_grid = ordered
+        .iter()
+        .map(|&(t, _, _)| interp_channel(tight.times, tight.values, t, false).unwrap_or(f64::NAN))
+        .collect::<Vec<_>>();
+    let runs = supported_runs(&ordered_reference, scale.p05, scale.p95);
+    let events = event_runs(&runs, &tight_on_grid, scale.p05, scale.p95);
+    let largest = |runs: &[SupportedRun]| {
+        runs.iter()
+            .copied()
+            .max_by(|a, b| a.amplitude.total_cmp(&b.amplitude))
+    };
+    let scale = match (largest(&events), largest(&runs)) {
+        (Some(event), _) => scale.classified(ExcursionClass::Event, event),
+        (None, Some(run)) => scale.classified(ExcursionClass::Noise, run),
+        (None, None) => scale,
+    };
+    (scale, events)
+}
+
+/// Normalized error of a channel scaled by its reference's events: the largest
+/// over every window where either trace has an event, each window's mean
+/// absolute error over the amplitude it is judged against.
+///
+/// * Each reference event is judged against its own amplitude, so a missed
+///   event, the largest or a smaller second one, scores about one half.
+/// * Each run of Rumoca's own samples outside the reference's robust band that
+///   overlaps no reference event is judged against the channel's scale, so an
+///   event only Rumoca has is a deviation, while a blip far below the
+///   channel's events is not.
+///
+/// `None` when there are no reference events, so the channel keeps its
+/// whole-run score.
+pub(super) fn excursion_normalized_error(
+    ordered: &[(f64, f64, f64)],
+    events: &[SupportedRun],
+    scale: &ReferenceScale,
+) -> Option<f64> {
+    if events.is_empty() {
+        return None;
     }
+    let window_score = |run: SupportedRun, amplitude: f64| {
+        window_mean_abs_error(&ordered[run.first..=run.last]).map(|error| error / amplitude)
+    };
+    let rumoca_ordered = ordered
+        .iter()
+        .map(|&(_, rumoca, _)| rumoca)
+        .collect::<Vec<_>>();
+    let rumoca_only = supported_runs(&rumoca_ordered, scale.p05, scale.p95)
+        .into_iter()
+        .filter(|run| !events.iter().any(|event| event.overlaps(*run)));
+    events
+        .iter()
+        .filter_map(|&event| window_score(event, event.amplitude))
+        .chain(rumoca_only.filter_map(|run| window_score(run, scale.normalization_scale)))
+        .reduce(f64::max)
+        .map(saturate)
 }
 
 /// Time-averaged absolute error over consecutive `(t, rumoca, omc)` samples,
 /// trapezoidal as the whole-run integral is; `None` for a window without
 /// duration.
-pub(super) fn window_mean_abs_error(window: &[(f64, f64, f64)]) -> Option<f64> {
+fn window_mean_abs_error(window: &[(f64, f64, f64)]) -> Option<f64> {
     let (first, last) = (window.first()?, window.last()?);
     let duration = last.0 - first.0;
     if duration.partial_cmp(&0.0) != Some(std::cmp::Ordering::Greater) {
@@ -260,4 +312,36 @@ pub(super) fn window_mean_abs_error(window: &[(f64, f64, f64)]) -> Option<f64> {
         })
         .sum::<f64>();
     Some(saturate(integral / duration))
+}
+
+/// The channels of a reference trace whose robust statistics see no scale but
+/// which carry a supported run outside their band: the channels a tighter
+/// reference would classify. Read from the reference alone, before any
+/// comparison, so a runner can decide whether to simulate the reference again
+/// at a tighter tolerance.
+///
+/// The test is the comparator's own (the same percentiles, information-free
+/// test and run scanner) on the reference's native grid. If the comparison
+/// grid later finds a run this missed, that channel is simply scored as
+/// before.
+pub fn reference_excursion_channels(reference: &super::SimTrace) -> Vec<String> {
+    reference
+        .names
+        .iter()
+        .zip(&reference.data)
+        .filter(|(_, column)| {
+            let ordered = column
+                .iter()
+                .map(|value| value.unwrap_or(f64::NAN))
+                .collect::<Vec<_>>();
+            let Some((p05, p95)) = robust_reference_percentiles(&ordered) else {
+                return false;
+            };
+            let range = (p95 - p05).abs();
+            let magnitude = p05.abs().max(p95.abs());
+            reference_is_information_free(range, magnitude)
+                && dominant_run(&ordered, p05, p95).is_some()
+        })
+        .map(|(name, _)| name.clone())
+        .collect()
 }

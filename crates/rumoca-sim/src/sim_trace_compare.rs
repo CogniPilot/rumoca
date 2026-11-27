@@ -4,7 +4,7 @@ mod phasor;
 #[cfg(test)]
 mod tests;
 
-use excursion::{channel_reference_scale, window_mean_abs_error};
+use excursion::{channel_reference_scale, excursion_normalized_error};
 use normalization::{
     ReferenceScale, array_element_base, range_is_degenerate, reference_scale,
     robust_reference_percentiles, sample_range,
@@ -13,7 +13,9 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::Path;
 
-pub use excursion::{ExcursionChannel, ExcursionClass, ExcursionEvidence};
+pub use excursion::{
+    ExcursionChannel, ExcursionClass, ExcursionEvidence, reference_excursion_channels,
+};
 pub use phasor::PhasorChannelEvidence;
 
 const GRID_DEDUP_EPS: f64 = 1.0e-12;
@@ -289,13 +291,13 @@ pub struct ChannelDeviationMetric {
     pub initial_bounded_normalized_error: Option<f64>,
     /// How this channel was compared as a function of a phasor, when the
     /// Rumoca trace records one for it (see the `phasor` module).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phasor: Option<PhasorChannelEvidence>,
     /// The supported excursion an information-free reference has outside its
     /// robust band, with its class, when it has one (see the `excursion`
     /// module).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reference_excursion: Option<ExcursionEvidence>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub phasor: Option<PhasorChannelEvidence>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
@@ -469,20 +471,13 @@ pub fn load_trace_json(path: &Path) -> Result<SimTrace, TraceCompareError> {
     })
 }
 
-pub fn compare_model_traces(
-    model_name: &str,
-    rumoca: &SimTrace,
-    omc: &SimTrace,
-) -> Result<ModelDeviationMetric, TraceCompareError> {
-    compare_model_traces_with_tight_reference(model_name, rumoca, omc, None)
-}
-
-/// As [`compare_model_traces`], with `omc_tight`, the same OMC reference
-/// simulated at a tighter tolerance, used to classify the excursions of
-/// information-free channels as events or noise (see the `excursion` module).
-/// Without it, such channels are scored exactly as before and listed in
+/// Compare a Rumoca trace with its OMC reference.
+///
+/// `omc_tight` is the same OMC reference simulated at a tighter tolerance,
+/// used to classify the excursions of information-free channels as events or
+/// noise (see the `excursion` module). Without it, such channels are scored exactly as before and listed in
 /// [`ModelDeviationMetric::excursion_channels`] as `Unclassified`.
-pub fn compare_model_traces_with_tight_reference(
+pub fn compare_model_traces(
     model_name: &str,
     rumoca: &SimTrace,
     omc: &SimTrace,
@@ -631,11 +626,11 @@ struct CommonChannels {
     unbounded_channels: Vec<String>,
 }
 
-/// The two traces' channels, keyed by name, with what comparing one of their
-/// common channels needs.
 /// Each channel's samples in one trace, by name.
 type SeriesMap<'a> = HashMap<String, &'a [Option<f64>]>;
 
+/// The two traces' channels, keyed by name, with what comparing one of their
+/// common channels needs.
 struct TracePair<'a> {
     rumoca: &'a SimTrace,
     omc: &'a SimTrace,
@@ -1238,16 +1233,14 @@ fn compare_channel(
     let integral_abs_error = saturate(acc.integral_abs_error);
     let mean_abs_error = saturate(integral_abs_error / acc.integral_duration);
     let ordered = collapse_repeated_sample_times(&acc.paired_samples);
-    let scale = channel_reference_scale(&acc.ref_samples, &ordered, rule);
+    let (scale, events) = channel_reference_scale(&acc.ref_samples, &ordered, rule);
     let normalization_scale = scale.normalization_scale;
-    // A channel scaled by an event is scored over the event's own window: its
-    // only information is the event, and a whole-run mean would dilute a
-    // missed event to nothing (see the `excursion` module).
-    let scored_error = scale
-        .event_window()
-        .and_then(|run| window_mean_abs_error(&ordered[run.first..=run.last]))
-        .unwrap_or(mean_abs_error);
-    let normalized_l1_error = saturate(scored_error / normalization_scale);
+    // A channel scaled by events is also scored over every event window, either
+    // trace's: its information is the events, and a whole-run mean would dilute
+    // a missed or spurious event to nothing (see the `excursion` module).
+    let whole_run = saturate(mean_abs_error / normalization_scale);
+    let normalized_l1_error = excursion_normalized_error(&ordered, &events, &scale)
+        .map_or(whole_run, |windowed| windowed.max(whole_run));
     let bounded_normalized_l1_error = bounded_error(normalized_l1_error);
     let initial_abs_error = initial_abs_error(rumoca, omc, rule.phasor);
     let initial_bounded_normalized_error =
@@ -1289,7 +1282,7 @@ fn compare_channel(
     })
 }
 
-/// An error that overflowed to infinity), held at the largest finite value.
+/// An error that overflowed to infinity, held at the largest finite value.
 fn saturate(value: f64) -> f64 {
     if value.is_infinite() {
         f64::MAX.copysign(value)

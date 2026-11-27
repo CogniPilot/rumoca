@@ -104,7 +104,7 @@
 //! they neither contribute to nor consume an array group floor.
 
 use super::excursion::{
-    ExcursionClass, ReferenceExcursion, SupportedRun, classify_run, dominant_run, excursion_scale,
+    ExcursionClass, ReferenceExcursion, SupportedRun, dominant_run, excursion_scale,
 };
 use super::{RANGE_HIGH_QUANTILE, RANGE_LOW_QUANTILE};
 
@@ -155,32 +155,26 @@ pub(super) struct ReferenceScale {
 }
 
 impl ReferenceScale {
-    /// This scale with the excursion classified against the reference
-    /// simulated at a tighter tolerance and resampled onto the same grid, and
-    /// the normalization scale it implies. A scale without an excursion is
-    /// returned unchanged.
-    pub(super) fn classified(self, tight_on_grid: &[f64]) -> Self {
-        let Some(excursion) = self.excursion else {
+    /// This scale with its excursion classified against the reference simulated
+    /// at a tighter tolerance, and the normalization scale that implies: `run`
+    /// is the run the scale comes from (the largest event for an event, the
+    /// largest run for noise), and becomes the reported excursion. A scale
+    /// without an excursion is returned unchanged.
+    pub(super) fn classified(self, class: ExcursionClass, run: SupportedRun) -> Self {
+        if self.excursion.is_none() {
             return self;
-        };
-        let excursion = ReferenceExcursion {
-            class: classify_run(excursion.run, tight_on_grid, self.p05, self.p95),
-            ..excursion
-        };
+        }
         Self {
-            normalization_scale: excursion_scale(excursion, self.normalization_scale),
-            excursion: Some(excursion),
+            normalization_scale: excursion_scale(class, run.amplitude, self.normalization_scale),
+            excursion: Some(ReferenceExcursion { run, class }),
             ..self
         }
     }
 
-    /// The window over which the channel's error is averaged: the event's own
-    /// window (as indices into the ordered reference) when the channel is
-    /// scaled by an event, so a missed event cannot be diluted over the run.
-    pub(super) fn event_window(&self) -> Option<SupportedRun> {
+    /// True when the channel is scaled by its reference's events.
+    pub(super) fn is_event_scaled(&self) -> bool {
         self.excursion
-            .filter(|excursion| excursion.class == ExcursionClass::Event)
-            .map(|excursion| excursion.run)
+            .is_some_and(|excursion| excursion.class == ExcursionClass::Event)
     }
 
     /// True when the reference channel carries no usable signal at all: a flat
@@ -197,7 +191,7 @@ impl ReferenceScale {
     /// A channel scaled by an event is not flat: its reference carries a real
     /// event outside the robust band.
     pub(super) fn reference_is_degenerate(&self) -> bool {
-        range_is_degenerate(self.range) && self.event_window().is_none()
+        range_is_degenerate(self.range) && !self.is_event_scaled()
     }
 }
 
@@ -254,7 +248,7 @@ pub(super) fn reference_scale(
 /// True when neither the reference range nor the reference level says anything
 /// about the channel's scale, so the scale would otherwise be the bare
 /// unit-free [`CONTINUOUS_ABSOLUTE_SCALE_FLOOR`].
-fn reference_is_information_free(range: f64, magnitude: f64) -> bool {
+pub(super) fn reference_is_information_free(range: f64, magnitude: f64) -> bool {
     range_is_degenerate(range)
         && MAGNITUDE_SCALE_FRACTION * magnitude <= CONTINUOUS_ABSOLUTE_SCALE_FLOOR
 }

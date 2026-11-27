@@ -104,7 +104,7 @@ pub fn run(args: Args) -> Result<()> {
     let rumoca_trace = rumoca_trace;
     let omc_trace = omc_trace;
     let aligned = align_traces(&args.model, &rumoca_trace, &omc_trace)?;
-    let metric = match compare_model_traces(&args.model, &rumoca_trace, &omc_trace) {
+    let metric = match compare_model_traces(&args.model, &rumoca_trace, &omc_trace, None) {
         Ok(metric) => Some(metric),
         Err(error) => {
             eprintln!("plot-compare: compare_model_traces error: {error}");
@@ -132,7 +132,8 @@ pub fn run(args: Args) -> Result<()> {
             "Bounded normalized L1 score: {:.3e} (mean channel score {:.3e})",
             metric.bounded_normalized_l1_score, metric.mean_channel_bounded_normalized_l1
         );
-        if let Ok(full_metric) = compare_model_traces(&args.model, &rumoca_trace, &omc_trace) {
+        if let Ok(full_metric) = compare_model_traces(&args.model, &rumoca_trace, &omc_trace, None)
+        {
             for channel in full_metric.worst_variables.iter().take(5) {
                 println!(
                     "  worst: {} (bounded L1 {:.3e}, normalized L1 {:.3e})",

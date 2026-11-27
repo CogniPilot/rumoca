@@ -207,14 +207,27 @@ impl OmcSession {
         use_experiment_stop_time: bool,
         sim_timeout: Duration,
     ) -> Result<OmcSimOutcome, OmcEvalError> {
-        let expr = if use_experiment_stop_time {
-            format!("simulate({model}, outputFormat=\"csv\", fileNamePrefix=\"{model}\")")
+        let options = if use_experiment_stop_time {
+            String::new()
         } else {
-            format!(
-                "simulate({model}, stopTime={stop_time}, outputFormat=\"csv\", fileNamePrefix=\"{model}\")"
-            )
+            format!(", stopTime={stop_time}")
         };
-        let expected_result = self.work_dir.join(format!("{model}_res.csv"));
+        self.simulate_with_options(model, &options, model, sim_timeout)
+    }
+
+    /// Simulate one model with extra `simulate(...)` arguments (`options`,
+    /// each with a leading comma), writing `{file_prefix}_res.csv`.
+    pub(super) fn simulate_with_options(
+        &mut self,
+        model: &str,
+        options: &str,
+        file_prefix: &str,
+        sim_timeout: Duration,
+    ) -> Result<OmcSimOutcome, OmcEvalError> {
+        let expr = format!(
+            "simulate({model}{options}, outputFormat=\"csv\", fileNamePrefix=\"{file_prefix}\")"
+        );
+        let expected_result = self.work_dir.join(format!("{file_prefix}_res.csv"));
         let prior_result = FreshResultFile::snapshot(&expected_result);
         let record = self.eval(&expr, sim_timeout)?;
         let error = match self.eval("getErrorString()", Duration::from_secs(10)) {

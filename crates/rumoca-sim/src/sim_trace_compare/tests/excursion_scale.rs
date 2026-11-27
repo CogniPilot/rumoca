@@ -3,8 +3,8 @@
 //! event or as noise (see the `excursion` module).
 
 use super::super::excursion::{
-    EVENT_SURVIVAL_AMPLITUDE_FRACTION, MIN_EXCURSION_SAMPLES, SupportedRun, classify_run,
-    dominant_run, supported_runs,
+    EVENT_SURVIVAL_AMPLITUDE_FRACTION, MIN_EXCURSION_SAMPLES, SupportedRun, dominant_run,
+    event_runs, supported_runs,
 };
 use super::*;
 
@@ -53,8 +53,7 @@ fn channel(
     omc: &SimTrace,
     tight: Option<&SimTrace>,
 ) -> (ChannelDeviationMetric, ModelDeviationMetric) {
-    let model = compare_model_traces_with_tight_reference("Excursion", rumoca, omc, tight)
-        .expect("traces compare");
+    let model = compare_model_traces("Excursion", rumoca, omc, tight).expect("traces compare");
     (model.worst_variables[0].clone(), model)
 }
 
@@ -237,21 +236,78 @@ fn a_run_is_an_event_only_when_the_tight_run_overlaps_with_its_amplitude() {
         values[first..=last].fill(amplitude);
         values
     };
+    let survives = |tight: &[f64]| !event_runs(&[run], tight, 0.0, 0.0).is_empty();
     let kept = 4.0 * EVENT_SURVIVAL_AMPLITUDE_FRACTION;
-    assert_eq!(
-        classify_run(run, &at(12, 18, kept), 0.0, 0.0),
-        ExcursionClass::Event
+    assert!(survives(&at(12, 18, kept)));
+    assert!(!survives(&at(12, 18, 0.9 * kept)));
+    assert!(!survives(&at(25, 30, 4.0)));
+    assert!(!survives(&[0.0; 40]));
+}
+
+/// The runner's detector flags exactly the channels a tighter reference would
+/// classify: an information-free reference with a supported run, and not a
+/// flat channel, a spike, or a channel with a usable range.
+#[test]
+fn the_reference_detector_flags_only_supported_runs_on_flat_references() {
+    let mut spike = vec![0.0; POINTS];
+    spike[200] = 30.0;
+    let ramp = (0..POINTS).map(|i| i as f64 / 100.0).collect::<Vec<_>>();
+    let reference = trace(
+        "Excursion",
+        grid(),
+        vec!["event", "flat", "spike", "ramp"],
+        vec![bump(500, 530, 20.0), vec![0.0; POINTS], spike, ramp],
     );
     assert_eq!(
-        classify_run(run, &at(12, 18, 0.9 * kept), 0.0, 0.0),
-        ExcursionClass::Noise
+        reference_excursion_channels(&reference),
+        vec!["event".to_string()]
     );
+}
+
+/// Rumoca tracks OMC's event but adds one of its own where OMC is
+/// flat. Scored over OMC's event window alone that is agreement; every window
+/// where either trace has an event makes it a deviation.
+#[test]
+fn an_event_only_rumoca_has_is_a_deviation() {
+    let omc = single("u", bump(500, 530, 20.0));
+    let spurious = bump(500, 530, 20.0)
+        .into_iter()
+        .zip(bump(100, 130, 20.0))
+        .map(|(event, extra)| event + extra)
+        .collect();
+    let rumoca = single("u", spurious);
+
+    let (metric, _) = channel(&rumoca, &omc, Some(&omc));
     assert_eq!(
-        classify_run(run, &at(25, 30, 4.0), 0.0, 0.0),
-        ExcursionClass::Noise
+        metric.reference_excursion.map(|evidence| evidence.class),
+        Some(ExcursionClass::Event)
     );
+    assert!(metric.bounded_normalized_l1_error > MINOR_AGREEMENT_CHANNEL_THRESHOLD);
+}
+
+/// A reference with two events: each is judged against its own amplitude, so
+/// missing the shorter, smaller one is a deviation even when the dominant one
+/// is tracked, and tracking both is agreement.
+#[test]
+fn every_reference_event_is_scored() {
+    let events = || {
+        bump(200, 215, 8.0)
+            .into_iter()
+            .zip(bump(500, 530, 20.0))
+            .map(|(small, large)| small + large)
+            .collect::<Vec<_>>()
+    };
+    let omc = single("u", events());
+
+    let (tracked, _) = channel(&single("u", events()), &omc, Some(&omc));
+    assert!(tracked.bounded_normalized_l1_error < HIGH_AGREEMENT_CHANNEL_THRESHOLD);
+
+    let (missed_small, _) = channel(&single("u", bump(500, 530, 20.0)), &omc, Some(&omc));
     assert_eq!(
-        classify_run(run, &vec![0.0; 40], 0.0, 0.0),
-        ExcursionClass::Noise
+        missed_small
+            .reference_excursion
+            .map(|evidence| evidence.class),
+        Some(ExcursionClass::Event)
     );
+    assert!(missed_small.bounded_normalized_l1_error > MINOR_AGREEMENT_CHANNEL_THRESHOLD);
 }
