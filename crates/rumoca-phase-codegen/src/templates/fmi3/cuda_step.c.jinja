@@ -2,9 +2,7 @@
    rmc_fmi3_step as the PTX kernel. Each thread owns one initialized component.
    These diagnostics-only callbacks must be null on the device. */
 #include "model.c"
-void rmc_fmi3_step(void* instances, double current, double dt, int* statuses, int count) {
-    const unsigned lane = __nvvm_read_ptx_sreg_ctaid_x() * __nvvm_read_ptx_sreg_ntid_x()
-                        + __nvvm_read_ptx_sreg_tid_x();
+static void rmc_step_lane(void* instances, double current, double dt, int* statuses, int count, unsigned lane) {
     if (lane >= (unsigned)count) return;
     ModelInstance* instance = (ModelInstance*)instances + lane;
     bool event = false, terminate = false, early = false;
@@ -16,6 +14,33 @@ void rmc_fmi3_step(void* instances, double current, double dt, int* statuses, in
     fmi3Status status = fmi3DoStep(instance, current, dt, true, &event, &terminate, &early, &last);
     statuses[lane] = (event || terminate || early) ? fmi3Error : status;
 }
+
+#ifdef RMC_CUDA_BLOCK_COPIES
+void rmc_copy_worker(unsigned thread);
+void rmc_copy_workers_finish(void);
+void rmc_fmi3_step_block(void* instances, double current, double dt, int* statuses, int count) {
+    const unsigned lane = __nvvm_read_ptx_sreg_ctaid_x();
+    const unsigned thread = __nvvm_read_ptx_sreg_tid_x();
+    if (lane >= (unsigned)count) return;
+    if (__nvvm_read_ptx_sreg_ntid_x() != 33 || __nvvm_read_ptx_sreg_ntid_y() != 1 ||
+        __nvvm_read_ptx_sreg_ntid_z() != 1) {
+        if (!thread && !__nvvm_read_ptx_sreg_tid_y() && !__nvvm_read_ptx_sreg_tid_z()) statuses[lane] = fmi3Error;
+        return;
+    }
+    if (thread < 32) {
+        rmc_copy_worker(thread);
+    } else {
+        rmc_step_lane(instances, current, dt, statuses, count, lane);
+        rmc_copy_workers_finish();
+    }
+}
+#else
+void rmc_fmi3_step(void* instances, double current, double dt, int* statuses, int count) {
+    const unsigned lane = __nvvm_read_ptx_sreg_ctaid_x() * __nvvm_read_ptx_sreg_ntid_x()
+                        + __nvvm_read_ptx_sreg_tid_x();
+    rmc_step_lane(instances, current, dt, statuses, count, lane);
+}
+#endif
 
 /* Host/device instance copies require matching ABI and instantiation token. */
 __attribute__((address_space(1),used)) const char rmc_fmi3_token[] = "{{ artifact.identities.fmu }}";

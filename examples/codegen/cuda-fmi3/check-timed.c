@@ -56,7 +56,11 @@ int main(int argc, char **argv) {
     GPU(cuDeviceGet(&device, 0));
     GPU(cuCtxCreate_v2(&context, 0, device));
     GPU(cuModuleLoad(&module, argv[1]));
-    GPU(cuModuleGetFunction(&step, module, "rmc_fmi3_step"));
+    CUresult block_step = cuModuleGetFunction(&step, module, "rmc_fmi3_step_block");
+    if (block_step != CUDA_SUCCESS) {
+        if (block_step != CUDA_ERROR_NOT_FOUND) GPU(block_step);
+        GPU(cuModuleGetFunction(&step, module, "rmc_fmi3_step"));
+    }
     CUdeviceptr token_address, size_address;
     size_t token_length, size_length;
     unsigned long long device_size;
@@ -93,10 +97,21 @@ int main(int argc, char **argv) {
     }
     GPU(cuMemcpyHtoD(instances, copy, sizeof copy));
     double dt = .02;
+    if (block_step == CUDA_SUCCESS) {
+        double start = 0.0;
+        void *args[] = {&instances, &start, &dt, &results, &count};
+        GPU(cuMemsetD32(results, fmi3OK, count));
+        GPU(cuLaunchKernel(step, count, 1, 1, 32, 1, 1, 0, NULL, args, NULL));
+        int invalid_shape[N];
+        GPU(cuMemcpyDtoH(invalid_shape, results, sizeof invalid_shape));
+        for (int lane = 0; lane < count; ++lane)
+            if (invalid_shape[lane] != fmi3Error) return 2;
+    }
     for (int i = 0; i < 2; ++i) {
         double start = i * dt;
         void *args[] = {&instances, &start, &dt, &results, &count};
-        GPU(cuLaunchKernel(step, 1, 1, 1, count, 1, 1, 0, NULL, args, NULL));
+        GPU(cuLaunchKernel(step, block_step == CUDA_SUCCESS ? count : 1, 1, 1,
+                           block_step == CUDA_SUCCESS ? 33 : count, 1, 1, 0, NULL, args, NULL));
         int status[N];
         GPU(cuMemcpyDtoH(status, results, sizeof status));
         GPU(cuMemcpyDtoH(copy, instances, sizeof copy));

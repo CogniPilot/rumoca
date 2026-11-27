@@ -1,5 +1,5 @@
 // Place fixed-size entry-block aggregates on a bounded stack per active CUDA lane.
-export function lowerLaneWorkspace(input) {
+export function lowerLaneWorkspace(input, blockCopies = false) {
   let functions = 0;
   let maxFrame = 0;
   const definitions = /^define ([^\n]*) \{\n([\s\S]*?)^\}/gm;
@@ -30,18 +30,20 @@ export function lowerLaneWorkspace(input) {
     return 'define ' + heading + ' {\n' + prefix +
       '  %rmc.arena = call ptr @rmc_reserve(i64 ' + frame + ')\n' + lowered + '}';
   });
-  return {ir: ir + '\n' + deviceStack, functions, maxFrame};
+  return {ir: ir + '\n' + deviceStack(blockCopies), functions, maxFrame};
 }
 
-const deviceStack = `@rmc_scratch = addrspace(1) externally_initialized global ptr null, align 8
-@rmc_stride = addrspace(1) externally_initialized global i64 0, align 8
-define internal ptr @rmc_lane_ptr(){
-  %bx = call i32 @llvm.nvvm.read.ptx.sreg.ctaid.x()
-  %nt = call i32 @llvm.nvvm.read.ptx.sreg.ntid.x()
+const threadLane = `%nt = call i32 @llvm.nvvm.read.ptx.sreg.ntid.x()
   %tx = call i32 @llvm.nvvm.read.ptx.sreg.tid.x()
   %i = mul i32 %bx,%nt
   %ix = add i32 %i,%tx
-  %lane = zext i32 %ix to i64
+  %lane = zext i32 %ix to i64`;
+
+const deviceStack = blockCopies => `@rmc_scratch = addrspace(1) externally_initialized global ptr null, align 8
+@rmc_stride = addrspace(1) externally_initialized global i64 0, align 8
+define internal ptr @rmc_lane_ptr(){
+  %bx = call i32 @llvm.nvvm.read.ptx.sreg.ctaid.x()
+  ${blockCopies ? '%lane = zext i32 %bx to i64' : threadLane}
   %stride = load volatile i64, ptr addrspace(1) @rmc_stride
   %offset = mul i64 %lane,%stride
   %base = load volatile ptr, ptr addrspace(1) @rmc_scratch

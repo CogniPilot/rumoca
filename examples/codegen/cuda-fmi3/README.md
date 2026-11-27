@@ -47,6 +47,8 @@ This implementation supports numeric components with inline state and null diagn
 
 ## Bulk copy verification
 
+For large arrays in global memory, pass `--block-copies` to `build.mjs` using an FMU exported with the block entry. Launch the resulting `rmc_fmi3_step_block` kernel on a one-dimensional grid with one block per instance and exactly 33 threads per block. One warp copies buffers for the solver running on the final thread. The manifest records this launch shape. An incorrect block size returns an FMI error for each addressed instance. Benchmark this option on the intended model and device.
+
 The CUDA build widens large nonvolatile copies when the source and destination addresses permit aligned accesses. LLVM still lowers short copies, volatile operations and overlapping moves. Test unaligned offsets, byte tails and the equal-pointer case with the host C compiler:
 
 ```sh

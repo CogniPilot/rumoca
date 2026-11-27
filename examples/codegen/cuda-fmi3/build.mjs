@@ -8,7 +8,10 @@ import {lowerBulkCopies} from './bulk-copy.mjs';
 import {lowerLaneWorkspace} from './arena.mjs';
 import {checkNumericInstance} from './layout.mjs';
 
-const [fmu, output] = process.argv.slice(2);
+const [fmu, output, option] = process.argv.slice(2);
+const blockCopies = option === '--block-copies';
+if (option && !blockCopies) throw Error('Unknown CUDA build option: ' + option);
+const kernel = blockCopies ? 'rmc_fmi3_step_block' : 'rmc_fmi3_step';
 if (!fmu || !output) throw Error('Usage: node build.mjs EXTRACTED_FMU OUTPUT_DIRECTORY');
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -35,7 +38,7 @@ const artifact = name => join(out, name);
 mkdirSync(out, {recursive: true});
 
 const deviceFlags = ['--target=nvptx64-nvidia-cuda', '-march=' + arch, '-x', 'c', '-std=c11',
-  '-DNDEBUG', '-DRMC_FMI3_INLINE_FACTORS', '-ffreestanding',
+  '-DNDEBUG', '-DRMC_FMI3_INLINE_FACTORS', ...(blockCopies ? ['-DRMC_CUDA_BLOCK_COPIES'] : []), '-ffreestanding',
   '-I' + join(here, 'freestanding'), '-I' + source, '-I' + FMI_INCLUDE];
 const layout = execFileSync(clang, [...deviceFlags, '-Xclang', '-ast-dump=json', '-fsyntax-only',
   join(source, 'model.h')], {encoding: 'utf8', maxBuffer: 128 * 1024 * 1024});
@@ -53,20 +56,26 @@ const intermediates = sources.map((path, index) => {
 });
 
 const entry = readFileSync(intermediates[0], 'utf8');
-const marked = entry.replace(/^define [^\n@]*void @rmc_fmi3_step/m, 'define ptx_kernel void @rmc_fmi3_step');
+const marked = entry.replace(new RegExp('^define [^\\n@]*void @' + kernel + '\\(', 'm'), 'define ptx_kernel void @' + kernel + '(');
 if (marked === entry) throw Error('No FMI CUDA entry in generated source.');
 writeFileSync(intermediates[0], marked);
 
 run(join(LLVM_BIN, 'llvm-link'), ...intermediates, CUDA_LIBDEVICE, '-o', artifact('linked.bc'));
 run(join(LLVM_BIN, 'opt'), '-passes=internalize,globaldce,default<O2>',
-    '-internalize-public-api-list=rmc_fmi3_step,rmc_fmi3_token,rmc_fmi3_instance_bytes',
+    '-internalize-public-api-list=' + kernel + ',rmc_fmi3_token,rmc_fmi3_instance_bytes',
     artifact('linked.bc'), '-o', artifact('optimized.bc'));
 run(join(LLVM_BIN, 'llvm-dis'), artifact('optimized.bc'), '-o', artifact('optimized.ll'));
-const workspace = lowerLaneWorkspace(readFileSync(artifact('optimized.ll'), 'utf8'));
+const workspace = lowerLaneWorkspace(readFileSync(artifact('optimized.ll'), 'utf8'), blockCopies);
 writeFileSync(artifact('arena.ll'), lowerBulkCopies(workspace.ir));
 run(clang, '--target=nvptx64-nvidia-cuda', '-march=' + arch, '-O2', '-ffreestanding',
-    '-emit-llvm', '-c', join(here, 'bulk-copy.c'), '-o', artifact('bulk-copy.bc'));
-run(join(LLVM_BIN, 'llvm-link'), artifact('arena.ll'), artifact('bulk-copy.bc'), '-o', artifact('arena.bc'));
+    ...(blockCopies ? ['-DRMC_CUDA_BLOCK_COPIES'] : []), '-emit-llvm', '-c', join(here, 'bulk-copy.c'), '-o', artifact('bulk-copy.bc'));
+const copyModules = [artifact('bulk-copy.bc')];
+if (blockCopies) {
+  run(clang, '--target=nvptx64-nvidia-cuda', '-march=' + arch, '-O2', '-ffreestanding',
+      '-emit-llvm', '-c', join(here, 'block-copy.c'), '-o', artifact('block-copy.bc'));
+  copyModules.push(artifact('block-copy.bc'));
+}
+run(join(LLVM_BIN, 'llvm-link'), artifact('arena.ll'), ...copyModules, '-o', artifact('arena.bc'));
 run(join(LLVM_BIN, 'llc'), '-O2', '-mtriple=nvptx64-nvidia-cuda', '-mcpu=' + arch, '-mattr=+ptx80',
     artifact('arena.bc'), '-o', artifact('ensemble.ptx'));
 run(process.env.PTXAS ?? 'ptxas', '-O' + optimization, '-v', '-arch=' + arch,
@@ -74,6 +83,6 @@ run(process.env.PTXAS ?? 'ptxas', '-O' + optimization, '-v', '-arch=' + arch,
 const sha256 = createHash('sha256').update(readFileSync(artifact('ensemble.cubin'))).digest('hex');
 writeFileSync(artifact('ensemble.json'), JSON.stringify({
   hostDefines: ['RMC_FMI3_INLINE_FACTORS'],
-  token, arch, sha256, kernel: 'rmc_fmi3_step', workspacePointer: 'rmc_scratch', workspaceStride: 'rmc_stride',
+  token, arch, sha256, kernel, ...(blockCopies ? {blocksPerInstance: 1, threadsPerBlock: 33} : {}), workspacePointer: 'rmc_scratch', workspaceStride: 'rmc_stride',
   functionsWithWorkspace: workspace.functions, maxFrame: workspace.maxFrame, ptxasOptimization: Number(optimization),
 }, null, 2) + '\n');
