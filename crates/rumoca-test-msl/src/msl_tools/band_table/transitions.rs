@@ -1,5 +1,5 @@
-//! ENTERED / LEFT / BAND-CHANGED / COVERAGE-DROPPED transitions between two
-//! certifications' band tables.
+//! ENTERED / LEFT / BAND-CHANGED / COVERAGE-DROPPED / CHANNELS-CHANGED
+//! transitions between two certifications' band tables.
 
 use super::*;
 
@@ -44,6 +44,44 @@ pub struct CoverageDroppedModel {
     pub band: BandLabel,
 }
 
+/// One row's channel counts per agreement band.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct ChannelBandCounts {
+    pub high: usize,
+    pub minor: usize,
+    pub deviation: usize,
+    pub severe: usize,
+}
+
+impl ChannelBandCounts {
+    fn of(row: &BandRow) -> Self {
+        Self {
+            high: row.channel_high_count,
+            minor: row.channel_minor_count,
+            deviation: row.channel_deviation_count,
+            severe: row.channel_severe_count,
+        }
+    }
+}
+
+/// A model compared in both runs, over the same channels and in the same band,
+/// whose channels were rescored: they moved between bands, or the worst
+/// channel's score changed.
+///
+/// A scoring change shows up here and nowhere else: the model keeps its band
+/// and its compared set while individual channels are scored differently.
+/// A change in the compared set is a coverage event instead, and a band move
+/// is reported as such, so each model appears under one kind at most.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ChannelsChangedModel {
+    pub model_name: String,
+    pub band: BandLabel,
+    pub before: ChannelBandCounts,
+    pub after: ChannelBandCounts,
+    pub before_max_channel_bounded_normalized_l1: Option<f64>,
+    pub after_max_channel_bounded_normalized_l1: Option<f64>,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct BandTransitionCounts {
     pub before_cohort_models: usize,
@@ -55,6 +93,7 @@ pub struct BandTransitionCounts {
     pub left: usize,
     pub band_changed: usize,
     pub coverage_dropped: usize,
+    pub channels_changed: usize,
     /// Channels lost across every model that stayed compared. A run can hold
     /// every band and still lose most of its evidence.
     pub compared_variables_lost: usize,
@@ -72,18 +111,20 @@ pub struct BandTransitions {
     pub left: Vec<LeftModel>,
     pub band_changed: Vec<BandChangedModel>,
     pub coverage_dropped: Vec<CoverageDroppedModel>,
+    pub channels_changed: Vec<ChannelsChangedModel>,
 }
 
 impl BandTransitions {
     /// The single line a gate summary prints for cohort movement.
     pub fn summary_line(&self) -> String {
         format!(
-            "cohort: entered {}, left {}, band-changed {}, coverage-dropped {} (compared {} -> {}, \
-             common {})",
+            "cohort: entered {}, left {}, band-changed {}, coverage-dropped {}, channels-changed {} \
+             (compared {} -> {}, common {})",
             self.counts.entered,
             self.counts.left,
             self.counts.band_changed,
             self.counts.coverage_dropped,
+            self.counts.channels_changed,
             self.counts.before_compared,
             self.counts.after_compared,
             self.counts.common_compared,
@@ -142,6 +183,28 @@ fn classify_before_row(before_row: &BandRow, after: &BandTable, out: &mut BandTr
                     model_name: before_row.model_name.clone(),
                     before_band: before_row.band,
                     after_band: after_row.band,
+                });
+            }
+            let (before_counts, after_counts) = (
+                ChannelBandCounts::of(before_row),
+                ChannelBandCounts::of(after_row),
+            );
+            // Simulations are deterministic, so a worst score that is not
+            // bit-equal is a rescoring even when no channel changed band.
+            let max_bits = |row: &BandRow| row.max_channel_bounded_normalized_l1.map(f64::to_bits);
+            if after_row.band == before_row.band
+                && after_row.compared_variables == before_row.compared_variables
+                && (after_counts != before_counts || max_bits(after_row) != max_bits(before_row))
+            {
+                out.channels_changed.push(ChannelsChangedModel {
+                    model_name: before_row.model_name.clone(),
+                    band: after_row.band,
+                    before: before_counts,
+                    after: after_counts,
+                    before_max_channel_bounded_normalized_l1: before_row
+                        .max_channel_bounded_normalized_l1,
+                    after_max_channel_bounded_normalized_l1: after_row
+                        .max_channel_bounded_normalized_l1,
                 });
             }
             if after_row.compared_variables < before_row.compared_variables {
@@ -205,6 +268,7 @@ fn transition_counts(
         left: transitions.left.len(),
         band_changed: transitions.band_changed.len(),
         coverage_dropped: transitions.coverage_dropped.len(),
+        channels_changed: transitions.channels_changed.len(),
         compared_variables_lost: transitions
             .coverage_dropped
             .iter()

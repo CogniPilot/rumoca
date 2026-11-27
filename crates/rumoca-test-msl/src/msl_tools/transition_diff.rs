@@ -18,8 +18,8 @@
 //! must not be spelled the same way.
 
 use super::band_table::{
-    self, BandChangedModel, BandTransitions, CoverageDroppedModel, EnteredModel, LeftModel,
-    load_or_derive_band_table,
+    self, BandChangedModel, BandTransitions, ChannelsChangedModel, CoverageDroppedModel,
+    EnteredModel, LeftModel, load_or_derive_band_table,
 };
 use super::common::{MslPaths, get_git_commit, unix_timestamp_seconds, write_pretty_json};
 use anyhow::{Context, Result, bail};
@@ -730,6 +730,7 @@ fn append_band_transitions(lines: &mut Vec<String>, comparison: &BandTableCompar
     append_entered_models(lines, &transitions.entered);
     append_band_changed_models(lines, &transitions.band_changed);
     append_coverage_dropped_models(lines, &transitions.coverage_dropped);
+    append_channels_changed_models(lines, &transitions.channels_changed);
 }
 
 /// LEFT is never truncated: a departure that scrolls off the report is the
@@ -799,6 +800,35 @@ fn append_band_changed_models(lines: &mut Vec<String>, records: &[BandChangedMod
 /// Coverage loss is never truncated either: a model can keep its band while the
 /// evidence behind it collapses, and that is exactly the movement a band count
 /// cannot show.
+fn append_channels_changed_models(lines: &mut Vec<String>, records: &[ChannelsChangedModel]) {
+    if records.is_empty() {
+        return;
+    }
+    lines.push("### CHANNELS-CHANGED (same band and channels, channels rescored)".to_string());
+    lines.push(String::new());
+    lines.push(
+        "| Model | Band | Before high/minor/dev/severe | After | Max L1 before -> after |"
+            .to_string(),
+    );
+    lines.push("|---|---|---|---|---|".to_string());
+    let counts = |c: &band_table::ChannelBandCounts| {
+        format!("{}/{}/{}/{}", c.high, c.minor, c.deviation, c.severe)
+    };
+    let max = |v: Option<f64>| v.map_or_else(|| "-".to_string(), |v| format!("{v:.4}"));
+    lines.extend(records.iter().map(|record| {
+        format!(
+            "| {} | {} | {} | {} | {} -> {} |",
+            record.model_name,
+            record.band.as_str(),
+            counts(&record.before),
+            counts(&record.after),
+            max(record.before_max_channel_bounded_normalized_l1),
+            max(record.after_max_channel_bounded_normalized_l1)
+        )
+    }));
+    lines.push(String::new());
+}
+
 fn append_coverage_dropped_models(lines: &mut Vec<String>, records: &[CoverageDroppedModel]) {
     if records.is_empty() {
         return;
@@ -942,6 +972,19 @@ fn print_band_transitions(comparison: &BandTableComparison) {
             drop.before_compared_variables,
             drop.after_compared_variables,
             drop.band.as_str()
+        );
+    }
+    for moved in &transitions.channels_changed {
+        println!(
+            "    CHANNELS-CHANGED {} ({}): minor {} -> {}, deviation {} -> {}, severe {} -> {}",
+            moved.model_name,
+            moved.band.as_str(),
+            moved.before.minor,
+            moved.after.minor,
+            moved.before.deviation,
+            moved.after.deviation,
+            moved.before.severe,
+            moved.after.severe
         );
     }
 }

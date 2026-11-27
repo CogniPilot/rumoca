@@ -1748,8 +1748,9 @@ mod transitions;
 pub use soundness::{SimulationOutcomes, triage_package};
 pub use trace_exit::{TraceExitKind, TraceExitRecord};
 pub use transitions::{
-    BandChangedModel, BandTransitionCounts, BandTransitions, CoverageDroppedModel, EnteredModel,
-    LeftModel, diff_band_tables, ensure_diffable_pair,
+    BandChangedModel, BandTransitionCounts, BandTransitions, ChannelBandCounts,
+    ChannelsChangedModel, CoverageDroppedModel, EnteredModel, LeftModel, diff_band_tables,
+    ensure_diffable_pair,
 };
 
 #[cfg(test)]
