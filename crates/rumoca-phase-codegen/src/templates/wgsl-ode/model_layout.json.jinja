@@ -35,6 +35,10 @@
   "map_families": {{ derivative.map_family_count }},
   "stencil_families": {{ derivative.stencil_family_count }},
   "scalar_fallback_rows": {{ fallback | length }},
+  {%- if solve.clocks.render_schedules | length %}
+  {%- set clock = solve.clocks.render_schedules[0] %}
+  "periodic_tick": {"entry": "periodic_tick", "phase": [{{ clock.phase_num }}, {{ clock.phase_den }}], "period": [{{ clock.period_num }}, {{ clock.period_den }}], "anchor": "{{ clock.anchor }}"},
+  {%- endif %}
   "runtime_event_roots": {{ solve.events.root_conditions.programs | length }},
   "scheduled_time_events": {{ solve.events.scheduled_time_events | length }},
   "discrete_update_rows": {{ solve.discrete.rhs.programs | length }}

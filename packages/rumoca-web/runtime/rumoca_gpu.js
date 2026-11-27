@@ -6,10 +6,8 @@
 // fixed-step classic RK4 integrator around the derivative kernels. The RK4
 // stage/combine algebra runs in the two small hand-written kernels below.
 //
-// v1 semantics: only the first `n_states` slots of y integrate; algebraic
-// slots stay frozen at their prepared initial values, so event-driven behavior
-// does not fire on this path. Parameters are frozen unless the caller supplies
-// explicit live input values; inputs live in the same P buffer as parameters.
+// Explicit states integrate on the GPU. Certified periodic discrete assignments
+// update the P buffer on their Modelica clock; live input writes touch only input slots.
 //
 // Owned by `packages/rumoca-web`, staged into npm as `@cognipilot/rumoca/gpu`,
 // and consumed by the mdBook live examples from the same package base as the
@@ -694,6 +692,37 @@ export async function probeGpu() {
     return adapter;
 }
 
+// Advance by integer tick index; accumulating dt drifts on long runs.
+export function gpuPeriodicClock(metadata, start) {
+    if (!metadata) return null;
+    const rational = (pair, label) => {
+        if (!Array.isArray(pair) || pair.length !== 2 || !pair.every(Number.isSafeInteger)
+            || pair[1] <= 0) throw new Error(`Invalid GPU clock ${label}.`);
+        return pair[0] / pair[1];
+    };
+    const period = rational(metadata.period, 'period');
+    const phase = rational(metadata.phase, 'phase');
+    if (!(period > 0) || !['absolute', 'simulation_start'].includes(metadata.anchor)) {
+        throw new Error('Invalid GPU periodic clock.');
+    }
+    const origin = phase + (metadata.anchor === 'absolute' ? 0 : start);
+    const tol = (t) => 8 * Number.EPSILON * Math.max(1, Math.abs(t));
+    let tick = Math.max(0, Math.ceil((start - origin - tol(start)) / period));
+    let next = origin + tick * period;
+    return {
+        get next() { return next; },
+        consume(time) {
+            if (next > time + tol(time)) return false;
+            const previous = next;
+            next = origin + (++tick) * period;
+            if (!(next > previous + tol(previous)) || !Number.isSafeInteger(tick)) {
+                throw new Error('GPU sample interval is below clock resolution.');
+            }
+            return true;
+        },
+    };
+}
+
 // Build a reusable GPU program for a prepared model: a WebGPU device, the
 // compiled WGSL modules, compute pipelines, device buffers, and bind groups,
 // plus a per-run `simulate(prep, onPhase)` closure.
@@ -718,6 +747,7 @@ export async function buildGpuProgram(adapter, prep, onPhase = () => {}) {
     const rows = integerField(layout, 'rows', 'GPU layout');
     const pLen = integerField(layout, 'p_len', 'GPU layout');
     const runtimeEventRoots = integerField(layout, 'runtime_event_roots', 'GPU layout');
+    if (runtimeEventRoots > 0) throw new Error('GPU periodic execution cannot locate event roots.');
     u32Value(nStates, 'GPU preparation n_states');
     if (rows === 0 || nStates === 0) {
         throw new Error('Model has no continuous states to integrate on the GPU.');
@@ -740,7 +770,8 @@ export async function buildGpuProgram(adapter, prep, onPhase = () => {}) {
     const combineModule = await compileGpuModule(device, GPU_COMBINE_WGSL, 'rk4-combine');
 
     let pipelinesBuilt = 0;
-    const totalPipelines = kernelList.length + 2;
+    const clockInfo = layout.periodic_tick;
+    const totalPipelines = kernelList.length + 2 + Number(Boolean(clockInfo));
     onPhase(`Building GPU pipelines (0/${totalPipelines})`, 0);
     const recordPipelineBuilt = (pipeline) => {
         pipelinesBuilt += 1;
@@ -756,6 +787,9 @@ export async function buildGpuProgram(adapter, prep, onPhase = () => {}) {
             compute: { module: derModule, entryPoint: kernel.entry },
         }).then(recordPipelineBuilt))
     );
+    const tickPipeline = clockInfo ? await device.createComputePipelineAsync({
+        layout: 'auto', compute: { module: derModule, entryPoint: clockInfo.entry },
+    }).then(recordPipelineBuilt) : null;
     const axpyPipeline = await device.createComputePipelineAsync({
         layout: 'auto', compute: { module: stageModule, entryPoint: 'axpy' },
     }).then(recordPipelineBuilt);
@@ -795,6 +829,24 @@ export async function buildGpuProgram(adapter, prep, onPhase = () => {}) {
             { binding: 3, resource: { buffer: timeUniform } },
         ],
     }));
+    const tickBind = tickPipeline ? device.createBindGroup({
+        layout: tickPipeline.getBindGroupLayout(0),
+        entries: [
+            {binding: 0, resource: {buffer: yBuf}},
+            {binding: 3, resource: {buffer: timeUniforms[0]}},
+            {binding: 4, resource: {buffer: pBuf}},
+        ],
+    }) : null;
+    const submitTick = (time) => {
+        writeTime(timeUniforms[0], time);
+        const enc = device.createCommandEncoder();
+        const pass = enc.beginComputePass();
+        pass.setPipeline(tickPipeline);
+        pass.setBindGroup(0, tickBind);
+        pass.dispatchWorkgroups(1);
+        pass.end();
+        device.queue.submit([enc.finish()]);
+    };
     const derBinds = [
         derBind(yBuf, kBufs[0], timeUniforms[0]),   // k1 = f(t, y)
         derBind(yStage, kBufs[1], timeUniforms[1]), // k2 = f(t + h/2, y + h/2 k1)
@@ -919,6 +971,7 @@ export async function buildGpuProgram(adapter, prep, onPhase = () => {}) {
             unbatchedSteps: 0,
             derivativeDispatches: 0,
             stageDispatches: 0,
+            periodicTicks: 0,
         };
         const signal = options?.signal;
         throwIfAborted(signal);
@@ -946,7 +999,6 @@ export async function buildGpuProgram(adapter, prep, onPhase = () => {}) {
                 return;
             }
             const liveStart = now();
-            let dirty = false;
             for (const binding of liveInputBindings) {
                 const value = Number(liveInputValue(liveInputSource, binding.name));
                 if (!Number.isFinite(value)) {
@@ -954,23 +1006,29 @@ export async function buildGpuProgram(adapter, prep, onPhase = () => {}) {
                 }
                 if (pValues[binding.index] !== value) {
                     pValues[binding.index] = value;
-                    dirty = true;
+                    device.queue.writeBuffer(pBuf, 4 * binding.index, pValues.subarray(binding.index, binding.index + 1));
                 }
-            }
-            if (dirty) {
-                device.queue.writeBuffer(pBuf, 0, pValues);
             }
             profile.liveInputMs += now() - liveStart;
         };
         writeLiveInputs();
 
+        const clock = gpuPeriodicClock(prepNow.layout.periodic_tick, tStart);
+        const applyTick = (time) => {
+            if (clock?.consume(time)) {
+                submitTick(time);
+                profile.periodicTicks++;
+                profile.submits++;
+            }
+        };
+        applyTick(tStart);
         const times = [tStart];
         const samples = [Array.from(y0)];
         let completedSteps = 0;
         onPhaseNow(`Simulating on WebGPU (0/${stepPlan.internalSteps} RK4 steps)`, 0);
         const wallStart = performance.now();
         const canBatchInterval =
-            !wgslUsesRuntimeTime(prepNow.wgsl || prep.wgsl)
+            !clock && !wgslUsesRuntimeTime(prepNow.wgsl || prep.wgsl)
             && !options?.liveInputs;
 
         let t = tStart;
@@ -1006,10 +1064,15 @@ export async function buildGpuProgram(adapter, prep, onPhase = () => {}) {
                 profile.stageDispatches += batchSteps * 4;
                 t = target;
             } else {
-                while (t < target - timeTol) {
+                while (t < target) {
                     throwIfAborted(signal);
-                    const h = Math.min(internalDt, target - t);
-                    const copyOutput = t + h >= target - timeTol;
+                    const boundary = Math.min(target, clock?.next ?? Infinity);
+                    const stepEnd = t + internalDt;
+                    const roundoff = 8 * Number.EPSILON * Math.max(1, Math.abs(boundary));
+                    const next = stepEnd >= boundary - roundoff ? boundary : stepEnd;
+                    if (next <= t) throw new Error('GPU integration step cannot advance time.');
+                    const h = next - t;
+                    const copyOutput = next === target;
                     writeLiveInputs();
                     const submitStart = now();
                     submitRk4Step(t, h, copyOutput);
@@ -1018,7 +1081,8 @@ export async function buildGpuProgram(adapter, prep, onPhase = () => {}) {
                     profile.unbatchedSteps += 1;
                     profile.derivativeDispatches += 4 * kernelList.length;
                     profile.stageDispatches += 4;
-                    t += h;
+                    t = next;
+                    applyTick(t);
                     completedSteps += 1;
                 }
             }
@@ -1037,8 +1101,8 @@ export async function buildGpuProgram(adapter, prep, onPhase = () => {}) {
             times.push(target);
             if (output % 5 === 0 || output === stepPlan.outputCount) {
                 onPhaseNow(
-                    `Simulating on WebGPU (${completedSteps}/${stepPlan.internalSteps} RK4 steps)`,
-                    stepPlan.internalSteps > 0 ? completedSteps / stepPlan.internalSteps : 1
+                    `Simulating on WebGPU (${completedSteps} RK4 steps)`,
+                    output / stepPlan.outputCount
                 );
             }
         }
@@ -1057,8 +1121,7 @@ export async function buildGpuProgram(adapter, prep, onPhase = () => {}) {
             allData.push(samples.map((row) => row[i]));
         }
         profile.shapeMs += now() - shapeStart;
-        const eventNote = runtimeEventRoots > 0
-            ? ' · events frozen (GPU v1)' : '';
+        const eventNote = clock ? ' · sampled events' : '';
         return {
             payload: {
                 names,

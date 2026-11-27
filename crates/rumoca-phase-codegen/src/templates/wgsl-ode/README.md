@@ -12,15 +12,25 @@ call.
 - Readiness 0: shader parsing, semantic validation, and browser dispatch tests
   cover a deliberately narrow explicit-ODE profile.
 - Input: checked Solve IR.
-- Output: WGSL derivative compute kernels plus a JSON dispatch/layout manifest.
+- Output: WGSL derivative and optional periodic event kernels plus a JSON dispatch/layout manifest.
 - Map and affine-stencil domains remain native compact GPU kernels; remaining
   supported rows use explicitly catalogued scalar chunks.
 - The layout manifest is the sole host/kernel storage and dispatch contract.
 
+## Periodic updates
+
+For an explicit ODE with a single certified periodic clock, the manifest includes
+its rational phase, period, anchor, and entry point. The browser splits RK4
+steps at ticks and dispatches the generated kernel once per tick, including a
+start-time tick when due. Scalar guarded updates to P slots run in the issued
+clock-partition order. Pulse memories release and ordinary `pre` bindings
+commit after all updates. Source parameters and live inputs share the P buffer.
+
 ## Unsupported
 
 The target does not implement an integrator or event iteration. Residual
-systems, linear solves, events, callbacks, dynamic shapes, and unsupported
+systems, linear solves, root or dynamic-time events, multiple clocks, event
+actions, clocked history, multi-target assignments, callbacks, dynamic shapes, and unsupported
 operations fail closed.
 Its current `f32` numerical profile must not be called equivalent to an `f64`
 kernel without tolerance-qualified differential evidence.
@@ -35,7 +45,7 @@ kernel without tolerance-qualified differential evidence.
   scalar-row-sized.
 - `gpu_schedule.test.mjs` validates the host-side dispatch plan, while
   `book_live_smoke.mjs` is the hardware-dependent end-to-end WebGPU execution
-  smoke for the Wave2D fixture.
+  smoke for Wave2D and a sampled drive with an analytical trajectory.
 
 ## Example
 

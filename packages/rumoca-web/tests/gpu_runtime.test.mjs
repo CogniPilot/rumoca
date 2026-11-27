@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   gpuPIndexForName,
+  gpuPeriodicClock,
   gpuRk4StepPlan,
 } from "../runtime/rumoca_gpu.js";
 
@@ -35,4 +36,21 @@ test("GPU input binding helper finds named P slots from solve layout", () => {
   assert.equal(gpuPIndexForName(prep, "aoa_cmd"), 3);
   assert.equal(gpuPIndexForName(prep, "x"), null);
   assert.equal(gpuPIndexForName(prep, "missing"), null);
+});
+
+test("periodic GPU events keep absolute phase across partial RK4 steps", () => {
+  const clock = gpuPeriodicClock({period: [1, 10], phase: [1, 20], anchor: "absolute"}, 0);
+  assert.equal(clock.next, 0.05);
+  assert.equal(clock.consume(0.049), false);
+  for (let i = 0; i < 1200; i++) {
+    const t = 0.05 + i * 0.1;
+    assert.equal(clock.consume(t), true);
+    assert.equal(clock.consume(t), false);
+  }
+  const restart = gpuPeriodicClock({period: [1, 10], phase: [1, 20], anchor: "absolute"}, 0.23);
+  assert.equal(restart.next, 0.25);
+  const relative = gpuPeriodicClock({period: [1, 10], phase: [0, 1], anchor: "simulation_start"}, 5);
+  assert.equal(relative.consume(5), true);
+  assert.equal(relative.consume(5), false);
+  assert.throws(() => gpuPeriodicClock({period: [0, 1], phase: [1, 1], anchor: "absolute"}, 0));
 });

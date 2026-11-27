@@ -100,3 +100,40 @@ fn derivative_rhs_chunk0(@builtin(global_invocation_id) gid: vec3<u32>) {
 // workgroup_size={{ workgroup_size }}
 // chunk_size={{ chunk_size }}
 // kernel_count={{ derivative_kernel_count }}
+
+{%- if solve.clocks.periodic_event_schedules | length %}
+{%- set event_cfg = {"time": "u.time", "y": "y[{}]", "p": "sampled_p[{}]"} %}
+
+@group(0) @binding(4) var<storage, read_write> sampled_p: array<f32>;
+@compute @workgroup_size(1)
+fn periodic_tick() {
+    _ = u.time;
+    _ = arrayLength(&y);
+    sampled_p[{{ solve.clocks.activation_parameter_indices[0] }}] = 1.0;
+{%- for update in solve.periodic_assignments %}
+{%- if update is undefined %}
+{{ fail("unsupported-feature:events: WGSL periodic assignment needs one scalar parameter target and an uncaptured conditional") }}
+{%- endif %}
+    {
+{%- for arm in update.arms %}
+        {% if not loop.first %}else {% endif %}if (({{ render_solve_row_output_wgsl(arm.condition, 0, event_cfg) }}) != 0.0) {
+            sampled_p[{{ update.target }}] = {{ render_solve_row_output_wgsl(arm.result, 0, event_cfg) }};
+        }
+{%- endfor %}
+        else {
+            sampled_p[{{ update.target }}] = {{ render_solve_row_output_wgsl(update.fallback, 0, event_cfg) }};
+        }
+    }
+{%- endfor %}
+    sampled_p[{{ solve.clocks.activation_parameter_indices[0] }}] = 0.0;
+{%- for memory in solve.periodic_pulse_memories %}
+    sampled_p[{{ memory.target.P.index }}] = {{ render_solve_row_output_wgsl(memory.program, 0, event_cfg) }};
+{%- endfor %}
+{%- for binding in solve.solve_layout.pre_param_bindings %}
+    let pre_{{ loop.index0 }} = sampled_p[{{ binding.source.P.index }}];
+{%- endfor %}
+{%- for binding in solve.solve_layout.pre_param_bindings %}
+    sampled_p[{{ binding.dest_p_index }}] = pre_{{ loop.index0 }};
+{%- endfor %}
+}
+{%- endif %}
