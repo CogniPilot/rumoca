@@ -9,25 +9,13 @@
 //! whose mean channel error rose must be stated, exactly, by a crossed
 //! boundary.
 
-use anyhow::{Context, Result, bail, ensure};
+use anyhow::{Context, Result, bail};
 use rumoca_msl_quality::{
-    AccuracyChange, ModelStates, Regression, ReviewedChanges, Transition, accuracy_change,
-    parse_evidence_states, shared_floors, transitions,
+    AccuracyChange, AccuracyRule, ModelStates, PerModelVerdict, judge, verify_evidence,
 };
 use serde_json::Value;
-use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::{Path, PathBuf};
-
-/// What the per-model rule decided, as the ratchet's lines.
-#[derive(Debug, Default)]
-pub(super) struct PerModelVerdict {
-    pub(super) regressions: Vec<String>,
-    pub(super) inconclusive: Vec<String>,
-    pub(super) improvements: Vec<String>,
-    /// Printed, not ruled on.
-    pub(super) report: Vec<String>,
-}
 
 fn workspace_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
@@ -68,13 +56,8 @@ fn previous_states(baseline: &Value, crossed: &[&Value], root: &Path) -> Result<
         .context("evidence_model_states.sha256 must be a string")?;
     let path = root.join(file);
     let bytes = fs::read(&path).with_context(|| format!("read {}", path.display()))?;
-    let actual = format!("{:x}", Sha256::digest(&bytes));
-    ensure!(
-        actual == sha256,
-        "evidence model states {file} have sha256 {actual}, the reviewed boundary pins {sha256}"
-    );
-    let text = String::from_utf8(bytes).with_context(|| format!("{file} is not UTF-8"))?;
-    let evidence = parse_evidence_states(&text).map_err(anyhow::Error::msg)?;
+    let evidence =
+        verify_evidence(&bytes, sha256).map_err(|error| anyhow::anyhow!("{file}: {error}"))?;
     Ok(evidence.model_states)
 }
 
@@ -96,13 +79,13 @@ fn stated_accuracy_change(crossed: &[&Value]) -> Result<Option<AccuracyChange>> 
 /// Across an OMC context change only OMC-independent transitions count (a
 /// stage drop, a target that leaves), as the aggregate rule compares only
 /// OMC-independent metrics there.
-pub(super) fn judge(
+pub(super) fn judge_snapshot(
     current: &Value,
     baseline: &Value,
     crossed: &[&Value],
     omc_context_changed: bool,
 ) -> Result<Option<PerModelVerdict>> {
-    judge_at(
+    judge_snapshot_at(
         current,
         baseline,
         crossed,
@@ -111,7 +94,7 @@ pub(super) fn judge(
     )
 }
 
-pub(super) fn judge_at(
+pub(super) fn judge_snapshot_at(
     current: &Value,
     baseline: &Value,
     crossed: &[&Value],
@@ -122,57 +105,12 @@ pub(super) fn judge_at(
         return Ok(None);
     };
     let before = previous_states(baseline, crossed, root)?;
-    let mut verdict = PerModelVerdict::default();
-    for (model, transition) in transitions(&before, &after, &ReviewedChanges::default()) {
-        match transition {
-            Transition::Regressed(why) => {
-                let omc_independent = matches!(
-                    why,
-                    Regression::StageDropped { .. } | Regression::LeftTargets
-                );
-                if omc_independent || !omc_context_changed {
-                    verdict.regressions.push(format!("{model}: {why}"));
-                }
-            }
-            Transition::Inconclusive(why) => verdict.inconclusive.push(format!("{model}: {why}")),
-            Transition::Progressed => verdict.improvements.push(format!("{model}: progressed")),
-            Transition::New => verdict
-                .improvements
-                .push(format!("{model}: new sim target")),
-            Transition::Reviewed | Transition::Unchanged => {}
-        }
-    }
-    if omc_context_changed {
-        return Ok(Some(verdict));
-    }
-    let floors = shared_floors(&before, &after);
-    verdict.regressions.extend(floors.regressions());
-    let (was, is) = floors.mean_channel_bounded_l1;
-    verdict.report.push(format!(
-        "mean channel bounded L1 over {} models scored in both: {was:.6e} -> {is:.6e} (reported)",
-        floors.models
-    ));
-    let measured = accuracy_change(&before, &after);
     let stated = stated_accuracy_change(crossed)?;
-    if measured != stated {
-        match &measured {
-            Some(change) => verdict.regressions.push(format!(
-                "{} models' mean channel error rose and the crossed boundary does not state \
-                 exactly that: {}",
-                change.rose.len(),
-                change
-                    .rose
-                    .iter()
-                    .map(|model| format!("{} {:e} -> {:e}", model.model, model.before, model.after))
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            )),
-            None => verdict.regressions.push(
-                "a crossed boundary states an accuracy change, but no model's mean channel \
-                 error rose"
-                    .to_string(),
-            ),
-        }
-    }
+    let verdict = judge(
+        &before,
+        &after,
+        AccuracyRule::Stated(stated.as_ref()),
+        omc_context_changed,
+    );
     Ok(Some(verdict))
 }

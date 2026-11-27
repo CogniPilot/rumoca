@@ -856,18 +856,31 @@ mod per_model_rule {
         let baseline = full_snapshot(3);
         let current = with_states(full_snapshot(4), json!({ "A": simulated(1.0e-3) }));
         let pinned = link(&sha);
-        let found = super::super::per_model::judge_at(&current, &baseline, &[&pinned], false, &dir)
-            .unwrap()
-            .unwrap();
+        let found = super::super::per_model::judge_snapshot_at(
+            &current,
+            &baseline,
+            &[&pinned],
+            false,
+            &dir,
+        )
+        .unwrap()
+        .unwrap();
         assert!(found.regressions.is_empty(), "{:?}", found.regressions);
         let forged = link("0000");
-        let error = super::super::per_model::judge_at(&current, &baseline, &[&forged], false, &dir)
-            .unwrap_err()
-            .to_string();
+        let error = super::super::per_model::judge_snapshot_at(
+            &current,
+            &baseline,
+            &[&forged],
+            false,
+            &dir,
+        )
+        .unwrap_err()
+        .to_string();
         assert!(error.contains("the reviewed boundary pins 0000"), "{error}");
-        let none = super::super::per_model::judge_at(&current, &baseline, &[], false, &dir)
-            .unwrap_err()
-            .to_string();
+        let none =
+            super::super::per_model::judge_snapshot_at(&current, &baseline, &[], false, &dir)
+                .unwrap_err()
+                .to_string();
         assert!(error_contains(
             &none,
             "no crossed reference boundary pins evidence"

@@ -277,7 +277,7 @@ pub(crate) fn ratchet_decision(
     // With per-model states, each model is judged against its own previous
     // state, which subsumes the stage and trace count floors and the
     // certified roster; otherwise the aggregate rule applies.
-    let per_model = per_model::judge(current, baseline, &crossed, omc_context_changed)?;
+    let per_model = per_model::judge_snapshot(current, baseline, &crossed, omc_context_changed)?;
     let mut verdict = Verdict::default();
     let floored = applies_timing_margin(current) && applies_timing_margin(baseline);
     if per_model.is_none() {

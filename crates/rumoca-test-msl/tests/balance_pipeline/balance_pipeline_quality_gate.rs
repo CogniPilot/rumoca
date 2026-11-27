@@ -5,6 +5,7 @@ mod cohort_evidence;
 mod compiler_contract_migration;
 mod model_states;
 mod parity_measurement;
+mod per_model_gate;
 mod reference_stage;
 mod runtime_cohort;
 mod schema_migrations;
@@ -28,6 +29,7 @@ use compiler_contract_migration::*;
 use indexmap::{IndexMap, IndexSet};
 use model_states::*;
 pub(super) use parity_measurement::*;
+use per_model_gate::*;
 pub(super) use reference_stage::*;
 use runtime_cohort::*;
 use schema_migrations::*;
@@ -1806,7 +1808,13 @@ pub(super) fn enforce_msl_quality_gate(
     let baseline_path = msl_quality_baseline_path();
     let baseline = load_msl_quality_baseline(&baseline_path)?;
     let parity_input = measurement.gate_input();
-    let mut gate_failure = msl_quality_gate_failure_message(gate_input, &baseline, &measurement);
+    let per_model = per_model_verdict(&baseline_path)?;
+    let mut gate_failure = match &per_model {
+        Some(verdict) => {
+            per_model_gate_failure_message(gate_input, &baseline, &measurement, verdict)
+        }
+        None => msl_quality_gate_failure_message(gate_input, &baseline, &measurement),
+    };
     if let Some(floor) = strict_high_hard_floor_reason(summary, &measurement) {
         gate_failure = Some(match gate_failure {
             Some(existing) => format!("{existing}; {floor}"),
@@ -1828,7 +1836,13 @@ pub(super) fn enforce_msl_quality_gate(
             None => reason,
         });
     }
-    for reason in certified_cohort_regression_reasons(&baseline, &measurement) {
+    // Per-model transitions judge certification model by model.
+    let certified_reasons = if per_model.is_some() {
+        Vec::new()
+    } else {
+        certified_cohort_regression_reasons(&baseline, &measurement)
+    };
+    for reason in certified_reasons {
         gate_failure = Some(match gate_failure {
             Some(existing) => format!("{existing}; {reason}"),
             None => reason,

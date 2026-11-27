@@ -591,6 +591,122 @@ pub fn accuracy_change(before: &ModelStates, after: &ModelStates) -> Option<Accu
     (!rose.is_empty()).then_some(AccuracyChange { rose })
 }
 
+/// Read an evidence file whose bytes a reviewed boundary pins by sha256,
+/// refusing bytes that do not match the pin or a file of another schema.
+pub fn verify_evidence(bytes: &[u8], pinned_sha256: &str) -> Result<EvidenceStates, String> {
+    use sha2::{Digest, Sha256};
+    let actual = format!("{:x}", Sha256::digest(bytes));
+    if actual != pinned_sha256 {
+        return Err(format!(
+            "evidence model states have sha256 {actual}, the reviewed boundary pins {pinned_sha256}"
+        ));
+    }
+    let text =
+        std::str::from_utf8(bytes).map_err(|error| format!("evidence is not UTF-8: {error}"))?;
+    parse_evidence_states(text)
+}
+
+/// How per-model accuracy rises are treated.
+#[derive(Debug, Clone, Copy)]
+pub enum AccuracyRule<'a> {
+    /// Promotion: every rise must be stated, exactly, by this statement.
+    Stated(Option<&'a AccuracyChange>),
+    /// A pull request: rises are listed, largest first, and not ruled on.
+    Reported,
+}
+
+/// The per-model rule's decision, as lines.
+#[derive(Debug, Default, Clone, PartialEq)]
+pub struct PerModelVerdict {
+    pub regressions: Vec<String>,
+    /// Must be re-measured before anything can pass; never a pass.
+    pub inconclusive: Vec<String>,
+    pub improvements: Vec<String>,
+    /// Printed, not ruled on.
+    pub report: Vec<String>,
+}
+
+/// Judge `after` against `before` model by model: the transition table, the
+/// continuous floors over the models scored in both, and the accuracy rule.
+/// Across an OMC context change only OMC-independent transitions count (a
+/// stage drop, a target that leaves), and the trace measures are not compared.
+pub fn judge(
+    before: &ModelStates,
+    after: &ModelStates,
+    accuracy: AccuracyRule<'_>,
+    omc_context_changed: bool,
+) -> PerModelVerdict {
+    let mut verdict = PerModelVerdict::default();
+    for (model, transition) in transitions(before, after, &ReviewedChanges::default()) {
+        match transition {
+            Transition::Regressed(why) => {
+                let omc_independent = matches!(
+                    why,
+                    Regression::StageDropped { .. } | Regression::LeftTargets
+                );
+                if omc_independent || !omc_context_changed {
+                    verdict.regressions.push(format!("{model}: {why}"));
+                }
+            }
+            Transition::Inconclusive(why) => verdict.inconclusive.push(format!("{model}: {why}")),
+            Transition::Progressed => verdict.improvements.push(format!("{model}: progressed")),
+            Transition::New => verdict
+                .improvements
+                .push(format!("{model}: new sim target")),
+            Transition::Reviewed | Transition::Unchanged => {}
+        }
+    }
+    if omc_context_changed {
+        return verdict;
+    }
+    let floors = shared_floors(before, after);
+    verdict.regressions.extend(floors.regressions());
+    let (was, is) = floors.mean_channel_bounded_l1;
+    verdict.report.push(format!(
+        "mean channel bounded L1 over {} models scored in both: {was:.6e} -> {is:.6e} (reported)",
+        floors.models
+    ));
+    let measured = accuracy_change(before, after);
+    match accuracy {
+        AccuracyRule::Reported => {
+            if let Some(change) = &measured {
+                let mut ranked = change.rose.clone();
+                ranked.sort_by(|a, b| (b.after - b.before).total_cmp(&(a.after - a.before)));
+                verdict.report.push(format!(
+                    "{} models' mean channel error rose, largest first:",
+                    ranked.len()
+                ));
+                verdict.report.extend(ranked.iter().map(|model| {
+                    format!("  {} {:e} -> {:e}", model.model, model.before, model.after)
+                }));
+            }
+        }
+        AccuracyRule::Stated(stated) if measured.as_ref() != stated => {
+            verdict.regressions.push(match &measured {
+                Some(change) => format!(
+                    "{} models' mean channel error rose and the crossed boundary does not \
+                     state exactly that: {}",
+                    change.rose.len(),
+                    change
+                        .rose
+                        .iter()
+                        .map(|model| format!(
+                            "{} {:e} -> {:e}",
+                            model.model, model.before, model.after
+                        ))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+                None => "a crossed boundary states an accuracy change, but no model's mean \
+                         channel error rose"
+                    .to_string(),
+            });
+        }
+        AccuracyRule::Stated(_) => {}
+    }
+    verdict
+}
+
 /// Fail on any regression; otherwise inconclusive while anything must be
 /// re-measured; otherwise pass.
 pub fn verdict(transitions: &BTreeMap<String, Transition>) -> Verdict {
