@@ -123,6 +123,7 @@
     RmcModelAssertionContext context={m, {{ op.owner }}, {{ observation_mode }}, {% if op.kind == "PureCallObservation" %}&r[{{ op.dst }}]{% else %}NULL{% endif %}, {% if observation_mode == 2 %}warnings.notices{% else %}NULL{% endif %}};
     const RmcAssertionObserver observer={&context, rmc_model_assertion};
 {%- set callee = ("rumoca_scalar_observe_" if op.kind == "PureCallObservation" else ("rumoca_scalar_pure_directional_" if op.kind == "PureCallDirectional" else "rumoca_scalar_pure_")) ~ pure_symbol(op.owner) %}
+{%- if op.call_demand is defined and pure_call_variants is defined and pure_call_variants[callee ~ op.call_demand] is defined %}{% set callee = callee ~ op.call_demand %}{% endif -%}
 {%- if device %}
     {#- C++ takes no address of a compound literal: the inputs are a named array. #}
     const double* call_in[]={ {% for start in op.input_starts %}&r[{{ start }}],{% else %}NULL{% endfor %} };

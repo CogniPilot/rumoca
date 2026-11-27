@@ -910,7 +910,7 @@ pub use root_storage::{RootRegisterLayout, RootRegisterTarget};
 mod structural_pattern;
 pub use register_versions::{
     BorrowedParameterGathers, RegisterOperandPiece, RegisterOperationVersions,
-    RegisterVersionProgram,
+    RegisterVersionProgram, ScalarCallDemand,
 };
 pub use structural_pattern::{
     ColoredStructuralPattern, ColumnColoring, ExecutionYReadPrefix, KinematicStates,

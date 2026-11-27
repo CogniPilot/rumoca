@@ -20,7 +20,9 @@ use serde_json::Value as Json;
 
 use crate::errors::CodegenError;
 
+mod demand;
 mod json_view;
+pub(super) use demand::demand_suffix;
 
 /// Target-neutral view of a checked typed function owner (primal or
 /// directional), exactly the fields the typed-function templates read.
@@ -44,10 +46,11 @@ struct OwnerJson {
 pub(super) struct PureCallFamilies {
     /// Per owner id, the owner id of its family representative.
     symbols: Vec<u32>,
+    variants: std::collections::BTreeSet<String>,
     /// Representative primal owners, in owner order.
-    owners: Arc<[Json]>,
+    owners: Arc<Vec<Json>>,
     /// Representative directional owners, in owner order.
-    directional: Arc<[Json]>,
+    directional: Arc<Vec<Json>>,
     /// Whether any emitted body hands a callee's assertions to its own
     /// observer, the only user of `rmc_forward_assertion`.
     forwards_assertions: bool,
@@ -76,6 +79,7 @@ impl PureCallFamilies {
         let forwards_assertions = owners.iter().chain(&directional).any(forwards_assertion);
         Ok(Self {
             symbols,
+            variants: Default::default(),
             forwards_assertions,
             owners: owners.into(),
             directional: directional.into(),
@@ -102,6 +106,15 @@ impl PureCallFamilies {
     /// Owner id -> emitted symbol id, indexed by `op.owner`.
     pub(super) fn symbols_value(&self) -> Value {
         Value::from_serialize(&self.symbols)
+    }
+
+    pub(super) fn variants_value(&self) -> Value {
+        Value::from_serialize(
+            self.variants
+                .iter()
+                .map(|v| (v, true))
+                .collect::<BTreeMap<_, _>>(),
+        )
     }
 
     #[cfg(test)]

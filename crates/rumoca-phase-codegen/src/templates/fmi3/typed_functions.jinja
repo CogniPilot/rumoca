@@ -26,10 +26,12 @@
 {% endif -%}
 {% endmacro %}
 
+{#- A specialized entry retains the identity of the original checked owner. -#}
+{%- macro emitted_symbol(owner) -%}{{ owner.symbol|default(owner.id) }}{%- endmacro %}
 {%- macro observation_wrapper(owner, device=false) -%}
 {% set predicates = owner.outputs|selectattr("role.kind", "equalto", "assertion_predicate")|list -%}
 {% if predicates|length > 0 -%}
-{{ device_qualifier(device, true) }} int rumoca_scalar_observe_{{ owner.id }}(const double* const in[], double* out, const RmcAssertionObserver* observer) {
+{{ device_qualifier(device, true) }} int rumoca_scalar_observe_{{ emitted_symbol(owner) }}(const double* const in[], double* out, const RmcAssertionObserver* observer) {
 (void)in;
 {% for ty in owner.inputs -%}
 {% if not direct(ty) -%}
@@ -45,9 +47,9 @@
 {% endfor -%}
 {% if device -%}
 const void* call_in[]={ {% for ty in owner.inputs %}{% if direct(ty) %}in[{{ loop.index0 }}]{% else %}a{{ loop.index0 }}{% endif %},{% else %}NULL{% endfor %} }; void* call_out[]={ {{ output.args }} };
-int status=rumoca_pure_{{ owner.id }}(call_in, call_out, observer);
+int status=rumoca_pure_{{ emitted_symbol(owner) }}(call_in, call_out, observer);
 {% else -%}
-int status=rumoca_pure_{{ owner.id }}((const void*[]){ {% for ty in owner.inputs %}{% if direct(ty) %}in[{{ loop.index0 }}]{% else %}a{{ loop.index0 }}{% endif %},{% else %}NULL{% endfor %} }, (void*[]){ {{ output.args }} }, observer);
+int status=rumoca_pure_{{ emitted_symbol(owner) }}((const void*[]){ {% for ty in owner.inputs %}{% if direct(ty) %}in[{{ loop.index0 }}]{% else %}a{{ loop.index0 }}{% endif %},{% else %}NULL{% endfor %} }, (void*[]){ {{ output.args }} }, observer);
 {% endif -%}
 if (!status) { {% for predicate in predicates %}out[{{ loop.index0 }}]=(double)b{{ loop.index0 }}[0];{% endfor %} }
 return status;
@@ -195,7 +197,8 @@ if (i{{ loop.index0 }}) b{{ loop.index0 }}[0]+={{ integer(binder.step) }};
 {% set child = name ~ "_region_" ~ loop.index0 -%}
 {% set edits=program.print.fold_edits|default({}) -%}
 {% set conditional_edit=edit and edit.producer == loop.index0 and edit.change.kind == "branch" -%}
-{% if op.operation == "check_assertion" and op.message.kind == "captures" -%}
+{% if issued.omitted|default(false) -%}
+{% elif op.operation == "check_assertion" and op.message.kind == "captures" -%}
 {{ definition(op.message.program.body, child ~ "_message", prefix, assertion_outputs, source_predicate_outputs, device) -}}
 {% elif op.operation == "assigned_conditional" -%}
 {{ definition(op.program.if_true.body, child ~ "_true", prefix, assertion_outputs, source_predicate_outputs, device) -}}
@@ -246,14 +249,14 @@ memcpy(s{{ slot.id }}, in[{{ input.index }}], sizeof(s{{ slot.id }}));
 {% endfor -%}
 {% for ty in program.assigned_states.types|default([]) %}bool present{{ loop.index0 }}=false; (void)present{{ loop.index0 }}; {{ declaration("v" ~ loop.index0, ty) }}{% endfor %}
 {% for ty in program.register_types %}{% if loop.index0 not in alias.ids and not (edit and loop.index0 == edit.result and edit.change.kind != "unchanged") %}{{ declaration("r" ~ loop.index0, ty) }}{% endif %}{% endfor %}
-{% for issued in program.operations %}{% set op = issued.operation %}{% if op.operation == "load" and op.destination in alias.ids %}const {{ ctype(program.register_types[op.destination]) }}* r{{ op.destination }} = s{{ op.slot }}; (void)r{{ op.destination }};
+{% for issued in program.operations %}{% set op = issued.operation %}{% if issued.omitted|default(false) %}{% elif op.operation == "load" and op.destination in alias.ids %}const {{ ctype(program.register_types[op.destination]) }}* r{{ op.destination }} = s{{ op.slot }}; (void)r{{ op.destination }};
 {% elif not edit or loop.index0 != edit.store -%}
 {% set edits=program.print.fold_edits|default({}) -%}
 {{ operation(op, program, name ~ "_region_" ~ loop.index0, prefix, assertion_outputs, source_predicate_outputs, device, edits[loop.index0|string]|default(none), edit if edit and loop.index0 == edit.producer else none) }}{% endif %}{% endfor -%}
 {% set output = namespace(index=0) -%}
 {% for slot in program.slots -%}
 {% if slot.storage == "output" -%}
-{% if not edit or edit.slot != slot.id %}if (out[{{ output.index }}]) memcpy(out[{{ output.index }}], s{{ slot.id }}, sizeof(s{{ slot.id }}));
+{% if not (slot.omitted|default(false)) and (not edit or edit.slot != slot.id) %}if (out[{{ output.index }}]) memcpy(out[{{ output.index }}], s{{ slot.id }}, sizeof(s{{ slot.id }}));
 {% endif -%}
 {% set output.index = output.index + 1 -%}
 {% endif -%}
@@ -265,7 +268,7 @@ return 0;
 {#- Binary64 inputs and outputs pass the caller's arrays straight through;
     other types convert through local arrays. -#}
 {%- macro wrapper(owner, kind="", device=false) -%}
-{{ device_qualifier(device, true) }} int rumoca_scalar_pure_{{ kind }}{{ owner.id }}(const double* const in[], double* out, const RmcAssertionObserver* observer) {
+{{ device_qualifier(device, true) }} int rumoca_scalar_pure_{{ kind }}{{ emitted_symbol(owner) }}(const double* const in[], double* out, const RmcAssertionObserver* observer) {
 (void)in;
 if (!out) return 1;
 {% for ty in owner.inputs -%}
@@ -276,14 +279,15 @@ if (!out) return 1;
 {% endfor -%}
 {% set offset = namespace(value=0, args="", conversions="") -%}
 {% for output in owner.outputs -%}
-{% if direct(output.value_type) %}{% set offset.args = offset.args ~ "out+" ~ offset.value ~ "," -%}
+{% if output.omitted|default(false) %}{% set offset.args = offset.args ~ "NULL," -%}
+{% elif direct(output.value_type) %}{% set offset.args = offset.args ~ "out+" ~ offset.value ~ "," -%}
 {% else %}{{ declaration("b" ~ loop.index0, output.value_type) }}{% set offset.args = offset.args ~ "b" ~ loop.index0 ~ "," %}{% set offset.conversions = offset.conversions ~ "for (size_t k=0; k<" ~ output.value_type.scalar_count ~ "; ++k) out[" ~ offset.value ~ "+k]=(double)b" ~ loop.index0 ~ "[k];\n" %}{% endif -%}
 {% set offset.value = offset.value + output.value_type.scalar_count -%}
 {% endfor %}
 {% if device -%}
-{ const void* call_in[]={ {% for ty in owner.inputs %}{% if direct(ty) %}in[{{ loop.index0 }}]{% else %}a{{ loop.index0 }}{% endif %},{% else %}NULL{% endfor %} }; void* call_out[]={ {{ offset.args if offset.args else "NULL" }} }; int status=rumoca_pure_{{ kind }}{{ owner.id }}(call_in, call_out, observer); if (status) return status; }
+{ const void* call_in[]={ {% for ty in owner.inputs %}{% if direct(ty) %}in[{{ loop.index0 }}]{% else %}a{{ loop.index0 }}{% endif %},{% else %}NULL{% endfor %} }; void* call_out[]={ {{ offset.args if offset.args else "NULL" }} }; int status=rumoca_pure_{{ kind }}{{ emitted_symbol(owner) }}(call_in, call_out, observer); if (status) return status; }
 {% else -%}
-{ int status=rumoca_pure_{{ kind }}{{ owner.id }}((const void*[]){ {% for ty in owner.inputs %}{% if direct(ty) %}in[{{ loop.index0 }}]{% else %}a{{ loop.index0 }}{% endif %},{% else %}NULL{% endfor %} }, (void*[]){ {{ offset.args if offset.args else "NULL" }} }, observer); if (status) return status; }
+{ int status=rumoca_pure_{{ kind }}{{ emitted_symbol(owner) }}((const void*[]){ {% for ty in owner.inputs %}{% if direct(ty) %}in[{{ loop.index0 }}]{% else %}a{{ loop.index0 }}{% endif %},{% else %}NULL{% endfor %} }, (void*[]){ {{ offset.args if offset.args else "NULL" }} }, observer); if (status) return status; }
 {% endif -%}
 {{ offset.conversions }}return 0;
 }
@@ -302,15 +306,15 @@ __attribute__((unused))
 #endif
 {{ device_qualifier(device) }} inline double rumoca_real64(uint64_t bits) { double value; memcpy(&value, &bits, sizeof(value)); return value; }
 {% endif -%}
-{% for owner in table.owners %}{{ device_qualifier(device) }} int rumoca_pure_{{ owner.id }}(const void* const in[], void* const out[], const RmcAssertionObserver* observer);{% endfor %}
+{% for owner in table.owners %}{{ device_qualifier(device) }} int rumoca_pure_{{ emitted_symbol(owner) }}(const void* const in[], void* const out[], const RmcAssertionObserver* observer);{% endfor %}
 {% for owner in table.owners -%}
-{{ definition(owner.body, "rumoca_pure_" ~ owner.id, assertion_outputs=owner.outputs, source_predicate_outputs=owner.source_predicate_outputs, device=device) -}}
+{{ definition(owner.body, "rumoca_pure_" ~ emitted_symbol(owner), assertion_outputs=owner.outputs, source_predicate_outputs=owner.source_predicate_outputs, device=device) -}}
 {{ wrapper(owner, device=device) -}}
 {{ observation_wrapper(owner, device) -}}
 {% endfor -%}
-{% for owner in directional %}{{ device_qualifier(device) }} int rumoca_pure_directional_{{ owner.id }}(const void* const in[], void* const out[], const RmcAssertionObserver* observer);{% endfor %}
+{% for owner in directional %}{{ device_qualifier(device) }} int rumoca_pure_directional_{{ emitted_symbol(owner) }}(const void* const in[], void* const out[], const RmcAssertionObserver* observer);{% endfor %}
 {% for owner in directional -%}
-{{ definition(owner.body, "rumoca_pure_directional_" ~ owner.id, "rumoca_pure_directional_", owner.outputs, owner.source_predicate_outputs, device) -}}
+{{ definition(owner.body, "rumoca_pure_directional_" ~ emitted_symbol(owner), "rumoca_pure_directional_", owner.outputs, owner.source_predicate_outputs, device) -}}
 {{ wrapper(owner, "directional_", device) -}}
 {% endfor -%}
 {% endmacro %}
@@ -335,10 +339,10 @@ typedef struct { ModelInstance* instance; size_t owner; int mode; double* predic
 {{ device_qualifier(device, true) }} void rmc_finish_assertion_observation(RmcModelAssertionContext* context, int status);
 {# Each shared typed function carries the model identifier, like the kernel
     symbols (kernel_declarations). -#}
-{{ shared_prefix() }}{% for owner in table.owners %}{{ shared_symbol("rumoca_scalar_pure_" ~ owner.id) }}{{ device_qualifier(device, true) }} int rumoca_scalar_pure_{{ owner.id }}(const double* const in[], double* out, const RmcAssertionObserver* observer);
-{% if owner.outputs|selectattr("role.kind", "equalto", "assertion_predicate")|list|length > 0 %}{{ shared_symbol("rumoca_scalar_observe_" ~ owner.id) }}{{ device_qualifier(device, true) }} int rumoca_scalar_observe_{{ owner.id }}(const double* const in[], double* out, const RmcAssertionObserver* observer);
+{{ shared_prefix() }}{% for owner in table.owners %}{{ shared_symbol("rumoca_scalar_pure_" ~ emitted_symbol(owner)) }}{{ device_qualifier(device, true) }} int rumoca_scalar_pure_{{ emitted_symbol(owner) }}(const double* const in[], double* out, const RmcAssertionObserver* observer);
+{% if owner.outputs|selectattr("role.kind", "equalto", "assertion_predicate")|list|length > 0 %}{{ shared_symbol("rumoca_scalar_observe_" ~ emitted_symbol(owner)) }}{{ device_qualifier(device, true) }} int rumoca_scalar_observe_{{ emitted_symbol(owner) }}(const double* const in[], double* out, const RmcAssertionObserver* observer);
 {% endif %}
 {% endfor -%}
-{% for owner in directional %}{{ shared_symbol("rumoca_scalar_pure_directional_" ~ owner.id) }}{{ device_qualifier(device, true) }} int rumoca_scalar_pure_directional_{{ owner.id }}(const double* const in[], double* out, const RmcAssertionObserver* observer);
+{% for owner in directional %}{{ shared_symbol("rumoca_scalar_pure_directional_" ~ emitted_symbol(owner)) }}{{ device_qualifier(device, true) }} int rumoca_scalar_pure_directional_{{ emitted_symbol(owner) }}(const double* const in[], double* out, const RmcAssertionObserver* observer);
 {% endfor -%}
 {% endmacro %}
