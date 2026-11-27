@@ -67,6 +67,7 @@ fn run_driver(
     compiled: &rumoca::CompilationResult,
     model: &str,
     driver: &str,
+    flags: &[&str],
 ) -> String {
     let fmu = build_named_fmu(work, compiled, "fmi3", model);
     let sources = fmu.root.join("sources");
@@ -82,6 +83,7 @@ fn run_driver(
                 "-Wextra",
                 "-Werror",
             ])
+            .args(flags)
             .arg(format!("-I{}", sources.display()))
             .arg(format!("-I{}", headers.display()))
             .arg(&source)
@@ -202,7 +204,7 @@ fn sequence_points(
     let driver = format!(
         "#include \"model.c\"\n#define RMC_STATES {states}\n#define RMC_SEQUENCE {sequence}\n{SEQUENCE_DRIVER}"
     );
-    let output = run_driver(work.path(), headers, compiled, model, &driver);
+    let output = run_driver(work.path(), headers, compiled, model, &driver, &[]);
     let (kept, fresh) = output
         .split_once("fresh\n")
         .unwrap_or_else(|| panic!("{model}: the driver prints both parts: {output}"));
@@ -298,6 +300,73 @@ int main(void) {
 }
 "#;
     let work = tempdir().expect("listed solve work directory");
-    let output = run_driver(work.path(), &headers, &compiled, model, driver);
+    let output = run_driver(work.path(), &headers, &compiled, model, driver, &[]);
     assert_eq!(output.trim(), "0");
+}
+
+#[test]
+fn inline_factor_instances_relocate_and_restore_independent_caches() {
+    let headers =
+        workspace_root().join("crates/rumoca-phase-codegen/src/templates/fmi-ls-wasm/fmi3-headers");
+    let model = "InlineFactorChain";
+    let compiled = compile(model, &chain(model, 12, "(1 + vC[{i}]^2)"));
+    let driver = r#"
+#include "model.c"
+static int read_point(ModelInstance* m, double shift) {
+    m->time += shift;
+    m->y[0] += shift;
+    if (refresh_algebraics(m) != fmi3OK || refresh_derivative_values(m) != fmi3OK) return 1;
+    for (size_t i = 0; i < STATE_LEN; ++i) printf(" %a", m->derivative[i]);
+    puts("");
+    return 0;
+}
+int main(void) {
+    ModelInstance* m = calloc(1, sizeof *m);
+    if (!m || !rmc_keep_allocate(m)) return 1;
+    initialize_values(m);
+    if (refresh_parameters(m) != fmi3OK || read_point(m, .001)) return 2;
+    fmi3FMUState snapshot = NULL;
+    if (fmi3GetFMUState(m, &snapshot) != fmi3OK) return 3;
+#ifdef RMC_INLINE_KEEP
+    _Static_assert(sizeof m->rmc_keep_d == RMC_KEEP_DOUBLES * sizeof(double), "double storage");
+    _Static_assert(sizeof m->rmc_keep_s == RMC_KEEP_SIZES * sizeof(size_t), "index storage");
+    // Release the original address before further projection and snapshot restoration.
+    ModelInstance* moved = malloc(sizeof *m);
+    if (!moved) return 4;
+    memcpy(moved, m, sizeof *m);
+    fmi3FreeInstance(m);
+    m = moved;
+    if (m->rmc_keep_d == ((ModelInstance*)snapshot)->rmc_keep_d) return 5;
+#endif
+    if (read_point(m, .003)) return 6;
+    if (fmi3SetFMUState(m, snapshot) != fmi3OK || read_point(m, .003)) return 7;
+    if (fmi3FreeFMUState(m, &snapshot) != fmi3OK || fmi3Reset(m) != fmi3OK) return 8;
+    for (size_t b = 0; b < sizeof rmc_block_desc / sizeof rmc_block_desc[0]; ++b)
+        if (rmc_block_desc[b].keep && m->rmc_keep_s[rmc_block_desc[b].keep_s]) return 9;
+    if (refresh_parameters(m) != fmi3OK || read_point(m, .001)) return 10;
+    fmi3FreeInstance(m);
+    return 0;
+}
+"#;
+    let work = tempdir().unwrap();
+    let heap = run_driver(work.path(), &headers, &compiled, model, driver, &[]);
+    let inline = run_driver(
+        work.path(),
+        &headers,
+        &compiled,
+        model,
+        driver,
+        &["-DRMC_FMI3_INLINE_FACTORS"],
+    );
+    assert_eq!(inline, heap);
+    let points: Vec<_> = inline.lines().collect();
+    assert_eq!(points.len(), 4);
+    assert_eq!(
+        points[0], points[3],
+        "reset restores the initial solved point"
+    );
+    assert_eq!(
+        points[1], points[2],
+        "replaying a snapshot gives the same derivatives"
+    );
 }

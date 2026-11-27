@@ -24,13 +24,15 @@ The output directory contains an architecture-specific `ensemble.cubin` and an `
 
 ```sh
 src=/tmp/cuda-timed/TimedCrossing/sources
-cc -O2 -ffp-contract=off -DNDEBUG -I"$src" -I"$FMI_INCLUDE" -I"$CUDA_HOME/include" \
+cc -O2 -ffp-contract=off -DNDEBUG -DRMC_FMI3_INLINE_FACTORS -I"$src" -I"$FMI_INCLUDE" -I"$CUDA_HOME/include" \
   "$example/check-timed.c" "$src"/*.c -lcuda -lm -o /tmp/cuda-timed/check
 token=$(sed -n 's/.*instantiationToken="\([^"]*\)".*/\1/p' /tmp/cuda-timed/TimedCrossing/modelDescription.xml)
 /tmp/cuda-timed/check /tmp/cuda-timed/gpu/ensemble.cubin "$token"
 ```
 
-This compares two rates against the native CPU implementation and independent expected values. Both lanes process four clock ticks over 40 ms, with distinct state crossings at 11 ms and 5.5 ms.
+Both lanes solve a 12-node resistive network whose voltages equal the input rate. The host and GPU retain its coupled factors across steps. The test compares two rates against the native CPU implementation and independent expected values. Both lanes process four clock ticks over 40 ms, with distinct state crossings at 11 ms and 5.5 ms.
+
+For models with coupled affine equations the CUDA build embeds persistent solver factors in each instance. Compile all host source units and the copy driver with the flags in the manifest’s `hostDefines` array. The GPU builder inspects Clang’s resolved field types and rejects host-owned pointers, including pointer typedefs nested in records. Run `node --test examples/codegen/cuda-fmi3/check-layout.mjs` to exercise these checks.
 
 ## Driver contract
 

@@ -82,7 +82,15 @@
     directional derivative copy only their address. -#}
 {%- macro workspace_fields(me, device=false) -%}
 {%- if me.kernel %} double rmc_d[{{ me.work.doubles }}]; size_t rmc_s[{{ me.work.sizes }}];
-{%- if me.keep.doubles > 0 %}{% if device %} double rmc_keep_d[{{ me.keep.doubles }}]; size_t rmc_keep_s[{{ me.keep.sizes }}];{% else %} double* rmc_keep_d; size_t* rmc_keep_s;{% endif %}{% endif %} size_t rmc_dtop; size_t rmc_stop; double rmc_tol; bool rmc_certify;{% endif -%}
+{%- if me.keep.doubles > 0 %}{% if device %} double rmc_keep_d[{{ me.keep.doubles }}]; size_t rmc_keep_s[{{ me.keep.sizes }}];{% else %}
+#if defined(RMC_INLINE_KEEP)
+ double rmc_keep_d[{{ me.keep.doubles }}]; size_t rmc_keep_s[{{ me.keep.sizes }}];
+#define RMC_KEEP_AVAILABLE(m) true
+#else
+ double* rmc_keep_d; size_t* rmc_keep_s;
+#define RMC_KEEP_AVAILABLE(m) ((m)->rmc_keep_s != NULL)
+#endif
+{% endif %}{% endif %} size_t rmc_dtop; size_t rmc_stop; double rmc_tol; bool rmc_certify;{% endif -%}
 {%- if me.kernel or me.assign.plan.programs|length > 0 %} bool rmc_fatal;{% endif -%}
 {%- if me.blocks|length > 0 and me.seed_rule == "CommittedAcceptedPoint" %} double rmc_commit_y[Y_LEN]; double rmc_mark_x[STATE_LEN]; double rmc_mark_t; bool rmc_seeding; bool rmc_mark_pending; bool rmc_mark_resolved;{% endif -%}
 {%- if me.blocks|length > 0 %} double rmc_seed[{{ me.seed_len if me.seed_len > 0 else 1 }}]; size_t rmc_fb_calls[{{ me.blocks|length + 1 }}]; size_t rmc_fb_count[{{ me.blocks|length + 1 }}]; size_t rmc_fb_mark[{{ me.blocks|length + 1 }}]; bool rmc_fb_active[{{ me.blocks|length + 1 }}]; bool rmc_fb_reported[{{ me.blocks|length + 1 }}];{% endif -%}
@@ -119,7 +127,7 @@ typedef struct { unsigned fault; size_t fault_site; size_t faults;{% if me.block
 {%- if me.blocks|length > 0 and me.seed_rule == "CommittedAcceptedPoint" %} m->rmc_seeding = false; m->rmc_mark_pending = false; m->rmc_mark_resolved = false;{% endif -%}
 {%- if me.blocks|length > 0 %} memset(m->rmc_seed, 0, sizeof(m->rmc_seed)); memset(m->rmc_fb_calls, 0, sizeof(m->rmc_fb_calls)); memset(m->rmc_fb_count, 0, sizeof(m->rmc_fb_count)); memset(m->rmc_fb_mark, 0, sizeof(m->rmc_fb_mark)); memset(m->rmc_fb_active, 0, sizeof(m->rmc_fb_active)); memset(m->rmc_fb_reported, 0, sizeof(m->rmc_fb_reported));{% endif -%}
 {%- if me.lane_max > 0 %} memset(m->rmc_lane_seed, 0, sizeof(m->rmc_lane_seed));{% endif -%}
-{%- if me.keep.doubles > 0 %}{% if not device %} if (m->rmc_keep_s){% endif %} { {%- for at in me.keep.flags %} m->rmc_keep_s[{{ at }}] = 0;{% endfor %} }{% endif -%}
+{%- if me.keep.doubles > 0 %}{% if not device %} if (RMC_KEEP_AVAILABLE(m)){% endif %} { {%- for at in me.keep.flags %} m->rmc_keep_s[{{ at }}] = 0;{% endfor %} }{% endif -%}
 {%- if me.switching %} m->rmc_chart = 0; m->rmc_chart_target = 0; m->rmc_chart_pending = false; m->rmc_chart_reference = {{ me.switching[0].trial_rcond }}; m->rmc_chart_target_reference = 0.0;{% endif -%}
 {%- if me.kernel or me.assign.plan.programs|length > 0 %}
 #if defined(RMC_LANE_STATUS)
@@ -260,15 +268,19 @@ RMC_COLD {{ q }} void rmc_fault(ModelInstance* m, unsigned code, size_t site) {
 {%- if me.keep.doubles > 0 %}
 #define RMC_KEEP_DOUBLES {{ me.keep.doubles }}
 #define RMC_KEEP_SIZES {{ me.keep.sizes }}
+#if !defined(RMC_INLINE_KEEP)
 static void rmc_keep_release(ModelInstance* m) { rmc_instance_free(m, m->rmc_keep_d); rmc_instance_free(m, m->rmc_keep_s); m->rmc_keep_d = NULL; m->rmc_keep_s = NULL; }
 static bool rmc_keep_allocate(ModelInstance* m) {
     m->rmc_keep_d = rmc_instance_allocate(m, RMC_KEEP_DOUBLES, sizeof(double)); m->rmc_keep_s = rmc_instance_allocate(m, RMC_KEEP_SIZES, sizeof(size_t));
     if (m->rmc_keep_d && m->rmc_keep_s) return true;
     rmc_keep_release(m); return false;
 }
-{%- else %}
+#else
+{% endif -%}
 static inline void rmc_keep_release(ModelInstance* m) { (void)m; }
 static inline bool rmc_keep_allocate(ModelInstance* m) { (void)m; return true; }
+{% if me.keep.doubles > 0 -%}
+#endif
 {%- endif %}
 {%- endmacro %}
 
@@ -1404,7 +1416,7 @@ typedef struct {
     if (result == 0) result = rmc_block_scales(m, b, jac, rscale, vscale);
     if (result == 0) {
         rmc_row_magnitudes(b, jac, vscale, magnitudes, derived);
-        bool keep = RMC_BS(b, keep){% if me.keep.doubles > 0 and not device %} && m->rmc_keep_d != NULL{% endif %};
+        bool keep = RMC_BS(b, keep){% if me.keep.doubles > 0 and not device %} && RMC_KEEP_AVAILABLE(m){% endif %};
 {%- if me.keep.doubles > 0 %}
         if (keep) rmc_keep_bind(m, b, jac, rscale, vscale);
 {%- endif %}
