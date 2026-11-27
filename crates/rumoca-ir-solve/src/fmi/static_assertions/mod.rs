@@ -236,7 +236,7 @@ pub(in crate::fmi) fn accepted_actions(
 
 /// Per event action, whether a runtime checks it at each accepted integrator
 /// step: an error-level assertion whose condition may change between events
-/// (MLS §8.3.7, §8.5), under [`event_iteration_accepted_actions`]. A
+/// (MLS §8.3.7, §8.5), under the event-iteration dependence analysis. A
 /// condition that reads only parameter storage outside the external inputs
 /// cannot change between events, so the checks at initialization, at events
 /// and at output points already see every value it can take. `None` when the
