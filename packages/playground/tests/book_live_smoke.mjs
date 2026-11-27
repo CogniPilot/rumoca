@@ -10,6 +10,9 @@
 // executions produce finite computed state readbacks. Hardware absence is an
 // explicit skip; CPU compilation and GPU preparation remain mandatory native tests.
 import { launchGuideBrowser, hardwareWebGpuAdmission } from "./browser_launcher.mjs";
+import { readFile } from "node:fs/promises";
+import { checkAlgebraicCircuit } from "./gpu_algebraic_circuit.mjs";
+import { checkSampledDrive } from "./gpu_sampled_drive.mjs";
 import { observeShippedArtifact } from "./browser_artifact_identity.mjs";
 import { createBrowserFailureCollector } from "./browser_failures.mjs";
 
@@ -190,7 +193,12 @@ try {
   check(models.some((source) => source.includes("model Wave2D")), "authored Wave2D source present");
   check(models.some((source) => source.includes("model AirfoilFlow")), "authored AirfoilFlow source present");
   const admission = await hardwareWebGpuAdmission(page);
-  if (admission.admitted) await browserFailures.admitGpu(page);
+  if (admission.admitted) {
+    await browserFailures.admitGpu(page);
+    const circuit = await readFile(new URL("../../../examples/models/Circuit.mo", import.meta.url), "utf8");
+    check(await page.evaluate(checkAlgebraicCircuit, circuit), "RC capacitor voltage and resistor current follow the analytical response");
+    check(await page.evaluate(checkSampledDrive), "periodic model tick and RK4 readback match the analytical trajectory");
+  }
   if (!admission.admitted) {
     // Live widgets load this helper lazily when GPU execution starts. Hardware
     // absence skips compute, while the published helper's byte identity stays

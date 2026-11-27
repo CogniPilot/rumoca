@@ -6,6 +6,12 @@
 #include <string.h>
 #include "model.h"
 
+#ifndef RMC_INLINE_KEEP
+#error "Build the coupled fixture and all host units with -DRMC_FMI3_INLINE_FACTORS"
+#endif
+_Static_assert(sizeof(((ModelInstance*)0)->rmc_keep_d) > sizeof(double *),
+               "the coupled test must transfer retained factors");
+
 #define GPU(call) do { \
     CUresult result = (call); \
     if (result != CUDA_SUCCESS) { \
@@ -50,7 +56,11 @@ int main(int argc, char **argv) {
     GPU(cuDeviceGet(&device, 0));
     GPU(cuCtxCreate_v2(&context, 0, device));
     GPU(cuModuleLoad(&module, argv[1]));
-    GPU(cuModuleGetFunction(&step, module, "rmc_fmi3_step"));
+    CUresult block_step = cuModuleGetFunction(&step, module, "rmc_fmi3_step_block");
+    if (block_step != CUDA_SUCCESS) {
+        if (block_step != CUDA_ERROR_NOT_FOUND) GPU(block_step);
+        GPU(cuModuleGetFunction(&step, module, "rmc_fmi3_step"));
+    }
     CUdeviceptr token_address, size_address;
     size_t token_length, size_length;
     unsigned long long device_size;
@@ -80,13 +90,28 @@ int main(int argc, char **argv) {
         check_fmi(fmi3SetFloat64(cpu[lane], &rate_ref, 1, &rate, 1));
         check_fmi(fmi3ExitInitializationMode(cpu[lane]));
         copy[lane] = *cpu[lane];
+        /* Start the GPU with no valid factor key. Its first step must build
+           the factor locally; the CPU reference keeps its host cache. */
+        memset(copy[lane].rmc_keep_s, 0, sizeof copy[lane].rmc_keep_s);
+        memset(copy[lane].rmc_keep_d, 0xa5, sizeof copy[lane].rmc_keep_d);
     }
     GPU(cuMemcpyHtoD(instances, copy, sizeof copy));
     double dt = .02;
+    if (block_step == CUDA_SUCCESS) {
+        double start = 0.0;
+        void *args[] = {&instances, &start, &dt, &results, &count};
+        GPU(cuMemsetD32(results, fmi3OK, count));
+        GPU(cuLaunchKernel(step, count, 1, 1, 32, 1, 1, 0, NULL, args, NULL));
+        int invalid_shape[N];
+        GPU(cuMemcpyDtoH(invalid_shape, results, sizeof invalid_shape));
+        for (int lane = 0; lane < count; ++lane)
+            if (invalid_shape[lane] != fmi3Error) return 2;
+    }
     for (int i = 0; i < 2; ++i) {
         double start = i * dt;
         void *args[] = {&instances, &start, &dt, &results, &count};
-        GPU(cuLaunchKernel(step, 1, 1, 1, count, 1, 1, 0, NULL, args, NULL));
+        GPU(cuLaunchKernel(step, block_step == CUDA_SUCCESS ? count : 1, 1, 1,
+                           block_step == CUDA_SUCCESS ? 33 : count, 1, 1, 0, NULL, args, NULL));
         int status[N];
         GPU(cuMemcpyDtoH(status, results, sizeof status));
         GPU(cuMemcpyDtoH(copy, instances, sizeof copy));
@@ -94,6 +119,10 @@ int main(int argc, char **argv) {
             bool event = false, terminate = false, early = false;
             double last, host[3], gpu[3];
             check_fmi(status[lane]);
+            if (!copy[lane].rmc_keep_s[0]) {
+                fprintf(stderr, "CUDA lane %d left the first factor key unbound\n", lane);
+                return 1;
+            }
             check_fmi(fmi3DoStep(cpu[lane], start, dt, true, &event, &terminate, &early, &last));
             check_fmi(fmi3GetFloat64(cpu[lane], observed, 3, host, 3));
             check_fmi(fmi3GetFloat64(&copy[lane], observed, 3, gpu, 3));

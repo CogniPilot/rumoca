@@ -51,9 +51,9 @@ thread_local! {
 /// ```
 ///
 /// This API accepts explicit ODEs only. It settles supported initialization on
-/// the CPU before dispatch, then the host integrates the first `n_states`
-/// entries of `y`. Algebraic projection, events, clocks, and the other
-/// unsupported `wgsl-ode` capabilities fail before a shader is rendered.
+/// the CPU before dispatch. The device integrates the first `n_states` entries
+/// of `y`, refreshes certified exact algebraic assignments and applies supported
+/// single-clock updates. Other residual and event systems fail capability checks.
 #[wasm_bindgen]
 pub fn prepare_gpu_simulation(source: &str, model_name: &str) -> Result<String, WasmError> {
     with_singleton_session(|session| {
@@ -106,6 +106,16 @@ pub fn prepare_gpu_simulation(source: &str, model_name: &str) -> Result<String, 
             .solver_named_report(0..state_count)
             .map_err(|error| WasmError::new(error.to_string()))?;
 
+        let mut variable_names = state_names.clone();
+        variable_names.extend(
+            (state_count..solve_model.problem.solver_scalar_count()).map(|slot| {
+                solve_model
+                    .problem
+                    .solver_name(slot)
+                    .unwrap_or_else(|| format!("y[{slot}]"))
+            }),
+        );
+
         // The GPU fixed-step RK4 driver uses `dt` as its output/sample interval
         // and `internal_dt` as its integration step. Models can set the latter
         // with `annotation(__rumoca(Solver(FixedStep=...)))`; otherwise the
@@ -144,6 +154,7 @@ pub fn prepare_gpu_simulation(source: &str, model_name: &str) -> Result<String, 
             "p0": p0,
             "n_states": state_count,
             "state_names": state_names,
+            "variable_names": variable_names,
             "t_start": opts.t_start,
             "t_end": opts.t_end,
             "dt": dt,

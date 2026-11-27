@@ -55,6 +55,25 @@ pub(super) fn render_solve_binary_wgsl(op: &str, lhs: String, rhs: String) -> Re
 }
 
 pub(super) fn render_solve_compare_wgsl(op: &str, lhs: String, rhs: String) -> RenderResult {
+    // A closed upper (lower) bound outside f32's finite range is exactly
+    // equivalent to its nearest finite endpoint for an f32 operand, including
+    // infinities and NaN. Keep out-of-range arithmetic literals untouched.
+    let closed_bound = |expr: String, upper: bool| {
+        let bound = expr.parse::<f64>().ok();
+        let max = f64::from(f32::MAX);
+        match bound {
+            Some(v) if upper && v.is_finite() && v > max => "bitcast<f32>(0x7f7fffffu)".to_owned(),
+            Some(v) if !upper && v.is_finite() && v < -max => {
+                "bitcast<f32>(0xff7fffffu)".to_owned()
+            }
+            _ => expr,
+        }
+    };
+    let (lhs, rhs) = match op {
+        "Le" => (closed_bound(lhs, false), closed_bound(rhs, true)),
+        "Ge" => (closed_bound(lhs, true), closed_bound(rhs, false)),
+        _ => (lhs, rhs),
+    };
     let op = match op {
         "Lt" => "<",
         "Le" => "<=",

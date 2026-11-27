@@ -9,11 +9,11 @@ readiness_level = 0
 [capabilities]
 continuous_states = true
 residual_equations = false
+exact_algebraic_assignments = true
 scalar_fallback = true
-# Condition/relation slots can be inputs to continuous kernels, but this target
-# emits neither root/action kernels nor event iteration. Eventful models must
-# therefore fail before rendering; a host warning is not semantic support.
+# General event iteration and root finding remain unsupported.
 events = false
+periodic_sample_events = true
 runtime_events = false
 forward_ad = false
 reverse_ad = false

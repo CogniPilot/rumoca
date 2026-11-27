@@ -16,6 +16,7 @@ use crate::errors::CodegenError;
 #[derive(Debug)]
 struct ProgramMetadata {
     output_targets: Vec<Option<Range<usize>>>,
+    call_demands: std::collections::BTreeMap<usize, String>,
     output_count: usize,
     temporary_count: usize,
     /// Per operation, the argument slot a shared row function's load reads
@@ -213,6 +214,12 @@ impl Object for PlanOpValue {
     }
 
     fn get_value(self: &Arc<Self>, key: &Value) -> Option<Value> {
+        if key.as_str()? == "call_demand" {
+            return self.metadata[self.program_index]
+                .call_demands
+                .get(&self.op_index)
+                .map(|s| Value::from(s.as_str()));
+        }
         if key.as_str()? == "load_arg" {
             return self.metadata[self.program_index]
                 .load_slots
@@ -299,6 +306,15 @@ fn build_program_metadata(
         output_count,
         temporary_count,
         load_slots: Vec::new(),
+        call_demands: solve::ScalarCallDemand::in_program(program)
+            .into_iter()
+            .map(|(index, demand)| {
+                (
+                    index,
+                    super::pure_call_families::demand_suffix(&demand.reads),
+                )
+            })
+            .collect(),
     })
 }
 

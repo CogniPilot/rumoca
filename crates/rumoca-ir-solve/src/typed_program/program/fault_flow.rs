@@ -179,12 +179,18 @@ impl Analysis<'_> {
                 domain,
                 initial,
                 captures,
+                state_captures,
+                continuation,
                 transition,
                 ..
             } => {
                 let region = self.region(initial.len(), captures, &domain.binders, transition);
                 Facts {
-                    class: FaultClass::HasEffect,
+                    class: if state_captures.is_empty() && continuation.is_none() {
+                        region.class
+                    } else {
+                        FaultClass::HasEffect
+                    },
                     lanes: LaneExactness::PassOrdered,
                     pass_lanes: Some(region.lanes),
                 }

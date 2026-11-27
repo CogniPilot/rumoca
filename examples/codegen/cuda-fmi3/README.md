@@ -24,13 +24,15 @@ The output directory contains an architecture-specific `ensemble.cubin` and an `
 
 ```sh
 src=/tmp/cuda-timed/TimedCrossing/sources
-cc -O2 -ffp-contract=off -DNDEBUG -I"$src" -I"$FMI_INCLUDE" -I"$CUDA_HOME/include" \
+cc -O2 -ffp-contract=off -DNDEBUG -DRMC_FMI3_INLINE_FACTORS -I"$src" -I"$FMI_INCLUDE" -I"$CUDA_HOME/include" \
   "$example/check-timed.c" "$src"/*.c -lcuda -lm -o /tmp/cuda-timed/check
 token=$(sed -n 's/.*instantiationToken="\([^"]*\)".*/\1/p' /tmp/cuda-timed/TimedCrossing/modelDescription.xml)
 /tmp/cuda-timed/check /tmp/cuda-timed/gpu/ensemble.cubin "$token"
 ```
 
-This compares two rates against the native CPU implementation and independent expected values. Both lanes process four clock ticks over 40 ms, with distinct state crossings at 11 ms and 5.5 ms.
+Both lanes solve a 12-node resistive network whose voltages equal the input rate. The host and GPU retain its coupled factors across steps. The test compares two rates against the native CPU implementation and independent expected values. Both lanes process four clock ticks over 40 ms, with distinct state crossings at 11 ms and 5.5 ms.
+
+For models with coupled affine equations the CUDA build embeds persistent solver factors in each instance. Compile all host source units and the copy driver with the flags in the manifest’s `hostDefines` array. The GPU builder inspects Clang’s resolved field types and rejects host-owned pointers, including pointer typedefs nested in records. Run `node --test examples/codegen/cuda-fmi3/check-layout.mjs` to exercise these checks.
 
 ## Driver contract
 
@@ -42,3 +44,15 @@ Compile the host from exactly the same generated source, architecture width and 
 4. Launch `rmc_fmi3_step(instances, currentTime, dt, statuses, laneCount)`. Check CUDA execution and every FMI status before consuming a batch. Copy back the numeric instances to use the usual FMI getters. Reinitialize the batch after a failed step.
 
 This implementation supports numeric components with inline state and null diagnostic callbacks. Host-owned storage, external services, strings and binaries require a serialization or device binding. Diagnostic formatting can trap on GPU. Numerical event clocks and both sides of the FMI transfer require model-specific regression tests. Each lane runs its own scalar solver. Throughput and latency depend heavily on model size, batch size, code generation and hardware.
+
+## Bulk copy verification
+
+For large arrays in global memory, pass `--block-copies` to `build.mjs` using an FMU exported with the block entry. Launch the resulting `rmc_fmi3_step_block` kernel on a one-dimensional grid with one block per instance and exactly 33 threads per block. One warp copies buffers for the solver running on the final thread. The manifest records this launch shape. An incorrect block size returns an FMI error for each addressed instance. Benchmark this option on the intended model and device.
+
+The CUDA build widens large nonvolatile copies when the source and destination addresses permit aligned accesses. LLVM still lowers short copies, volatile operations and overlapping moves. Test unaligned offsets, byte tails and the equal-pointer case with the host C compiler:
+
+```sh
+cd examples/codegen/cuda-fmi3
+cc -O2 -ffreestanding -fsanitize=undefined bulk-copy.c check-bulk-copy.c -o /tmp/check-cuda-copy
+/tmp/check-cuda-copy
+```

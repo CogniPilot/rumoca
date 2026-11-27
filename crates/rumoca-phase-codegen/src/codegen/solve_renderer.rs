@@ -57,7 +57,11 @@ impl SolveTemplateRenderer {
         let admitted = super::me_projection::AdmittedSolveModel::new(model.as_ref())?;
         let me_refresh = super::me_projection::me_refresh_value(&admitted)?;
         let me_bindings = Value::from_serialize(admitted.bindings());
-        let pure_calls = super::pure_call_families::PureCallFamilies::new(&model.pure_calls)?;
+        let pure_calls = super::pure_call_families::PureCallFamilies::for_model(
+            &model.pure_calls,
+            &model.problem,
+            &model.artifacts,
+        )?;
         let assertion_observations =
             super::fmi_c_assertions::observations(&model.problem, &model.pure_calls)?;
         // The unit renders every owner as a typed body and inlines none.
@@ -75,7 +79,7 @@ impl SolveTemplateRenderer {
                 me_bindings => me_bindings,
                 typed_pure_calls => pure_calls.owners_value(),
                 typed_directional_calls => pure_calls.directional_value(),
-                pure_call_symbols => pure_calls.symbols_value(),
+                pure_call_symbols => pure_calls.symbols_value(), pure_call_variants => pure_calls.variants_value(),
                 fmi_assertion_observations => assertion_observations,
                 ..renderer.context
             },
@@ -174,7 +178,11 @@ impl SolveTemplateRenderer {
         require_builtin_fmi_template_domain(component.problem())?;
         let me_refresh = super::me_projection::me_refresh_value(&component)?;
         let fmi_tangents = super::fmi_tangents::value(&component)?;
-        let pure_calls = super::pure_call_families::PureCallFamilies::new(component.pure_calls())?;
+        let pure_calls = super::pure_call_families::PureCallFamilies::for_model(
+            component.pure_calls(),
+            component.problem(),
+            component.artifacts(),
+        )?;
         let assertion_observations =
             super::fmi_c_assertions::observations(component.problem(), component.pure_calls())?;
         let assertion_messages = super::fmi_c_assertions::messages(component.problem())?;
@@ -191,7 +199,7 @@ impl SolveTemplateRenderer {
         require_dense_value_references(&fmi)?;
         let text_starts = super::fmi_c_assertions::text_starts(&fmi)?;
         let mut renderer = solve_render_context_value_with_handles(handle, None, Value::default())?;
-        renderer.context = minijinja::context! { uses_real_extremum => uses_real_extremum, typed_pure_calls => pure_calls.owners_value(), typed_directional_calls => pure_calls.directional_value(), pure_call_symbols => pure_calls.symbols_value(), fmi_assertion_observations => assertion_observations, fmi_assertion_messages => assertion_messages, fmi_assertion_message_rows => assertion_message_rows, fmi_text_starts => text_starts, me_refresh => me_refresh, fmi_tangents => fmi_tangents, ..renderer.context };
+        renderer.context = minijinja::context! { uses_real_extremum => uses_real_extremum, typed_pure_calls => pure_calls.owners_value(), typed_directional_calls => pure_calls.directional_value(), pure_call_symbols => pure_calls.symbols_value(), pure_call_variants => pure_calls.variants_value(), fmi_assertion_observations => assertion_observations, fmi_assertion_messages => assertion_messages, fmi_assertion_message_rows => assertion_message_rows, fmi_text_starts => text_starts, me_refresh => me_refresh, fmi_tangents => fmi_tangents, ..renderer.context };
         Ok(renderer)
     }
 

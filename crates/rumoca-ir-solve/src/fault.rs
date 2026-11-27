@@ -33,7 +33,7 @@ pub enum FaultClass {
     /// the fault it would raise is never removed.
     MayFault(FaultKind),
     /// An operation with an effect (a call, an assertion, a store, a write of
-    /// assigned state, a foreign body) or a loop: it always runs.
+    /// assigned state, a foreign body) or a loop with unproven effects: it always runs.
     HasEffect,
 }
 

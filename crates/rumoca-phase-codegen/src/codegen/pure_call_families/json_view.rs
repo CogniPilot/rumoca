@@ -7,9 +7,9 @@ use minijinja::value::{Enumerator, Object, ObjectRepr};
 use serde_json::Value as Json;
 
 #[derive(Debug)]
-struct JsonArray(Arc<[Json]>);
+struct JsonArray(Arc<Vec<Json>>);
 
-pub(super) fn array_value(entries: Arc<[Json]>) -> Value {
+pub(super) fn array_value(entries: Arc<Vec<Json>>) -> Value {
     Value::from_object(JsonArray(entries))
 }
 
@@ -37,13 +37,13 @@ enum Step {
 
 #[derive(Debug)]
 struct JsonNode {
-    entries: Arc<[Json]>,
+    entries: Arc<Vec<Json>>,
     owner: usize,
     path: Vec<Step>,
     repr: ObjectRepr,
 }
 
-fn node_value(entries: Arc<[Json]>, owner: usize, path: Vec<Step>, json: &Json) -> Value {
+fn node_value(entries: Arc<Vec<Json>>, owner: usize, path: Vec<Step>, json: &Json) -> Value {
     let repr = match json {
         Json::Array(_) => ObjectRepr::Seq,
         Json::Object(_) => ObjectRepr::Map,

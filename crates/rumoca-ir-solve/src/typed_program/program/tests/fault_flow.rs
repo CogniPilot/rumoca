@@ -170,3 +170,41 @@ fn scalar_folds_agree_with_point_intervals() {
         }
     }
 }
+
+#[test]
+fn bounded_fold_keeps_an_integer_fault_and_prunes_a_proven_total_transition() {
+    let arithmetic = profile();
+    for (upper, expected) in [
+        (10, FaultClass::CannotFault),
+        (100_000, FaultClass::MayFault(FaultKind::IntegerArithmetic)),
+    ] {
+        let domain = StructuredIndexDomain {
+            binders: vec![StructuredIndexBinder {
+                provenance: rumoca_core::IndexBinderProvenance::Generated,
+                id: 0,
+                display_name: "i".to_string(),
+                lower: 1,
+                upper,
+                step: 1,
+            }],
+        };
+        let program = TypedProgram::construct(arithmetic, |builder| {
+            let initial = builder.constant(SolveValue::integer(arithmetic, 0).unwrap(), span(0))?;
+            builder.fold(
+                domain.clone(),
+                &[initial],
+                &[],
+                span(1),
+                |body, _, _, binders, outputs| {
+                    let value = body.load(binders[0], span(2))?;
+                    let square =
+                        body.binary(SolveBinaryOperator::Multiply, value, value, span(3))?;
+                    body.store(outputs[0], square, span(4))
+                },
+            )?;
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(class_of_last(&program), expected);
+    }
+}

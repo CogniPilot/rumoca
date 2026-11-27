@@ -27,7 +27,16 @@
    every build (shared_prefix). A lane build (RMC_LANE_STATUS, SPEC_0044
    ME-PROJ-003) adds a member to ModelInstance, so its units share names of
    their own: a unit built without it does not link with one built with it. */
-#if defined(RMC_LANE_STATUS)
+{% if me_refresh.keep.doubles > 0 -%}
+#if defined(RMC_FMI3_INLINE_FACTORS)
+#define RMC_INLINE_KEEP
+#endif
+{% endif -%}
+#if defined(RMC_INLINE_KEEP) && defined(RMC_LANE_STATUS)
+#define RMC_MODEL_PREFIX {{ model_identifier }}_inline_lane_
+#elif defined(RMC_INLINE_KEEP)
+#define RMC_MODEL_PREFIX {{ model_identifier }}_inline_
+#elif defined(RMC_LANE_STATUS)
 #define RMC_MODEL_PREFIX {{ model_identifier }}_lane_
 #else
 #define RMC_MODEL_PREFIX {{ model_identifier }}_
