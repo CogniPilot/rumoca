@@ -1,5 +1,5 @@
-//! A fold transition may return its incoming array with a single element
-//! replaced. Return that edit to the caller, which already owns the array.
+//! A fold transition may return its incoming array with an element or a small slice
+//! replaced. Return those edits to the caller, which already owns the array.
 //! All other carried outputs and all reads see the ordinary old values until
 //! the transition completes. Both arms of a conditional must prove the fact.
 use serde::Serialize;
@@ -16,6 +16,7 @@ pub(super) struct FoldEdit {
     store: usize,
     result: usize,
     producer: usize,
+    capacity: u32,
     change: Change,
 }
 
@@ -24,6 +25,9 @@ pub(super) struct FoldEdit {
 enum Change {
     Unchanged,
     Element,
+    Slice {
+        count: u32,
+    },
     Branch {
         yes: Box<FoldEdit>,
         no: Box<FoldEdit>,
@@ -102,6 +106,14 @@ fn region(program: &TypedProgram, output: usize, inputs: &[usize]) -> Option<Fol
             {
                 Change::Element
             }
+            SolveOperation::UpdateSlice {
+                aggregate, value, ..
+            }
+            | SolveOperation::UpdateView {
+                aggregate, value, ..
+            } if input(program, *aggregate).is_some_and(|arg| inputs.contains(&arg)) => {
+                sparse_slice(program, *aggregate, *value)?
+            }
             SolveOperation::Conditional {
                 destinations,
                 captures,
@@ -135,6 +147,22 @@ fn region(program: &TypedProgram, output: usize, inputs: &[usize]) -> Option<Fol
         store,
         result: result.index(),
         producer,
+        capacity: match &change {
+            Change::Unchanged | Change::Element => 1,
+            Change::Slice { count } => *count,
+            Change::Branch { yes, no } => yes.capacity.max(no.capacity),
+        },
         change,
     })
+}
+
+fn sparse_slice(
+    program: &TypedProgram,
+    aggregate: SolveRegisterId,
+    value: SolveRegisterId,
+) -> Option<Change> {
+    let count = program.register_types()[value.index()].scalar_count();
+    let extent = program.register_types()[aggregate.index()].scalar_count();
+    // Each returned value carries an index. Keep dense replacements on the ordinary path.
+    (count > 0 && count <= extent / 4).then_some(Change::Slice { count })
 }

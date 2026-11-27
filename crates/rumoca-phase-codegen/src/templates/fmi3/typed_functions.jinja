@@ -148,12 +148,13 @@ if (i{{ loop.index0 }}) b{{ loop.index0 }}[0]+={{ integer(binder.step) }};
 if (!fold_done)
 {% endif -%}
 {% if fold_edit -%}
-{ RmcFoldEdit delta; delta.index=SIZE_MAX;
+{ RmcFoldEdit delta[{{ fold_edit.capacity }}];
+for (size_t i=0; i<{{ fold_edit.capacity }}; ++i) delta[i].index=SIZE_MAX;
 const void* call_in[]={ {{ fold_items(op) }} };
-void* call_out[]={ {% for output in op.destinations %}{% if loop.index0 == fold_edit.output %}&delta{% else %}r{{ output }}{% endif %},{% else %}NULL{% endfor %} };
+void* call_out[]={ {% for output in op.destinations %}{% if loop.index0 == fold_edit.output %}delta{% else %}r{{ output }}{% endif %},{% else %}NULL{% endfor %} };
 int status={{ region_name }}_fold(call_in, call_out, observer); if (status) return status;
 {% set dest="r" ~ op.destinations[fold_edit.output] -%}
-if (delta.index!=SIZE_MAX) memcpy(&{{ dest }}[delta.index], &delta.value, sizeof({{ dest }}[0]));
+for (size_t i=0; i<{{ fold_edit.capacity }} && delta[i].index!=SIZE_MAX; ++i) memcpy(&{{ dest }}[delta[i].index], &delta[i].value, sizeof({{ dest }}[0]));
 }
 {% else -%}
 {% if device -%}
