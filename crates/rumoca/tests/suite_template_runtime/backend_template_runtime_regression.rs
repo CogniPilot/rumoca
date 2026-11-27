@@ -173,16 +173,9 @@ end ExactAlgebraic;
     }
     execute_c_ode_algebraic_refresh(&compiled);
 
-    // wgsl-ode renders rows as expressions over a read-only `y` buffer and has
-    // no exact-assignment consumer, so it still fails closed.
-    let error = rumoca::render_target_files(&compiled, "ExactAlgebraic", "wgsl-ode", None)
-        .expect_err("a target without an exact-assignment consumer must fail closed");
-    assert!(
-        error
-            .to_string()
-            .contains("unsupported-feature:residual_equations"),
-        "wgsl-ode returned the wrong diagnostic: {error:#}"
-    );
+    let files = rumoca::render_target_files(&compiled, "ExactAlgebraic", "wgsl-ode", None)
+        .expect("WGSL consumes the checked exact algebraic schedule");
+    assert!(source_unit(&files, "ExactAlgebraic_ode.wgsl").contains("fn refresh_algebraics()"));
 }
 
 /// Compile and call the emitted c-ode RHS with a deliberately stale algebraic

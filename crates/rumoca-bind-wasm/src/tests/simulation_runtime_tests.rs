@@ -1268,3 +1268,35 @@ fn test_prepare_gpu_simulation_emits_single_periodic_tick() {
         "{refusal}"
     );
 }
+
+#[cfg(any(feature = "sim-wasm", feature = "sim-diffsol", feature = "sim-rk45"))]
+#[test]
+fn test_prepare_gpu_simulation_emits_ordered_algebraics_for_rc_circuit() {
+    let _guard = session_test_guard();
+    let circuit = include_str!("../../../../examples/models/Circuit.mo");
+    let json = prepare_gpu_simulation(circuit, "Circuit.Test").expect("generated RC circuit");
+    let prep: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(prep["n_states"], 1);
+    assert_eq!(prep["layout"]["algebraic_refresh"], "refresh_algebraics");
+    assert_eq!(prep["state_names"].as_array().unwrap().len(), 1);
+    assert!(
+        prep["variable_names"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|name| name == "res.i")
+    );
+    let shader = naga::front::wgsl::parse_str(prep["wgsl"].as_str().unwrap()).unwrap();
+    naga::valid::Validator::new(
+        naga::valid::ValidationFlags::all(),
+        naga::valid::Capabilities::empty(),
+    )
+    .validate(&shader)
+    .unwrap();
+    assert!(
+        shader
+            .entry_points
+            .iter()
+            .any(|entry| entry.name == "refresh_algebraics")
+    );
+}

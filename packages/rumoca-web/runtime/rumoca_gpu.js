@@ -771,7 +771,7 @@ export async function buildGpuProgram(adapter, prep, onPhase = () => {}) {
 
     let pipelinesBuilt = 0;
     const clockInfo = layout.periodic_tick;
-    const totalPipelines = kernelList.length + 2 + Number(Boolean(clockInfo));
+    const totalPipelines = kernelList.length + 2 + Number(Boolean(clockInfo)) + Number(Boolean(layout.algebraic_refresh));
     onPhase(`Building GPU pipelines (0/${totalPipelines})`, 0);
     const recordPipelineBuilt = (pipeline) => {
         pipelinesBuilt += 1;
@@ -787,6 +787,9 @@ export async function buildGpuProgram(adapter, prep, onPhase = () => {}) {
             compute: { module: derModule, entryPoint: kernel.entry },
         }).then(recordPipelineBuilt))
     );
+    const refreshPipeline = layout.algebraic_refresh ? await device.createComputePipelineAsync({
+        layout: 'auto', compute: {module: derModule, entryPoint: layout.algebraic_refresh},
+    }).then(recordPipelineBuilt) : null;
     const tickPipeline = clockInfo ? await device.createComputePipelineAsync({
         layout: 'auto', compute: { module: derModule, entryPoint: clockInfo.entry },
     }).then(recordPipelineBuilt) : null;
@@ -829,6 +832,25 @@ export async function buildGpuProgram(adapter, prep, onPhase = () => {}) {
             { binding: 3, resource: { buffer: timeUniform } },
         ],
     }));
+    // Each stage refreshes its own trial state at its own stage time.
+    const refreshBind = (state, time) => refreshPipeline && device.createBindGroup({
+        layout: refreshPipeline.getBindGroupLayout(0),
+        entries: [
+            {binding: 1, resource: {buffer: pBuf}},
+            {binding: 3, resource: {buffer: time}},
+            {binding: 5, resource: {buffer: state}},
+        ],
+    });
+    const refreshBinds = [yBuf, yStage, yStage, yStage].map(
+        (state, stage) => refreshBind(state, timeUniforms[stage]));
+    const refresh = (enc, bind) => {
+        if (!bind) return;
+        const pass = enc.beginComputePass();
+        pass.setPipeline(refreshPipeline);
+        pass.setBindGroup(0, bind);
+        pass.dispatchWorkgroups(1);
+        pass.end();
+    };
     const tickBind = tickPipeline ? device.createBindGroup({
         layout: tickPipeline.getBindGroupLayout(0),
         entries: [
@@ -840,6 +862,7 @@ export async function buildGpuProgram(adapter, prep, onPhase = () => {}) {
     const submitTick = (time) => {
         writeTime(timeUniforms[0], time);
         const enc = device.createCommandEncoder();
+        refresh(enc, refreshBinds[0]);
         const pass = enc.beginComputePass();
         pass.setPipeline(tickPipeline);
         pass.setBindGroup(0, tickBind);
@@ -886,6 +909,7 @@ export async function buildGpuProgram(adapter, prep, onPhase = () => {}) {
         maxWorkgroups,
     );
     const dispatchDer = (enc, stage) => {
+        refresh(enc, refreshBinds[stage]);
         const pass = enc.beginComputePass();
         derPipelines.forEach((pipe, c) => {
             pass.setPipeline(pipe);
@@ -936,9 +960,16 @@ export async function buildGpuProgram(adapter, prep, onPhase = () => {}) {
         dispatchStage(enc, axpyPipeline, axpyBinds[2]);
         dispatchDer(enc, 3);
         dispatchStage(enc, combinePipeline, combineBind);
-        if (copyOutput) {
+        if (copyOutput && !refreshPipeline) {
             enc.copyBufferToBuffer(yBuf, 0, readback, 0, yReadBytes);
         }
+    };
+    const copyRefreshedOutput = (time) => {
+        writeTime(timeUniforms[0], time);
+        const enc = device.createCommandEncoder();
+        refresh(enc, refreshBinds[0]);
+        enc.copyBufferToBuffer(yBuf, 0, readback, 0, yReadBytes);
+        device.queue.submit([enc.finish()]);
     };
     let lastStepDt = NaN;
     const submitRk4Step = (t, h, copyOutput) => {
@@ -972,6 +1003,7 @@ export async function buildGpuProgram(adapter, prep, onPhase = () => {}) {
             derivativeDispatches: 0,
             stageDispatches: 0,
             periodicTicks: 0,
+            algebraicDispatches: 0,
         };
         const signal = options?.signal;
         throwIfAborted(signal);
@@ -1023,7 +1055,26 @@ export async function buildGpuProgram(adapter, prep, onPhase = () => {}) {
         };
         applyTick(tStart);
         const times = [tStart];
-        const samples = [Array.from(y0)];
+        const readSample = async () => {
+            const readStart = now();
+            await readback.mapAsync(GPUMapMode.READ);
+            profile.readbackMs += now() - readStart;
+            profile.readbacks += 1;
+            try {
+                throwIfAborted(signal);
+                const copyStart = now();
+                const sample = Array.from(new Float32Array(readback.getMappedRange(0, yReadBytes)));
+                profile.sampleCopyMs += now() - copyStart;
+                return sample;
+            } finally {
+                readback.unmap();
+            }
+        };
+        if (refreshPipeline) {
+            copyRefreshedOutput(tStart);
+            profile.submits++;
+        }
+        const samples = [refreshPipeline ? await readSample() : Array.from(y0)];
         let completedSteps = 0;
         onPhaseNow(`Simulating on WebGPU (0/${stepPlan.internalSteps} RK4 steps)`, 0);
         const wallStart = performance.now();
@@ -1086,18 +1137,11 @@ export async function buildGpuProgram(adapter, prep, onPhase = () => {}) {
                     completedSteps += 1;
                 }
             }
-            const readStart = now();
-            await readback.mapAsync(GPUMapMode.READ);
-            profile.readbackMs += now() - readStart;
-            profile.readbacks += 1;
-            try {
-                throwIfAborted(signal);
-                const copyStart = now();
-                samples.push(Array.from(new Float32Array(readback.getMappedRange())));
-                profile.sampleCopyMs += now() - copyStart;
-            } finally {
-                readback.unmap();
+            if (refreshPipeline) {
+                copyRefreshedOutput(target);
+                profile.submits++;
             }
+            samples.push(await readSample());
             times.push(target);
             if (output % 5 === 0 || output === stepPlan.outputCount) {
                 onPhaseNow(
@@ -1106,12 +1150,16 @@ export async function buildGpuProgram(adapter, prep, onPhase = () => {}) {
                 );
             }
         }
+        if (refreshPipeline) {
+            profile.algebraicDispatches = 4 * completedSteps + profile.periodicTicks + samples.length;
+        }
         const gpuSeconds = (performance.now() - wallStart) / 1000;
 
         // Shape the result like simulate_model so plots and viz scripts work unchanged.
         const shapeStart = now();
-        const names = Array.isArray(prepNow.state_names)
-            ? prepNow.state_names.slice(0, yLen)
+        const reportNames = prepNow.variable_names ?? prepNow.state_names;
+        const names = Array.isArray(reportNames)
+            ? reportNames.slice(0, yLen)
             : [];
         for (let i = 0; i < yLen; i++) {
             if (!names[i]) names[i] = `y[${i}]`;

@@ -5,7 +5,8 @@
 //
 // Precision note: WGSL baseline is f32; reference solvers integrate in
 // f64. Expect single-precision drift on long horizons.
-{%- if solve_blocks.continuous.implicit_rhs.output_count > 0 %}
+{%- set algebraic = solve_blocks.continuous.algebraic_assignments %}
+{%- if solve_blocks.continuous.implicit_rhs.output_count > 0 and not algebraic %}
 {{ fail("unsupported-feature:residual_equations: wgsl-ode emits explicit ODE derivatives only") }}
 {%- endif %}
 {%- set name = model_name | default("model") | sanitize %}
@@ -134,6 +135,31 @@ fn periodic_tick() {
 {%- endfor %}
 {%- for binding in solve.solve_layout.pre_param_bindings %}
     sampled_p[{{ binding.dest_p_index }}] = pre_{{ loop.index0 }};
+{%- endfor %}
+}
+{%- endif %}
+
+
+{%- if algebraic %}
+@group(0) @binding(5) var<storage, read_write> solved_y: array<f32>;
+
+// One invocation replays the compiler-issued dependency order. All outputs of
+// each assignment program read its incoming state before any of them commit.
+@compute @workgroup_size(1)
+fn refresh_algebraics() {
+    _ = u.time;
+    _ = arrayLength(&p);
+{%- set cfg = {"time": "u.time", "y": "solved_y[{}]", "p": "p[{}]"} %}
+{%- for program in algebraic.scalar_plan.programs %}
+{%- set ops = algebraic.fallback_programs[loop.index0] %}
+    {
+{%- for target in program.output_indices %}
+        let next_{{ loop.index0 }} = {{ render_solve_row_output_wgsl(ops, loop.index0, cfg) }};
+{%- endfor %}
+{%- for target in program.output_indices %}
+        solved_y[{{ target }}] = next_{{ loop.index0 }};
+{%- endfor %}
+    }
 {%- endfor %}
 }
 {%- endif %}
