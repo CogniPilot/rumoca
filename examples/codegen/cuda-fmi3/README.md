@@ -42,3 +42,13 @@ Compile the host from exactly the same generated source, architecture width and 
 4. Launch `rmc_fmi3_step(instances, currentTime, dt, statuses, laneCount)`. Check CUDA execution and every FMI status before consuming a batch. Copy back the numeric instances to use the usual FMI getters. Reinitialize the batch after a failed step.
 
 This implementation supports numeric components with inline state and null diagnostic callbacks. Host-owned storage, external services, strings and binaries require a serialization or device binding. Diagnostic formatting can trap on GPU. Numerical event clocks and both sides of the FMI transfer require model-specific regression tests. Each lane runs its own scalar solver. Throughput and latency depend heavily on model size, batch size, code generation and hardware.
+
+## Bulk copy verification
+
+The CUDA build widens large nonvolatile copies when the source and destination addresses permit aligned accesses. LLVM still lowers short copies, volatile operations and overlapping moves. Test unaligned offsets, byte tails and the equal-pointer case with the host C compiler:
+
+```sh
+cd examples/codegen/cuda-fmi3
+cc -O2 -ffreestanding -fsanitize=undefined bulk-copy.c check-bulk-copy.c -o /tmp/check-cuda-copy
+/tmp/check-cuda-copy
+```

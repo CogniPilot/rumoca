@@ -4,6 +4,7 @@ import {createHash} from 'node:crypto';
 import {mkdirSync, readFileSync, writeFileSync} from 'node:fs';
 import {dirname, join, resolve} from 'node:path';
 import {fileURLToPath} from 'node:url';
+import {lowerBulkCopies} from './bulk-copy.mjs';
 import {lowerLaneWorkspace} from './arena.mjs';
 
 const [fmu, output] = process.argv.slice(2);
@@ -60,9 +61,12 @@ run(join(LLVM_BIN, 'opt'), '-passes=internalize,globaldce,default<O2>',
     artifact('linked.bc'), '-o', artifact('optimized.bc'));
 run(join(LLVM_BIN, 'llvm-dis'), artifact('optimized.bc'), '-o', artifact('optimized.ll'));
 const workspace = lowerLaneWorkspace(readFileSync(artifact('optimized.ll'), 'utf8'));
-writeFileSync(artifact('arena.ll'), workspace.ir);
+writeFileSync(artifact('arena.ll'), lowerBulkCopies(workspace.ir));
+run(clang, '--target=nvptx64-nvidia-cuda', '-march=' + arch, '-O2', '-ffreestanding',
+    '-emit-llvm', '-c', join(here, 'bulk-copy.c'), '-o', artifact('bulk-copy.bc'));
+run(join(LLVM_BIN, 'llvm-link'), artifact('arena.ll'), artifact('bulk-copy.bc'), '-o', artifact('arena.bc'));
 run(join(LLVM_BIN, 'llc'), '-O2', '-mtriple=nvptx64-nvidia-cuda', '-mcpu=' + arch, '-mattr=+ptx80',
-    artifact('arena.ll'), '-o', artifact('ensemble.ptx'));
+    artifact('arena.bc'), '-o', artifact('ensemble.ptx'));
 run(process.env.PTXAS ?? 'ptxas', '-O' + optimization, '-v', '-arch=' + arch,
     artifact('ensemble.ptx'), '-o', artifact('ensemble.cubin'));
 const sha256 = createHash('sha256').update(readFileSync(artifact('ensemble.cubin'))).digest('hex');
