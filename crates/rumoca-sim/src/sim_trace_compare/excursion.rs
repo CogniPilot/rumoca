@@ -15,13 +15,18 @@
 //! property of the model and survives a tighter OMC tolerance, while noise is a
 //! property of the integrator and shrinks or vanishes with it.
 //!
-//! So a supported run is classified against the same reference simulated at a
-//! tighter tolerance, and scored by its class:
+//! So every supported run of the reference is classified, on its own, against
+//! the same reference simulated at a tighter tolerance, and the channel is
+//! scored by what survives:
 //!
-//! * **Event:** the scale is the run's amplitude, and the error is averaged
-//!   over the run's own window. A missed event scores about one half against
-//!   its own amplitude; a tracked one stays tiny.
-//! * **Noise:** the scale is widened to the run's amplitude when that is larger
+//! * **Event** (some run survives): the scale is the largest event's
+//!   amplitude, and the score is the worst over the **union of every excursion
+//!   window from either trace**, each scored over its own span: every reference
+//!   event against its own amplitude, every run of Rumoca's samples outside the
+//!   reference's band against the channel scale, and the whole run. A missed,
+//!   spurious or outlasting event is then one case, not three: some window
+//!   holds it. A tracked event stays tiny in every window.
+//! * **Noise** (no run survives): the scale is widened to the largest run's amplitude when that is larger
 //!   (never narrowed), and the error is averaged over the whole run as before.
 //!   Noise can therefore widen a scale, but never raise an alarm.
 //! * **Unclassified** (no tighter reference, or it has no such channel): the
@@ -255,16 +260,17 @@ pub(super) fn channel_reference_scale(
     (scale, events)
 }
 
-/// Normalized error of a channel scaled by its reference's events: the largest
-/// over every window where either trace has an event, each window's mean
-/// absolute error over the amplitude it is judged against.
+/// Normalized error of a channel scaled by its reference's events: the worst over
+/// the union of every excursion window from either trace, each window's mean
+/// absolute error over the amplitude it is judged against (the caller takes the
+/// larger of this and the whole-run score).
 ///
 /// * Each reference event is judged against its own amplitude, so a missed
 ///   event, the largest or a smaller second one, scores about one half.
 /// * Each run of Rumoca's own samples outside the reference's robust band is
-///   judged against the channel's scale over its own window, so an event only
-///   Rumoca has, or one Rumoca holds past the reference's end, is a deviation,
-///   while a tracked event or a blip far below the channel's events is not.
+///   judged against the channel's scale, not its own amplitude, so a blip far
+///   below the channel's events is not a deviation while a spurious or
+///   outlasting event is.
 ///
 /// `None` when there are no reference events, so the channel keeps its
 /// whole-run score.
