@@ -49,15 +49,14 @@ impl ScalarCallDemand {
         let Some(program) = RegisterVersionProgram::derive(ops) else {
             return BTreeMap::new();
         };
-        for operation in program.operations() {
-            for piece in operation.operands() {
-                if let Some(call) = calls.get_mut(&piece.producer()) {
-                    let registers = piece.registers();
-                    for (read, range) in call.reads.iter_mut().zip(&leaves[&piece.producer()]) {
-                        // Keeping a leaf touched only by a stride hole is conservative.
-                        *read |= range.start < registers.end && registers.start < range.end;
-                    }
-                }
+        for piece in program.operations().iter().flat_map(|op| op.operands()) {
+            let Some(call) = calls.get_mut(&piece.producer()) else {
+                continue;
+            };
+            let registers = piece.registers();
+            for (read, range) in call.reads.iter_mut().zip(&leaves[&piece.producer()]) {
+                // Keeping a leaf touched only by a stride hole is conservative.
+                *read |= range.start < registers.end && registers.start < range.end;
             }
         }
         calls.retain(|_, call| call.reads.contains(&false));

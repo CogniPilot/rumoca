@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn nested_catalog_views_preserve_values_and_borrow_the_same_json_nodes() {
-    let entries: Arc<[Json]> = vec![serde_json::json!({
+    let entries: Arc<Vec<Json>> = vec![serde_json::json!({
         "id": 9007199254740993u64,
         "body": {"nodes": [{"value": -0.0}, {"value": null}, {"value": true}]},
         "label": "quoted \"name\"",
@@ -48,7 +48,7 @@ fn empty_catalog_and_template_iteration_match_eager_projection() {
     let empty = array_value(Arc::from(Vec::<Json>::new()));
     assert_eq!(empty.len(), Some(0));
     assert_eq!(serde_json::to_value(&empty).unwrap(), serde_json::json!([]));
-    let entries: Arc<[Json]> = vec![
+    let entries: Arc<Vec<Json>> = vec![
         serde_json::json!({"id": 4, "inputs": [3, 7], "body": {"op": "load", "live": true}, "maybe": {}}),
         serde_json::json!({"id": 9, "inputs": [], "body": {"op": "store", "live": false}, "maybe": {"present": false}}),
     ]
