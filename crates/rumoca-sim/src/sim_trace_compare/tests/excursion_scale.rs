@@ -311,3 +311,29 @@ fn every_reference_event_is_scored() {
     );
     assert!(missed_small.bounded_normalized_l1_error > MINOR_AGREEMENT_CHANNEL_THRESHOLD);
 }
+
+/// Rumoca reproduces OMC's event but holds it 30 samples
+/// past OMC's end, as a controller that stays saturated too long. Its own run
+/// overlaps OMC's event, and is still judged over its whole window.
+#[test]
+fn an_event_rumoca_holds_too_long_is_a_deviation() {
+    let held = bump(500, 530, 20.0)
+        .into_iter()
+        .enumerate()
+        .map(|(i, value)| {
+            if (516..=560).contains(&i) {
+                20.0
+            } else {
+                value
+            }
+        })
+        .collect();
+    let omc = single("u", bump(500, 530, 20.0));
+
+    let (metric, _) = channel(&single("u", held), &omc, Some(&omc));
+    assert_eq!(
+        metric.reference_excursion.map(|evidence| evidence.class),
+        Some(ExcursionClass::Event)
+    );
+    assert!(metric.bounded_normalized_l1_error > MINOR_AGREEMENT_CHANNEL_THRESHOLD);
+}

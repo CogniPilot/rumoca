@@ -261,10 +261,10 @@ pub(super) fn channel_reference_scale(
 ///
 /// * Each reference event is judged against its own amplitude, so a missed
 ///   event, the largest or a smaller second one, scores about one half.
-/// * Each run of Rumoca's own samples outside the reference's robust band that
-///   overlaps no reference event is judged against the channel's scale, so an
-///   event only Rumoca has is a deviation, while a blip far below the
-///   channel's events is not.
+/// * Each run of Rumoca's own samples outside the reference's robust band is
+///   judged against the channel's scale over its own window, so an event only
+///   Rumoca has, or one Rumoca holds past the reference's end, is a deviation,
+///   while a tracked event or a blip far below the channel's events is not.
 ///
 /// `None` when there are no reference events, so the channel keeps its
 /// whole-run score.
@@ -283,13 +283,15 @@ pub(super) fn excursion_normalized_error(
         .iter()
         .map(|&(_, rumoca, _)| rumoca)
         .collect::<Vec<_>>();
-    let rumoca_only = supported_runs(&rumoca_ordered, scale.p05, scale.p95)
-        .into_iter()
-        .filter(|run| !events.iter().any(|event| event.overlaps(*run)));
+    let rumoca_runs = supported_runs(&rumoca_ordered, scale.p05, scale.p95);
     events
         .iter()
         .filter_map(|&event| window_score(event, event.amplitude))
-        .chain(rumoca_only.filter_map(|run| window_score(run, scale.normalization_scale)))
+        .chain(
+            rumoca_runs
+                .into_iter()
+                .filter_map(|run| window_score(run, scale.normalization_scale)),
+        )
         .reduce(f64::max)
         .map(saturate)
 }

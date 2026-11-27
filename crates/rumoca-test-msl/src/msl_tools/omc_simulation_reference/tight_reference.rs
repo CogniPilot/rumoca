@@ -9,6 +9,9 @@
 //! after their normal run, with the same horizon and output grid and only the
 //! tolerance changed. The rerun is not timed into the model's OMC result, so
 //! the OMC-against-Rumoca speed report keeps measuring one OMC run per model.
+//! With several session workers, a rerun can overlap another worker's timed
+//! run and slow it slightly, which flatters Rumoca's speed ratio for that
+//! model; flagged models are few, so the runs are not serialized.
 //!
 //! A missing, failed, timed-out or stale tight reference is no evidence: the
 //! comparator then scores the model exactly as without one.
