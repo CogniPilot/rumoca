@@ -101,9 +101,9 @@ pub fn prepare_gpu_simulation(source: &str, model_name: &str) -> Result<String, 
         let layout: serde_json::Value = serde_json::from_str(&layout_text)
             .map_err(|e| WasmError::new(format!("wgsl-ode layout is not JSON: {e}")))?;
         let state_count = solve_model.state_scalar_count();
-        let state_names = solve_model
+        let variable_names = solve_model
             .problem
-            .solver_named_report(0..state_count)
+            .solver_named_report(0..solve_model.problem.solver_scalar_count())
             .map_err(|error| WasmError::new(error.to_string()))?;
 
         // The GPU fixed-step RK4 driver uses `dt` as its output/sample interval
@@ -143,7 +143,8 @@ pub fn prepare_gpu_simulation(source: &str, model_name: &str) -> Result<String, 
             "y0": y0,
             "p0": p0,
             "n_states": state_count,
-            "state_names": state_names,
+            "state_names": &variable_names[..state_count],
+            "variable_names": variable_names,
             "t_start": opts.t_start,
             "t_end": opts.t_end,
             "dt": dt,

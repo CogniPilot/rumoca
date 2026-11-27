@@ -9,6 +9,7 @@ readiness_level = 0
 [capabilities]
 continuous_states = true
 residual_equations = false
+exact_algebraic_assignments = true
 scalar_fallback = true
 # General event iteration and root finding remain unsupported.
 events = false

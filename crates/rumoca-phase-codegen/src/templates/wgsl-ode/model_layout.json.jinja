@@ -1,4 +1,5 @@
-{%- if solve_blocks.continuous.implicit_rhs.output_count > 0 %}
+{%- set algebraic = solve_blocks.continuous.algebraic_assignments %}
+{%- if solve_blocks.continuous.implicit_rhs.output_count > 0 and not algebraic %}
 {{ fail("unsupported-feature:residual_equations: wgsl-ode emits explicit ODE derivatives only") }}
 {%- endif %}
 {%- set derivative = solve_blocks.continuous.derivative_rhs %}
@@ -27,6 +28,9 @@
     "include_empty_scalar_chunk": true
   }) }},
   "native_families": {{ wgsl_native_family_inventory_json(derivative.native_families) }},
+  {%- if algebraic %}
+  "algebraic_refresh": "refresh_algebraics",
+  {%- endif %}
   "rows": {{ derivative.output_count }},
   "y_len": {{ solve.layout.y_scalars }},
   "p_len": {{ solve.layout.p_scalars }},
