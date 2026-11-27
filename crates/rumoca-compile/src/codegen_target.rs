@@ -172,6 +172,8 @@ pub struct TargetCapabilities {
     /// FMI projection proves ordered parameter-only initialization assignments.
     pub parameter_initialization: Option<bool>,
     pub events: Option<bool>,
+    /// Solve target executes a certified single-pass periodic clock partition.
+    pub periodic_sample_events: Option<bool>,
     /// A Flat template renders `algorithm` / `initial algorithm` sections.
     /// Declared `false`, a model carrying either is refused instead of being
     /// emitted without them.
@@ -325,6 +327,7 @@ pub struct TargetCompatibilityEntry {
     pub sparse: TargetFeatureSupport,
     pub dtypes: Vec<String>,
     pub events: TargetFeatureSupport,
+    pub periodic_sample_events: TargetFeatureSupport,
     pub runtime_events: TargetFeatureSupport,
     pub forward_ad: TargetFeatureSupport,
     pub reverse_ad: TargetFeatureSupport,
@@ -638,6 +641,9 @@ fn target_compatibility_entry(id: &str, manifest: &TargetManifest) -> TargetComp
         sparse: feature_support(tensor.and_then(|tensor| tensor.sparse)),
         dtypes: tensor_dtypes(tensor),
         events: feature_support(capabilities.and_then(|capabilities| capabilities.events)),
+        periodic_sample_events: feature_support(
+            capabilities.and_then(|capabilities| capabilities.periodic_sample_events),
+        ),
         runtime_events: feature_support(
             capabilities.and_then(|capabilities| capabilities.runtime_events),
         ),
@@ -879,6 +885,7 @@ pub fn validate_dae_target_capabilities(
     }
     if capabilities.events != Some(true)
         && !supports_static_assertions(manifest, capabilities)
+        && !defers_periodic_clock_check(manifest, capabilities)
         && dae_has_events(dae)
     {
         unsupported_feature(manifest, "events", "event or condition partitions present")?;
@@ -890,7 +897,10 @@ pub fn validate_dae_target_capabilities(
             "delay-history or terminal-event runtime support is required",
         )?;
     }
-    if capabilities.clocks != Some(true) && dae_has_clocks(dae) {
+    if capabilities.clocks != Some(true)
+        && !defers_periodic_clock_check(manifest, capabilities)
+        && dae_has_clocks(dae)
+    {
         unsupported_feature(manifest, "clocks", "clock partition entries present")?;
     }
     if capabilities.dynamic_ranges == Some(false) && dae_has_dynamic_ranges(dae) {
@@ -965,8 +975,11 @@ pub fn validate_solve_target_capabilities_with_calls(
             "initialization residual, projection, or assignment owners present",
         )?;
     }
+    let single_clock =
+        defers_periodic_clock_check(manifest, capabilities) && supports_periodic_clock(solve);
     if capabilities.events != Some(true)
         && !supports_static_assertions(manifest, capabilities)
+        && !single_clock
         && rumoca_ir_solve::solve_has_events(solve)
     {
         unsupported_feature(manifest, "events", "event or discrete partitions present")?;
@@ -980,7 +993,10 @@ pub fn validate_solve_target_capabilities_with_calls(
             "delay-history or terminal-event runtime support is required",
         )?;
     }
-    if capabilities.clocks != Some(true) && rumoca_ir_solve::solve_has_clocks(solve) {
+    if capabilities.clocks != Some(true)
+        && !single_clock
+        && rumoca_ir_solve::solve_has_clocks(solve)
+    {
         unsupported_feature(manifest, "clocks", "clock partition entries present")?;
     }
     let mut inventory = solve.compute_node_counts();
@@ -996,6 +1012,51 @@ pub fn validate_solve_target_capabilities_with_calls(
         inventory,
         uses_linear_solve_component,
     )
+}
+
+// The construction-issued partition order is complete for this single clock.
+// The WGSL event kernel releases pulse memories and commits ordinary pre(P).
+fn supports_periodic_clock(solve: &rumoca_ir_solve::SolveProblem) -> bool {
+    if !solve.single_pass_clock_partition() || solve.discrete.guarded_assignments.is_empty() {
+        return false;
+    }
+    // These values are held between ticks, so their committed pre slots remain
+    // valid until the next tick even when the host changes live inputs.
+    let held = solve
+        .discrete
+        .guarded_assignments
+        .iter()
+        .flat_map(|assignment| assignment.target_ranges())
+        .filter_map(|range| match range.base() {
+            rumoca_ir_solve::ScalarSlot::P { index, .. } if range.count() == 1 => Some(index),
+            _ => None,
+        })
+        .collect::<std::collections::BTreeSet<_>>();
+    solve
+            .discrete
+            .row_roles
+            .iter()
+            .all(|role| *role == rumoca_ir_solve::DiscreteRowRole::PulseConditionMemory)
+        && solve
+            .discrete
+            .update_targets
+            .iter()
+            .all(|slot| matches!(slot, rumoca_ir_solve::ScalarSlot::P { .. }))
+        && solve
+            .solve_layout
+            .pre_param_bindings
+            .iter()
+            .all(|binding| matches!(binding.source, rumoca_ir_solve::PreParamSource::P { index } if held.contains(&index)))
+        && solve.events.scheduled_time_events.is_empty()
+        && solve.events.actions.is_empty()
+        && solve.discrete.post_commit_assignment_rhs.is_empty()
+}
+
+fn defers_periodic_clock_check(
+    manifest: &TargetManifest,
+    capabilities: &TargetCapabilities,
+) -> bool {
+    manifest.ir == TargetTemplateIr::Solve && capabilities.periodic_sample_events == Some(true)
 }
 
 fn supports_static_assertions(

@@ -21,6 +21,7 @@ use rumoca_ir_solve as solve;
 use crate::errors::CodegenError;
 
 mod fmi;
+mod periodic;
 pub(super) use fmi::native_value as native_fmi_value;
 mod residual;
 pub(super) use residual::continuous_blocks;
@@ -1434,6 +1435,8 @@ pub(super) fn solve_value(handle: SolveRenderHandle) -> Result<Value, CodegenErr
             "schema_version",
             "layout",
             "solve_layout",
+            "periodic_assignments",
+            "periodic_pulse_memories",
             "state_names",
             "continuous",
             "initialization",
@@ -1445,6 +1448,8 @@ pub(super) fn solve_value(handle: SolveRenderHandle) -> Result<Value, CodegenErr
         move |k| match k {
             "schema_version" => Some(Value::from(handle.problem().schema_version)),
             "layout" => Some(Value::from_serialize(&handle.problem().layout)),
+            "periodic_pulse_memories" => Some(periodic::pulse_memories(handle.problem())),
+            "periodic_assignments" => Some(periodic::assignments(handle.problem())),
             "solve_layout" => Some(Value::from_serialize(&handle.problem().solve_layout)),
             "state_names" => Some(Value::from_object(super::solver_names::SolverStateReport(
                 handle.clone(),
