@@ -520,3 +520,36 @@ fn an_assertion_violated_by_an_event_update_stops_by_the_next_output_point() {
         "failed at t = {time}, expected the event at 0.5 or the next output point 0.6"
     );
 }
+
+/// The accepted-step check selects rows, not whole models: a parameter
+/// assertion beside a state one leaves the state row checked, so the
+/// reproduction still fails at its accepted step, before the next coarse
+/// output point.
+#[test]
+fn a_state_assertion_beside_a_parameter_one_is_still_checked_at_accepted_steps() {
+    let source = concat!(
+        "model Mixed\n",
+        "  parameter Real k = 1;\n",
+        "  Real x(start = 0, fixed = true);\n",
+        "equation\n",
+        "  der(x) = sin(10*time);\n",
+        "  assert(k > 0, \"parameter\");\n",
+        "  assert(noEvent(time < 0.5 or x > 10), \"must fail at t = 0.5\");\n",
+        "  assert(k < 2, \"parameter after\");\n",
+        "end Mixed;\n",
+    );
+    assert!(checks_at_accepted_steps(source, "Mixed"));
+    let options = SimOptions {
+        t_end: 1.0,
+        dt: Some(0.3),
+        solver_mode: SimSolverMode::VelImplicit,
+        ..SimOptions::default()
+    };
+    let error = simulate_dae(&compile(source, "Mixed"), &options)
+        .expect_err("the violation must stop the run");
+    let time = failure_time(&error, "must fail at t = 0.5");
+    assert!(
+        (0.5..0.6).contains(&time),
+        "failed at t = {time}, expected an accepted step before the output point 0.6"
+    );
+}
