@@ -106,3 +106,82 @@ int main(void) {{
         super::assertion_carrier::compile_and_execute_with_flags(&source, &["-O2"]);
     }
 }
+
+#[test]
+fn slice_edits_preserve_other_cells_and_the_incoming_array() {
+    for (use_view, width) in [(false, 2), (true, 2), (true, 3)] {
+        check_slice_edit(use_view, width);
+    }
+}
+
+fn check_slice_edit(use_view: bool, width: u32) {
+    let ty =
+        solve::SolveValueType::tensor(solve::SolveScalarType::real(profile()), vec![8]).unwrap();
+    let domain = rumoca_core::StructuredIndexDomain {
+        binders: vec![rumoca_core::StructuredIndexBinder {
+            provenance: rumoca_core::IndexBinderProvenance::Generated,
+            id: 0,
+            display_name: "i".into(),
+            lower: 1,
+            upper: 1,
+            step: 1,
+        }],
+    };
+    let table = solve::SolvePureCallTable::construct(profile(), |table| {
+        table.add_owner(
+            identity(1500),
+            vec![ty.clone()],
+            vec![solve::SolvePureCallOutput::result(ty)],
+            span(1),
+            |b, inputs, outputs| {
+                let start = b.load(inputs[0], span(2))?;
+                let result = b.fold(domain, &[start], &[], span(3), |b, carries, _, _, out| {
+                    let old = b.load(carries[0], span(4))?;
+                    let source = b.project_slice(old, vec![1], vec![width], span(5))?;
+                    let updated = if use_view {
+                        b.update_view(
+                            old,
+                            source,
+                            &[solve::ProgramTensorViewAxis::Span {
+                                origin: 2,
+                                extent: width,
+                            }],
+                            span(6),
+                        )?
+                    } else {
+                        b.update_slice(old, source, vec![2], span(6))?
+                    };
+                    b.store(out[0], updated, span(7))
+                })?;
+                b.store(outputs[0], result[0], span(8))
+            },
+        )?;
+        Ok(())
+    })
+    .unwrap();
+    let families = PureCallFamilies::new(&table).unwrap();
+    let mut env = super::super::super::create_environment();
+    env.add_template("fold_test", EMIT).unwrap();
+    let mut source = env
+        .get_template("fold_test")
+        .unwrap()
+        .render(minijinja::context! { table => families.owners_value() })
+        .unwrap();
+    assert_eq!(source.contains("RmcFoldEdit delta["), width <= 2);
+    source.push_str(
+        r#"
+int main(void) {
+    double input[]={0,1,2,3,4,5,6,7}, saved[]={0,1,2,3,4,5,6,7};
+    double result[8], expected[]={0,1,1,2,LAST,5,6,7};
+    assert(rumoca_scalar_pure_0((const double*[]){input},result,NULL)==0);
+    assert(memcmp(result,expected,sizeof(result))==0);
+    assert(memcmp(input,saved,sizeof(input))==0);
+    return 0;
+}
+"#,
+    );
+    super::assertion_carrier::compile_and_execute_with_flags(
+        &source.replace("LAST", if width == 2 { "4" } else { "3" }),
+        &["-O2"],
+    );
+}
