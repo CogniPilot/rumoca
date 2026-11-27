@@ -88,7 +88,11 @@ fn affine_promote() -> String {
     source
 }
 
-fn model_c(model: &str, source: &str, target: &str) -> String {
+fn render(
+    model: &str,
+    source: &str,
+    target: &str,
+) -> Vec<rumoca_compile::codegen::targets::RenderedTargetFile> {
     let compiled = match Compiler::new()
         .model(model)
         .compile_str(source, &format!("{model}.mo"))
@@ -96,10 +100,23 @@ fn model_c(model: &str, source: &str, target: &str) -> String {
         Ok(compiled) => compiled,
         Err(error) => panic!("compile {model}: {error:#}"),
     };
-    let files = match rumoca::render_target_files(&compiled, model, target, None) {
+    match rumoca::render_target_files(&compiled, model, target, None) {
         Ok(files) => files,
         Err(error) => panic!("render {model} {target}: {error:#}"),
-    };
+    }
+}
+
+/// The FMI 3 `model.h` of a model, which declares the instance.
+fn model_h(model: &str, source: &str) -> String {
+    render(model, source, "fmi3")
+        .into_iter()
+        .find(|file| file.path == "sources/model.h")
+        .unwrap_or_else(|| panic!("{model} fmi3 emits sources/model.h"))
+        .content
+}
+
+fn model_c(model: &str, source: &str, target: &str) -> String {
+    let files = render(model, source, target);
     assert!(
         files.iter().any(|file| file.path == "sources/model.c"),
         "{model} {target} emits sources/model.c"
@@ -119,7 +136,7 @@ fn model_c(model: &str, source: &str, target: &str) -> String {
 }
 
 /// `RmcBlockDesc` field names in their C initializer order.
-const FIELDS: [&str; 56] = [
+const FIELDS: [&str; 59] = [
     "id",
     "canonical",
     "n",
@@ -176,6 +193,9 @@ const FIELDS: [&str; 56] = [
     "ntangent_steps",
     "tangent_steps",
     "tangent_residuals",
+    "keep",
+    "keep_d",
+    "keep_s",
 ];
 
 const ISOLATION_KINDS: std::ops::RangeInclusive<usize> = 0..=2;
@@ -525,6 +545,95 @@ fn small_affine_loop_is_eliminated_along_its_tearing() {
         0,
         "a coupled affine block is settled by its affine solve, never by isolation"
     );
+}
+
+const TWO_AFFINE: &str = "model TwoAffineLoops
+  output Real x(start=1, fixed=true);
+  output Real i1;
+  output Real i2;
+  output Real j1;
+  output Real j2;
+equation
+  der(x) = -i1 - 0.5*i2 - j1;
+  (2 + x*x)*i1 + i2 = 1 + x;
+  i1 - (3 + x*x)*i2 = x;
+  (4 + x*x)*j1 + j2 = x;
+  j1 - (5 + x*x)*j2 = 1;
+end TwoAffineLoops;";
+
+/// The instance storage a retaining block lays out, as (doubles, sizes): the
+/// key (Jacobian, row and variable scales), then the elimination's values,
+/// recovery and reduced matrices with four flags, its pivots, promotions,
+/// residual rows and tears, or the dense LU with its pivots and nonzero lists.
+fn retained_storage(block: &Block) -> (usize, usize) {
+    let (n, nnz) = (block.get("n"), block.get("nnz"));
+    let key = nnz + 2 * n;
+    if block.flag("elimination") {
+        let (cap, steps) = (block.get("elim_capacity"), block.get("nelim"));
+        (
+            key + (nnz + 1) + (n * cap + 1) + (cap * cap + 1),
+            4 + 3 * (cap + 1) + steps + 1,
+        )
+    } else {
+        (key + n * n, 4 + n + 2 * (n + 1) + n * (n - 1))
+    }
+}
+
+/// A coupled affine block keeps its factorization from one call to the next,
+/// as the linked `SparseNewtonCache` does: the retaining blocks lie end to end
+/// in storage the instance allocates for them all, and the instance holds its
+/// address. No other block retains anything, and a component without such a
+/// block emits no retention code.
+#[test]
+fn coupled_affine_blocks_retain_their_factorization() {
+    let (model_c, tables) = rendered("TwoAffineLoops", TWO_AFFINE);
+    assert_eq!(
+        tables.blocks.len(),
+        2,
+        "TwoAffineLoops has two projection blocks"
+    );
+    let mut end = (0, 0);
+    for block in &tables.blocks {
+        assert!(block.flag("affine") && block.get("n") > 1 && block.flag("keep"));
+        assert_eq!((block.get("keep_d"), block.get("keep_s")), end);
+        let (doubles, sizes) = retained_storage(block);
+        end = (end.0 + doubles, end.1 + sizes);
+    }
+    assert!(
+        model_h("TwoAffineLoops", TWO_AFFINE).contains("double* rmc_keep_d; size_t* rmc_keep_s;"),
+        "TwoAffineLoops: the instance holds only the address of its retained storage"
+    );
+    assert!(
+        model_c.contains(&format!(
+            "#define RMC_KEEP_DOUBLES {}\n#define RMC_KEEP_SIZES {}\n",
+            end.0, end.1
+        )),
+        "TwoAffineLoops: the instance allocates the retained storage of both blocks"
+    );
+
+    assert!(
+        model_c.contains("rmc_keep_bind(m, b, jac, rscale, vscale)"),
+        "TwoAffineLoops: the affine projection binds its retained factors to the Jacobian and scale bits"
+    );
+    for (model, source) in [("DenseSeeded", DENSE), ("SeededLoop", SINGULAR)] {
+        let (model_c, tables) = rendered(model, source);
+        for block in &tables.blocks {
+            assert!(
+                !block.flag("keep"),
+                "{model}: only a coupled affine block retains"
+            );
+        }
+        for retention in [
+            "rmc_keep_bind(",
+            "rmc_lu_solve_lists(",
+            "rmc_affine_scaled(",
+        ] {
+            assert!(
+                !model_c.contains(retention),
+                "{model}: a component without a retaining block emits no `{retention}`"
+            );
+        }
+    }
 }
 
 #[test]

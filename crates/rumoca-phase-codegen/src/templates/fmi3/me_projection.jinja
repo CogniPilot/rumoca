@@ -75,10 +75,14 @@
 #define P_LEN {{ solve.layout.p_scalars if solve.layout.p_scalars > 0 else 1 }}
 #define STATE_LEN {{ solve.solve_layout.state_scalar_count if solve.solve_layout.state_scalar_count > 0 else 1 }}
 {%- endmacro %}
-{#- The arena (`rmc_d`, `rmc_s`) stays first: `rmc_lane_reset` zeroes the
-    fields after it. -#}
-{%- macro workspace_fields(me) -%}
-{%- if me.kernel %} double rmc_d[{{ me.work.doubles }}]; size_t rmc_s[{{ me.work.sizes }}]; size_t rmc_dtop; size_t rmc_stop; double rmc_tol; bool rmc_certify;{% endif -%}
+{#- The arena (`rmc_d`, `rmc_s`) stays first, then a lane's retained
+    factors: `rmc_lane_reset` zeroes the fields after them. The host
+    component keeps its retained factors outside the instance
+    (`keep_storage`), so an FMU-state copy and the private point of a
+    directional derivative copy only their address. -#}
+{%- macro workspace_fields(me, device=false) -%}
+{%- if me.kernel %} double rmc_d[{{ me.work.doubles }}]; size_t rmc_s[{{ me.work.sizes }}];
+{%- if me.keep.doubles > 0 %}{% if device %} double rmc_keep_d[{{ me.keep.doubles }}]; size_t rmc_keep_s[{{ me.keep.sizes }}];{% else %} double* rmc_keep_d; size_t* rmc_keep_s;{% endif %}{% endif %} size_t rmc_dtop; size_t rmc_stop; double rmc_tol; bool rmc_certify;{% endif -%}
 {%- if me.kernel or me.assign.plan.programs|length > 0 %} bool rmc_fatal;{% endif -%}
 {%- if me.blocks|length > 0 and me.seed_rule == "CommittedAcceptedPoint" %} double rmc_commit_y[Y_LEN]; double rmc_mark_x[STATE_LEN]; double rmc_mark_t; bool rmc_seeding; bool rmc_mark_pending; bool rmc_mark_resolved;{% endif -%}
 {%- if me.blocks|length > 0 %} double rmc_seed[{{ me.seed_len if me.seed_len > 0 else 1 }}]; size_t rmc_fb_calls[{{ me.blocks|length + 1 }}]; size_t rmc_fb_count[{{ me.blocks|length + 1 }}]; size_t rmc_fb_mark[{{ me.blocks|length + 1 }}]; bool rmc_fb_active[{{ me.blocks|length + 1 }}]; bool rmc_fb_reported[{{ me.blocks|length + 1 }}];{% endif -%}
@@ -106,12 +110,16 @@ typedef struct { unsigned fault; size_t fault_site; size_t faults;{% if me.block
 #endif
 {%- endif %}
 {%- endmacro %}
-{%- macro workspace_reset(me) -%}
+{#- A reset unbinds every retained factor: a block whose key flag is clear
+    binds its key and forms its factors again (`rmc_keep_bind`), so only
+    that flag is cleared. -#}
+{%- macro workspace_reset(me, device=false) -%}
 {%- if me.kernel %} m->rmc_dtop = 0; m->rmc_stop = 0; m->rmc_tol = {{ me.policy.tolerance }}; m->rmc_certify = true;{% endif -%}
 {%- if me.kernel or me.assign.plan.programs|length > 0 %} m->rmc_fatal = false;{% endif -%}
 {%- if me.blocks|length > 0 and me.seed_rule == "CommittedAcceptedPoint" %} m->rmc_seeding = false; m->rmc_mark_pending = false; m->rmc_mark_resolved = false;{% endif -%}
 {%- if me.blocks|length > 0 %} memset(m->rmc_seed, 0, sizeof(m->rmc_seed)); memset(m->rmc_fb_calls, 0, sizeof(m->rmc_fb_calls)); memset(m->rmc_fb_count, 0, sizeof(m->rmc_fb_count)); memset(m->rmc_fb_mark, 0, sizeof(m->rmc_fb_mark)); memset(m->rmc_fb_active, 0, sizeof(m->rmc_fb_active)); memset(m->rmc_fb_reported, 0, sizeof(m->rmc_fb_reported));{% endif -%}
 {%- if me.lane_max > 0 %} memset(m->rmc_lane_seed, 0, sizeof(m->rmc_lane_seed));{% endif -%}
+{%- if me.keep.doubles > 0 %}{% if not device %} if (m->rmc_keep_s){% endif %} { {%- for at in me.keep.flags %} m->rmc_keep_s[{{ at }}] = 0;{% endfor %} }{% endif -%}
 {%- if me.switching %} m->rmc_chart = 0; m->rmc_chart_target = 0; m->rmc_chart_pending = false; m->rmc_chart_reference = {{ me.switching[0].trial_rcond }}; m->rmc_chart_target_reference = 0.0;{% endif -%}
 {%- if me.kernel or me.assign.plan.programs|length > 0 %}
 #if defined(RMC_LANE_STATUS)
@@ -242,6 +250,27 @@ RMC_COLD {{ q }} void rmc_fault(ModelInstance* m, unsigned code, size_t site) {
 #endif
 {%- endif %}
 {%- endmacro %}
+{#- The host component's retained factors (ME-PROJ-001): allocated with the
+    instance by its own allocator (`rmc_instance_allocate`) and freed with
+    it. An FMU-state copy and the private point of a directional derivative
+    share them through the address they copy, which the bit key keeps
+    correct. An instance without them, such as one a harness allocates
+    itself, retains nothing. -#}
+{%- macro keep_storage(me) %}
+{%- if me.keep.doubles > 0 %}
+#define RMC_KEEP_DOUBLES {{ me.keep.doubles }}
+#define RMC_KEEP_SIZES {{ me.keep.sizes }}
+static void rmc_keep_release(ModelInstance* m) { rmc_instance_free(m, m->rmc_keep_d); rmc_instance_free(m, m->rmc_keep_s); m->rmc_keep_d = NULL; m->rmc_keep_s = NULL; }
+static bool rmc_keep_allocate(ModelInstance* m) {
+    m->rmc_keep_d = rmc_instance_allocate(m, RMC_KEEP_DOUBLES, sizeof(double)); m->rmc_keep_s = rmc_instance_allocate(m, RMC_KEEP_SIZES, sizeof(size_t));
+    if (m->rmc_keep_d && m->rmc_keep_s) return true;
+    rmc_keep_release(m); return false;
+}
+{%- else %}
+static inline void rmc_keep_release(ModelInstance* m) { (void)m; }
+static inline bool rmc_keep_allocate(ModelInstance* m) { (void)m; return true; }
+{%- endif %}
+{%- endmacro %}
 
 {#- ── generic kernel ─────────────────────────────────────────────────────── -#}
 {%- macro projection_kernel(me, device=false) %}{%- set q = device_qualifier(device) %}
@@ -358,13 +387,17 @@ RMC_COLD {{ q }} int rmc_svd_solve(ModelInstance* m, const double* a, size_t n, 
 }
 
 /* One scaled dense Newton factorization, reused for every right-hand side
-   while its matrix and scales are fixed (sparse_newton/dense.rs). */
-typedef struct { size_t n; double* scaled; double* lu; size_t* ipiv; const double* rscale; const double* vscale; } RmcDenseFactor;
-/* Allocate and factor; -1 error. */
-{{ q }} int rmc_dense_factor(ModelInstance* m, const double* jac, size_t n, const double* rscale, const double* vscale, RmcDenseFactor* f) {
+   while its matrix and scales are fixed (sparse_newton/dense.rs). `lists`,
+   when set, names the nonzero entries of each column of L and U (see
+   rmc_lu_lists); `scaled` may be NULL for a factor an affine block retained,
+   whose caller forms it again when the SVD fallback needs it. */
+typedef struct { size_t n; double* scaled; double* lu; size_t* ipiv; const double* rscale; const double* vscale; const size_t* lists; } RmcDenseFactor;
+/* Factor into `lu` and `ipiv` when given (a retained factor), else into the
+   arena; -1 error. `scaled` and `lu` are written in full before any read. */
+{{ q }} int rmc_dense_factor_in(ModelInstance* m, const double* jac, size_t n, const double* rscale, const double* vscale, double* lu, size_t* ipiv, RmcDenseFactor* f) {
     size_t* columns = NULL;
-    f->n = n; f->rscale = rscale; f->vscale = vscale;
-    f->scaled = rmc_dalloc(m, n * n); f->lu = rmc_dalloc(m, n * n); f->ipiv = rmc_salloc(m, n); columns = rmc_salloc(m, n);
+    f->n = n; f->rscale = rscale; f->vscale = vscale; f->lists = NULL;
+    f->scaled = rmc_dalloc_raw(m, n * n); f->lu = lu ? lu : rmc_dalloc_raw(m, n * n); f->ipiv = ipiv ? ipiv : rmc_salloc(m, n); columns = rmc_salloc(m, n);
     if (!f->scaled || !f->lu || !f->ipiv || !columns) return rmc_exhausted(m);
     for (size_t row = 0; row < n; ++row)
         for (size_t col = 0; col < n; ++col) f->scaled[row * n + col] = jac[row * n + col] * rmc_valid_scale(vscale[col]) / rmc_valid_scale(rscale[row]);
@@ -372,14 +405,80 @@ typedef struct { size_t n; double* scaled; double* lu; size_t* ipiv; const doubl
     rmc_lu(f->lu, n, f->ipiv, columns);
     return 0;
 }
+{{ q }} int rmc_dense_factor(ModelInstance* m, const double* jac, size_t n, const double* rscale, const double* vscale, RmcDenseFactor* f) {
+    return rmc_dense_factor_in(m, jac, n, rscale, vscale, NULL, NULL, f);
+}
+{%- if me.keep.doubles > 0 %}
+/* The rows of the nonzero entries of each column of a factored `lu`, in
+   ascending order: L's below the diagonal from lists[i] to lists[i + 1],
+   U's above it from lists[n + 1 + i] to lists[n + 2 + i], both offsets into
+   the row area at lists + 2 * (n + 1), which holds n * (n - 1) rows. */
+{{ q }} void rmc_lu_lists(const double* lu, size_t n, size_t* lists) {
+    size_t* lower = lists; size_t* upper = lists + n + 1; size_t* rows = lists + 2 * (n + 1); size_t count = 0;
+    for (size_t i = 0; i < n; ++i) { lower[i] = count; for (size_t row = i + 1; row < n; ++row) if (lu[row * n + i] != 0.0) rows[count++] = row; }
+    lower[n] = count;
+    for (size_t i = 0; i < n; ++i) { upper[i] = count; for (size_t row = 0; row < i; ++row) if (lu[row * n + i] != 0.0) rows[count++] = row; }
+    upper[n] = count;
+}
+/* An update of row r by an exactly zero factor entry adds a zero, which
+   leaves every value but -0.0 as it is and turns -0.0 into the sign of that
+   zero. The rows of `b` holding -0.0 sit in `zeros`; each takes the zero
+   entries of a column in [from, to) as rmc_lu_solve does, and leaves the
+   set once it holds anything else. A sum never makes a new -0.0, so the set
+   only shrinks; the count left is returned. */
+{{ q }} size_t rmc_lu_signed_zeros(const double* lu, size_t n, size_t col, size_t from, size_t to, double coeff, double* b, size_t* zeros, size_t count) {
+    size_t kept = 0;
+    for (size_t k = 0; k < count; ++k) {
+        size_t row = zeros[k];
+        if (row >= from && row < to && lu[row * n + col] == 0.0) b[row] += -coeff * lu[row * n + col];
+        if (b[row] == 0.0 && signbit(b[row])) zeros[kept++] = row;
+    }
+    return kept;
+}
+/* rmc_lu_solve over the listed entries, bit for bit: a zero factor entry
+   times a finite coefficient changes only a -0.0, which
+   rmc_lu_signed_zeros applies, and a non-finite coefficient takes the whole
+   column, as the dense loop does. The remaining arithmetic is
+   rmc_lu_solve's, in its order. `zeros` holds n rows. */
+{{ q }} bool rmc_lu_solve_lists(const double* lu, size_t n, const size_t* ipiv, const size_t* lists, double* b, size_t* zeros) {
+    const size_t* lower = lists; const size_t* upper = lists + n + 1; const size_t* rows = lists + 2 * (n + 1);
+    for (size_t i = 0; i < n; ++i) if (ipiv[i] != i) { double tmp = b[i]; b[i] = b[ipiv[i]]; b[ipiv[i]] = tmp; }
+    size_t count = 0;
+    for (size_t row = 0; row < n; ++row) if (b[row] == 0.0 && signbit(b[row])) zeros[count++] = row;
+    for (size_t i = 0; i < n; ++i) {
+        double coeff = b[i];
+        if (isfinite(coeff)) { for (size_t e = lower[i]; e < lower[i + 1]; ++e) b[rows[e]] += -coeff * lu[rows[e] * n + i]; }
+        else for (size_t row = i + 1; row < n; ++row) b[row] += -coeff * lu[row * n + i];
+        if (count) count = rmc_lu_signed_zeros(lu, n, i, isfinite(coeff) ? i + 1 : n, n, coeff, b, zeros, count);
+    }
+    for (size_t i = n; i-- > 0;) {
+        double diag = lu[i * n + i];
+        if (diag == 0.0) return false;
+        double coeff = b[i] / diag; b[i] = coeff;
+        if (isfinite(coeff)) { for (size_t e = upper[i]; e < upper[i + 1]; ++e) b[rows[e]] += -coeff * lu[rows[e] * n + i]; }
+        else for (size_t row = 0; row < i; ++row) b[row] += -coeff * lu[row * n + i];
+        if (count) count = rmc_lu_signed_zeros(lu, n, i, 0, isfinite(coeff) ? i : 0, coeff, b, zeros, count);
+    }
+    return true;
+}
+{%- endif %}
 /* scaling.rs: scaled_newton_delta over a prepared factor (dense LU, then the
-   SVD fallback); -1 error, 0 no solution, 1 solved */
+   SVD fallback); -1 error, 0 no solution, 1 solved, 2 the SVD fallback needs
+   the scaled matrix a retained factor does not keep */
 {{ q }} int rmc_dense_solve(ModelInstance* m, const RmcDenseFactor* f, const double* residual, double* delta) {
     RMC_MARK; size_t n = f->n; int result = 1;
     double* rhs = rmc_dalloc(m, n); double* x = rmc_dalloc(m, n);
     if (!rhs || !x) { RMC_RELEASE; return rmc_exhausted(m); }
     for (size_t row = 0; row < n; ++row) { rhs[row] = -residual[row] / rmc_valid_scale(f->rscale[row]); x[row] = rhs[row]; }
+{%- if me.keep.doubles > 0 %}
+    size_t* zeros = f->lists ? rmc_salloc(m, n) : NULL;
+    if (f->lists && !zeros) { RMC_RELEASE; return rmc_exhausted(m); }
+    bool solved = f->lists ? rmc_lu_solve_lists(f->lu, n, f->ipiv, f->lists, x, zeros) : rmc_lu_solve(f->lu, n, f->ipiv, x);
+    if (!solved && !f->scaled) result = 2;
+    else if (!solved && rmc_svd_solve(m, f->scaled, n, rhs, m->rmc_tol, x) != 0) result = -1;
+{%- else %}
     if (!rmc_lu_solve(f->lu, n, f->ipiv, x) && rmc_svd_solve(m, f->scaled, n, rhs, m->rmc_tol, x) != 0) result = -1;
+{%- endif %}
     if (result == 1) for (size_t col = 0; col < n; ++col) delta[col] = x[col] * rmc_valid_scale(f->vscale[col]);
     RMC_RELEASE; return result;
 }
@@ -417,7 +516,7 @@ typedef struct RmcBlockDescS {
     size_t iso_entries; size_t nlane_calls; size_t lane_calls; size_t lane_max_outputs;
     size_t lane_max; size_t nsplit; size_t split; size_t row_split; size_t inv_len;
     size_t tangent_lanes; bool tangent_directional; size_t ntangent_steps; size_t tangent_steps;
-    size_t tangent_residuals;
+    size_t tangent_residuals; bool keep; size_t keep_d; size_t keep_s;
 } RmcBlockDesc;
 {{ q }} const size_t rmc_pool[{{ me.table.pool|length }}] = {
 {%- for chunk in me.table.pool|batch(24) %}
@@ -427,7 +526,7 @@ typedef struct RmcBlockDescS {
 #define RMC_P(offset) (rmc_pool + (offset))
 {{ q }} const RmcBlockDesc rmc_block_desc[{{ me.blocks|length }}] = {
 {%- for b in me.blocks %}
-    { {{ loop.index0 }}, {{ b.canonical }}, {{ b.n }}, {{ b.y }}, {{ b.row_target }}, {{ b.row_program }}, {{ b.row_offset }}, {{ b.max_outputs }}, {{ "true" if b.affine else "false" }}, {{ "true" if b.singleton_exact else "false" }}, {{ "true" if b.has_tearing else "false" }}, {{ b.row_ptr }}, {{ b.col_idx }}, {{ b.nnz }}, {{ b.ncolors }}, {{ b.colors }}, {{ b.color_seeds }}, {{ b.color_calls }}, {{ b.placements }}, {{ b.jvp_max_outputs }}, {{ "true" if b.torn else "false" }}, {{ b.k }}, {{ b.tear_col }}, {{ b.residual_row }}, {{ b.ncausal }}, {{ b.ncruns }}, {{ b.cruns }}, {{ b.causal_target }}, {{ b.causal_col }}, {{ "true" if b.elimination else "false" }}, {{ b.nelim }}, {{ b.elim_row }}, {{ b.elim_col }}, {{ b.nelim_tear }}, {{ b.elim_residual }}, {{ b.elim_tear }}, {{ b.nguards }}, {{ b.guards }}, {{ b.guard_step }}, {{ b.elim_capacity }}, {{ b.iso_default }}, {{ b.iso_start }}, {{ b.iso_entries }}, {{ b.nlane_calls }}, {{ b.lane_calls }}, {{ b.lane_max_outputs }}, {{ b.lane_max }}, {{ b.nsplit }}, {{ b.split }}, {{ b.row_split }}, {{ b.inv_len }}, {{ b.tangent_lanes }}, {{ "true" if b.tangent_directional else "false" }}, {{ b.ntangent_steps }}, {{ b.tangent_steps }}, {{ b.tangent_residuals }} },
+    { {{ loop.index0 }}, {{ b.canonical }}, {{ b.n }}, {{ b.y }}, {{ b.row_target }}, {{ b.row_program }}, {{ b.row_offset }}, {{ b.max_outputs }}, {{ "true" if b.affine else "false" }}, {{ "true" if b.singleton_exact else "false" }}, {{ "true" if b.has_tearing else "false" }}, {{ b.row_ptr }}, {{ b.col_idx }}, {{ b.nnz }}, {{ b.ncolors }}, {{ b.colors }}, {{ b.color_seeds }}, {{ b.color_calls }}, {{ b.placements }}, {{ b.jvp_max_outputs }}, {{ "true" if b.torn else "false" }}, {{ b.k }}, {{ b.tear_col }}, {{ b.residual_row }}, {{ b.ncausal }}, {{ b.ncruns }}, {{ b.cruns }}, {{ b.causal_target }}, {{ b.causal_col }}, {{ "true" if b.elimination else "false" }}, {{ b.nelim }}, {{ b.elim_row }}, {{ b.elim_col }}, {{ b.nelim_tear }}, {{ b.elim_residual }}, {{ b.elim_tear }}, {{ b.nguards }}, {{ b.guards }}, {{ b.guard_step }}, {{ b.elim_capacity }}, {{ b.iso_default }}, {{ b.iso_start }}, {{ b.iso_entries }}, {{ b.nlane_calls }}, {{ b.lane_calls }}, {{ b.lane_max_outputs }}, {{ b.lane_max }}, {{ b.nsplit }}, {{ b.split }}, {{ b.row_split }}, {{ b.inv_len }}, {{ b.tangent_lanes }}, {{ "true" if b.tangent_directional else "false" }}, {{ b.ntangent_steps }}, {{ b.tangent_steps }}, {{ b.tangent_residuals }}, {{ "true" if b.keep else "false" }}, {{ b.keep_d }}, {{ b.keep_s }} },
 {%- endfor %}
 };
 {{ q }} inline const RmcBlock* rmc_block(size_t id) { return &rmc_block_desc[id]; }
@@ -979,10 +1078,16 @@ typedef struct {
     const size_t b_n = RMC_BS(b, n); const size_t b_elim_capacity = RMC_BS(b, elim_capacity); const size_t b_nnz = RMC_BS(b, nnz); const size_t b_nelim = RMC_BS(b, nelim); const size_t* const b_row_ptr_pool = RMC_BP(b, row_ptr); const size_t* const b_col_idx_pool = RMC_BP(b, col_idx); const size_t* const b_elim_row_pool = RMC_BP(b, elim_row); const size_t* const b_elim_col_pool = RMC_BP(b, elim_col);
     size_t n = b_n, cap = b_elim_capacity; size_t* columns = NULL;
     /* values and reduced are written in full before any read; the recovery
-       relation starts at zero. */
-    e->values = rmc_dalloc_raw(m, b_nnz + 1); e->recovery = rmc_dalloc(m, n * cap + 1); e->reduced = rmc_dalloc_raw(m, cap * cap + 1);
-    e->ipiv = rmc_salloc(m, cap + 1); columns = rmc_salloc(m, cap + 1);
-    e->promoted = rmc_salloc(m, b_nelim + 1); e->residual = rmc_salloc(m, cap + 1); e->tear = rmc_salloc(m, cap + 1);
+       relation and the step and tear lists start at zero. An elimination an
+       affine block retains (rmc_keep_elimination) arrives with its buffers. */
+    if (e->values) {
+        memset(e->recovery, 0, (n * cap + 1) * sizeof(double)); memset(e->ipiv, 0, (cap + 1) * sizeof(size_t));
+        memset(e->promoted, 0, (b_nelim + 1) * sizeof(size_t)); memset(e->residual, 0, (cap + 1) * sizeof(size_t)); memset(e->tear, 0, (cap + 1) * sizeof(size_t));
+    } else {
+        e->values = rmc_dalloc_raw(m, b_nnz + 1); e->recovery = rmc_dalloc(m, n * cap + 1); e->reduced = rmc_dalloc_raw(m, cap * cap + 1);
+        e->ipiv = rmc_salloc(m, cap + 1); e->promoted = rmc_salloc(m, b_nelim + 1); e->residual = rmc_salloc(m, cap + 1); e->tear = rmc_salloc(m, cap + 1);
+    }
+    columns = rmc_salloc(m, cap + 1);
     if (!e->values || !e->recovery || !e->reduced || !e->ipiv || !columns || !e->promoted || !e->residual || !e->tear) return rmc_exhausted(m);
     /* One accumulator per tear column: each column's sum takes the row
        entries in their pattern order, as one sum per column would. */
@@ -1068,8 +1173,84 @@ typedef struct {
 }
 typedef struct {
     const RmcBlock* block; const double* jac; const double* rscale; const double* vscale; const double* magnitudes; const size_t* derived; const double* inv;
-    bool prefer_torn; bool used_torn; RmcElimination elimination; bool factored; RmcDenseFactor dense;
+    bool prefer_torn; bool used_torn; RmcElimination elimination; bool factored; RmcDenseFactor dense; bool keep;
 } RmcAffineSystem;
+{%- if me.keep.doubles > 0 %}
+/* sparse_newton.rs: SparseNewtonCache, the factorization an affine block
+   keeps from one call to the next. The linked cache refactors only when the
+   Jacobian or a scale changes (solve_dense_scaled compares their bits,
+   TornSystem::update the revision AffineLinearization issues for them), so
+   the retained factors are bound to the bits of the block Jacobian and both
+   scale vectors they were formed from, and a call whose bits differ forms
+   them again. The factors are a function of those bits alone, so a reuse is
+   the formation it replaces, bit for bit.
+   Retained doubles: the key (Jacobian values, row scales, variable scales),
+   then the dense LU, or the elimination's values, recovery and reduced
+   matrices. Retained sizes: four flags (key bound, dense ready, elimination
+   state 0 unprepared, 1 ready, 2 rejected; its tear count), then the dense
+   pivots and nonzero lists, or the elimination's pivots, promoted steps,
+   residual rows and tears. */
+#define RMC_KEEP_KEY 0
+#define RMC_KEEP_DENSE 1
+#define RMC_KEEP_ELIM 2
+#define RMC_KEEP_ELIM_K 3
+#define RMC_KEEP_FLAGS 4
+{{ q }} inline double* rmc_keep_doubles(ModelInstance* m, const RmcBlock* b) { return m->rmc_keep_d + RMC_BS(b, keep_d); }
+{{ q }} inline size_t* rmc_keep_sizes(ModelInstance* m, const RmcBlock* b) { return m->rmc_keep_s + RMC_BS(b, keep_s); }
+/* The retained factors, after the key and after the flags. */
+{{ q }} inline double* rmc_keep_factor(ModelInstance* m, const RmcBlock* b) { return rmc_keep_doubles(m, b) + RMC_BS(b, nnz) + 2 * RMC_BS(b, n); }
+{{ q }} inline size_t* rmc_keep_factor_sizes(ModelInstance* m, const RmcBlock* b) { return rmc_keep_sizes(m, b) + RMC_KEEP_FLAGS; }
+{{ q }} void rmc_keep_bind(ModelInstance* m, const RmcBlock* b, const double* jac, const double* rscale, const double* vscale) {
+    const size_t n = RMC_BS(b, n), nnz = RMC_BS(b, nnz);
+    double* key = rmc_keep_doubles(m, b); size_t* flags = rmc_keep_sizes(m, b);
+    if (flags[RMC_KEEP_KEY] && memcmp(key, jac, nnz * sizeof(double)) == 0 && memcmp(key + nnz, rscale, n * sizeof(double)) == 0
+        && memcmp(key + nnz + n, vscale, n * sizeof(double)) == 0) return;
+    memcpy(key, jac, nnz * sizeof(double)); memcpy(key + nnz, rscale, n * sizeof(double)); memcpy(key + nnz + n, vscale, n * sizeof(double));
+    flags[RMC_KEEP_KEY] = 1; flags[RMC_KEEP_DENSE] = 0; flags[RMC_KEEP_ELIM] = 0; flags[RMC_KEEP_ELIM_K] = 0;
+}
+/* The retained elimination's buffers in `e`; its state when prepared, else -1. */
+{{ q }} int rmc_keep_elimination(ModelInstance* m, const RmcBlock* b, RmcElimination* e) {
+    const size_t n = RMC_BS(b, n), nnz = RMC_BS(b, nnz), cap = RMC_BS(b, elim_capacity), nelim = RMC_BS(b, nelim);
+    double* d = rmc_keep_factor(m, b); size_t* z = rmc_keep_sizes(m, b);
+    e->values = d; e->recovery = d + nnz + 1; e->reduced = d + nnz + 1 + n * cap + 1;
+    e->ipiv = rmc_keep_factor_sizes(m, b); e->promoted = e->ipiv + cap + 1; e->residual = e->promoted + nelim + 1; e->tear = e->residual + cap + 1;
+    if (z[RMC_KEEP_ELIM] == 0) return -1;
+    e->k = z[RMC_KEEP_ELIM_K];
+    return z[RMC_KEEP_ELIM] == 1 ? 1 : 0;
+}
+{{ q }} void rmc_keep_elimination_done(ModelInstance* m, const RmcBlock* b, const RmcElimination* e) {
+    size_t* z = rmc_keep_sizes(m, b);
+    z[RMC_KEEP_ELIM] = e->state == 1 ? 1 : 2; z[RMC_KEEP_ELIM_K] = e->k;
+}
+/* The retained dense factor in `f` when it is ready; whether it is. */
+{{ q }} bool rmc_keep_dense(ModelInstance* m, const RmcBlock* b, const double* rscale, const double* vscale, RmcDenseFactor* f) {
+    if (!rmc_keep_sizes(m, b)[RMC_KEEP_DENSE]) return false;
+    f->n = RMC_BS(b, n); f->rscale = rscale; f->vscale = vscale; f->scaled = NULL;
+    f->lu = rmc_keep_factor(m, b); f->ipiv = rmc_keep_factor_sizes(m, b); f->lists = f->ipiv + f->n;
+    return true;
+}
+/* Factor the expanded block Jacobian `dense` into the retained storage, list
+   the nonzero entries of its factors, and mark it ready; -1 error. */
+{{ q }} int rmc_keep_dense_factor(ModelInstance* m, const RmcBlock* b, const double* dense, const double* rscale, const double* vscale, RmcDenseFactor* f) {
+    const size_t n = RMC_BS(b, n); double* lu = rmc_keep_factor(m, b); size_t* ipiv = rmc_keep_factor_sizes(m, b);
+    if (rmc_dense_factor_in(m, dense, n, rscale, vscale, lu, ipiv, f) != 0) return -1;
+    rmc_lu_lists(lu, n, ipiv + n);
+    f->lists = ipiv + n; rmc_keep_sizes(m, b)[RMC_KEEP_DENSE] = 1;
+    return 0;
+}
+/* The scaled matrix rmc_dense_factor forms from the expanded block Jacobian,
+   formed again over the pattern for a retained factor's SVD fallback: an
+   entry outside the pattern is zero times a valid scale over a valid scale,
+   a positive zero as the expanded matrix gives. NULL when exhausted. */
+{{ q }} double* rmc_affine_scaled(ModelInstance* m, const RmcAffineSystem* s) {
+    const RmcBlock* b = s->block; const size_t n = RMC_BS(b, n); const size_t* const row_ptr = RMC_BP(b, row_ptr); const size_t* const col_idx = RMC_BP(b, col_idx);
+    double* scaled = rmc_dalloc(m, n * n);
+    if (!scaled) return NULL;
+    for (size_t row = 0; row < n; ++row)
+        for (size_t p = row_ptr[row]; p < row_ptr[row + 1]; ++p) scaled[row * n + col_idx[p]] = s->jac[p] * rmc_valid_scale(s->vscale[col_idx[p]]) / rmc_valid_scale(s->rscale[row]);
+    return scaled;
+}
+{%- endif %}
 /* affine.rs: AffineBlockSystem::solve with the block's cached factors; the
    caches live in the arena frame of the enclosing affine projection. A
    nonzero guard promotes its solving step inside the preparation rather than
@@ -1078,10 +1259,16 @@ typedef struct {
     const RmcBlock* b = s->block;
     const bool b_elimination = RMC_BS(b, elimination); const size_t b_n = RMC_BS(b, n); const size_t* const b_row_ptr_pool = RMC_BP(b, row_ptr); const size_t* const b_col_idx_pool = RMC_BP(b, col_idx);
     if (s->prefer_torn && b_elimination) {
+{%- if me.keep.doubles > 0 %}
+        if (s->elimination.state == -1 && s->keep) s->elimination.state = rmc_keep_elimination(m, b, &s->elimination);
+{%- endif %}
         if (s->elimination.state == -1) {
             int prepared = rmc_eliminate_prepare(m, b, s->jac, s->rscale, s->vscale, &s->elimination);
             if (prepared < 0) return -1;
             s->elimination.state = prepared;
+{%- if me.keep.doubles > 0 %}
+            if (s->keep) rmc_keep_elimination_done(m, b, &s->elimination);
+{%- endif %}
         }
         if (s->elimination.state == 1) {
             int solved = rmc_eliminate_solve(m, b, &s->elimination, residual, s->rscale, s->vscale, delta);
@@ -1091,15 +1278,32 @@ typedef struct {
         }
         else rmc_fb_note(m, b->id);
     }
+{%- if me.keep.doubles > 0 %}
+    /* A block that retains its elimination factors its dense fallback for
+       this call only. */
+    const bool keep_dense = s->keep && !b_elimination;
+    if (!s->factored && keep_dense && rmc_keep_dense(m, b, s->rscale, s->vscale, &s->dense)) s->factored = true;
+{%- endif %}
     if (!s->factored) {
         double* dense = rmc_dalloc(m, b_n * b_n);
         if (!dense) return rmc_exhausted(m);
         for (size_t row = 0; row < b_n; ++row)
             for (size_t p = b_row_ptr_pool[row]; p < b_row_ptr_pool[row + 1]; ++p) dense[row * b_n + b_col_idx_pool[p]] = s->jac[p];
+{%- if me.keep.doubles > 0 %}
+        if (keep_dense) { if (rmc_keep_dense_factor(m, b, dense, s->rscale, s->vscale, &s->dense) != 0) return -1; }
+        else
+{%- endif %}
         if (rmc_dense_factor(m, dense, b_n, s->rscale, s->vscale, &s->dense) != 0) return -1;
         s->factored = true;
     }
     int solved = rmc_dense_solve(m, &s->dense, residual, delta);
+{%- if me.keep.doubles > 0 %}
+    if (solved == 2) {
+        s->dense.scaled = rmc_affine_scaled(m, s);
+        if (!s->dense.scaled) return rmc_exhausted(m);
+        solved = rmc_dense_solve(m, &s->dense, residual, delta);
+    }
+{%- endif %}
     if (solved < 0) return -1;
     return solved == 1 && rmc_all_finite(delta, b_n) ? 1 : 0;
 }
@@ -1189,7 +1393,11 @@ typedef struct {
     if (result == 0) result = rmc_block_scales(m, b, jac, rscale, vscale);
     if (result == 0) {
         rmc_row_magnitudes(b, jac, vscale, magnitudes, derived);
-        RmcAffineSystem system = { b, jac, rscale, vscale, magnitudes, derived, inv, true, false, { -1, 0, NULL, NULL, NULL, NULL, NULL, NULL, NULL }, false, { 0, NULL, NULL, NULL, NULL, NULL } };
+        bool keep = RMC_BS(b, keep){% if me.keep.doubles > 0 and not device %} && m->rmc_keep_d != NULL{% endif %};
+{%- if me.keep.doubles > 0 %}
+        if (keep) rmc_keep_bind(m, b, jac, rscale, vscale);
+{%- endif %}
+        RmcAffineSystem system = { b, jac, rscale, vscale, magnitudes, derived, inv, true, false, { -1, 0, NULL, NULL, NULL, NULL, NULL, NULL, NULL }, false, { 0, NULL, NULL, NULL, NULL, NULL, NULL }, keep };
         result = rmc_affine_project(m, &system);
         if (result == 0 && system.used_torn) {
             system.prefer_torn = false;
@@ -2823,7 +3031,7 @@ typedef enum { {{ prefix }}OK, {{ prefix }}Warning, {{ prefix }}Discard, {{ pref
 #define RMC_LANE_STATUS 1
 #endif
 {{- lane_status_type(me) }}
-typedef struct { bool parameters_dirty; bool rmc_nonfinite; bool assertion_failed; double time; double y[Y_LEN]; double p[P_LEN];{{ workspace_fields(me) }} } ModelInstance;
+typedef struct { bool parameters_dirty; bool rmc_nonfinite; bool assertion_failed; double time; double y[Y_LEN]; double p[P_LEN];{{ workspace_fields(me, device=true) }} } ModelInstance;
 #define RMC_INFO(m, category, message) ((void)(m), (void)(category), (void)(message))
 /* The unit is a library: a lane kernel calls only the entries it needs, so
    every device function carries the unused attribute (RMC_UNUSED, which the
@@ -2883,13 +3091,15 @@ typedef struct { bool parameters_dirty; bool rmc_nonfinite; bool assertion_faile
    parameters and `parameters_dirty`, which the caller sets: no fault or
    failed assertion, and the projection workspace zeroed as the host
    component's allocation zeroes it (device memory comes unzeroed), then the
-   reset the component runs. The arena, the workspace's first two fields, is
-   left as it is: `rmc_dalloc` and `rmc_salloc` zero what they hand out and a
-   raw buffer is written before it is read. */
+   reset the component runs. The arena and the retained factors, the
+   workspace's first fields, are left as they are: `rmc_dalloc` and
+   `rmc_salloc` zero what they hand out, a raw buffer is written before it
+   is read, and the reset clears each retained key flag, so a factor is
+   formed again before it is read. */
 {{ device_qualifier(true) }} void rmc_lane_reset(ModelInstance* m) {
     m->rmc_nonfinite = false; m->assertion_failed = false;
     unsigned char* workspace = (unsigned char*){{ "&m->rmc_dtop" if me.kernel else "(m->p + P_LEN)" }};
-    memset(workspace, 0, (size_t)((unsigned char*)(m + 1) - workspace));{{ workspace_reset(me) }}
+    memset(workspace, 0, (size_t)((unsigned char*)(m + 1) - workspace));{{ workspace_reset(me, device=true) }}
 }
 {{ typed_functions(typed_pure_calls, typed_directional_calls if me.blocks|length > 0 or me.table.jvp.programs|length > 0 else [], device=true) }}
 {{- isolators_unit(me, device=true) }}

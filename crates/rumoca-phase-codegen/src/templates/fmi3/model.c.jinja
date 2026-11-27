@@ -1,7 +1,7 @@
 {%- set model_identifier = "Rumoca_" ~ (artifact.identities.fmu | replace("-", "_")) %}
 {%- from "fmi-c-kernel.jinja" import scalar_op, assertions, assertion_lifecycle, value_array, initial_values, rmc_kind, text_fields, text_table, cs_integrator, cs_integrator_function, integer_publication %}
 {%- set cs_integrate = cs_integrator(fmi) %}
-{%- from "fmi-me-projection.jinja" import refresh_values, workspace_fields, workspace_reset %}
+{%- from "fmi-me-projection.jinja" import refresh_values, workspace_fields, workspace_reset, keep_storage %}
 {%- from "fmi-scalar-events.jinja" import scalar_events, event_reset, cs_events, initial_mode %}
 #include "model.h"
 /* FMI 3 has no allocator callbacks; the same request/text owner uses libc. */
@@ -14,6 +14,7 @@ static inline void rmc_instance_free(const ModelInstance* m, void* data) {
     (void)m;
     free(data);
 }
+{{- keep_storage(me_refresh) }}
 {{ text_table(fmi_text_starts) }}
 
 static void initialize_values(ModelInstance* m) {
@@ -251,16 +252,16 @@ FMI_EXPORT const char* fmi3GetVersion(void) { return "3.0"; }
 FMI_EXPORT fmi3Instance fmi3InstantiateModelExchange(fmi3String name, fmi3String token, fmi3String resources, fmi3Boolean visible, fmi3Boolean loggingOn, fmi3InstanceEnvironment environment, fmi3LogMessageCallback logger) {
     (void)name; (void)resources; (void)visible; (void)loggingOn; (void)environment; (void)logger;
     if (!token || strcmp(token, "{{ artifact.identities.fmu }}") != 0) return NULL;
-    ModelInstance* m = calloc(1, sizeof(ModelInstance)); if (!m) return NULL; initialize_values(m); m->environment=environment; m->logger=logger;{% if me_refresh.switching %} m->rmc_chart_log=loggingOn;{% endif %} m->type=INTERFACE_ME; m->state = MODEL_INSTANTIATED; return m;
+    ModelInstance* m = calloc(1, sizeof(ModelInstance)); if (!m) return NULL; if (!rmc_keep_allocate(m)) { free(m); return NULL; } initialize_values(m); m->environment=environment; m->logger=logger;{% if me_refresh.switching %} m->rmc_chart_log=loggingOn;{% endif %} m->type=INTERFACE_ME; m->state = MODEL_INSTANTIATED; return m;
 }
 FMI_EXPORT fmi3Instance fmi3InstantiateCoSimulation(fmi3String name, fmi3String token, fmi3String resources, fmi3Boolean visible, fmi3Boolean loggingOn, fmi3Boolean eventModeUsed, fmi3Boolean earlyReturnAllowed, const fmi3ValueReference requiredIntermediateVariables[], size_t nRequiredIntermediateVariables, fmi3InstanceEnvironment environment, fmi3LogMessageCallback logger, fmi3IntermediateUpdateCallback intermediateUpdate) {
     (void)name;(void)resources;(void)visible;(void)loggingOn;(void)earlyReturnAllowed;(void)environment;(void)logger;(void)intermediateUpdate;
     (void)requiredIntermediateVariables;
     if(eventModeUsed || nRequiredIntermediateVariables!=0 || !token || strcmp(token,"{{ artifact.identities.fmu }}")!=0)return NULL;
-    ModelInstance* m=calloc(1,sizeof(ModelInstance));if(!m)return NULL;initialize_values(m);m->environment=environment;m->logger=logger;{% if me_refresh.switching %}m->rmc_chart_log=loggingOn;{% endif %}m->type=INTERFACE_CS;m->state=MODEL_INSTANTIATED;return m;
+    ModelInstance* m=calloc(1,sizeof(ModelInstance));if(!m)return NULL;if(!rmc_keep_allocate(m)){free(m);return NULL;}initialize_values(m);m->environment=environment;m->logger=logger;{% if me_refresh.switching %}m->rmc_chart_log=loggingOn;{% endif %}m->type=INTERFACE_CS;m->state=MODEL_INSTANTIATED;return m;
 }
 FMI_EXPORT fmi3Instance fmi3InstantiateScheduledExecution(fmi3String name, fmi3String token, fmi3String resources, fmi3Boolean visible, fmi3Boolean loggingOn, fmi3InstanceEnvironment environment, fmi3LogMessageCallback logger, fmi3ClockUpdateCallback clockUpdate, fmi3LockPreemptionCallback lockPreemption, fmi3UnlockPreemptionCallback unlockPreemption) { (void)name;(void)token;(void)resources;(void)visible;(void)loggingOn;(void)environment;(void)logger;(void)clockUpdate;(void)lockPreemption;(void)unlockPreemption;return NULL; }
-FMI_EXPORT void fmi3FreeInstance(fmi3Instance instance) { if (instance) rmc_release_text(instance); free(instance); }
+FMI_EXPORT void fmi3FreeInstance(fmi3Instance instance) { if (instance) { rmc_release_text(instance); rmc_keep_release(instance); } free(instance); }
 FMI_EXPORT fmi3Status fmi3SetDebugLogging(fmi3Instance i, fmi3Boolean loggingOn, size_t n, const fmi3String categories[]) { {% if me_refresh.switching %}if (i && (categories || n == 0)) ((ModelInstance*)i)->rmc_chart_log = loggingOn;{% else %}(void)loggingOn;{% endif %} return i && (categories || n == 0) ? fmi3OK : fmi3Error; }
 FMI_EXPORT fmi3Status fmi3EnterInitializationMode(fmi3Instance i, fmi3Boolean td, fmi3Float64 tol, fmi3Float64 start, fmi3Boolean sd, fmi3Float64 stop) { ModelInstance* m=i; if (!m || m->state != MODEL_INSTANTIATED || !isfinite(start) || (td && (!isfinite(tol) || tol < 0.0)) || (sd && (!isfinite(stop) || stop < start))) return fmi3Error; m->time=start; m->tolerance=td ? tol : 0.0; {% if fmi.scalar_events %}m->rmc_scan = sd ? rmc_scan_resolution(stop - start) : 0.0; {% endif %}{{ initial_mode(solve, true) }}m->state=MODEL_INITIALIZATION; return fmi3OK; }
 FMI_EXPORT fmi3Status fmi3ExitInitializationMode(fmi3Instance i) { ModelInstance* m=i; if (!m || m->state != MODEL_INITIALIZATION || {% if me_refresh.init.rows > 0 %}rmc_initialize(m, m->tolerance) != fmi3OK || {% else %}rmc_apply_updates(m, true) < 0 || {% endif %}{% if fmi.scalar_events %}rmc_events_initialize(m){% else %}initialize_assertions(m){% endif %} != fmi3OK || evaluate_derivatives(m) != fmi3OK{% if fmi.scalar_events %} || (m->type != INTERFACE_ME && rmc_cs_start(m) != fmi3OK){% endif %}) return fmi3Error;{% if not fmi.scalar_events %} {{ initial_mode(solve, false) }}{% endif %} m->state=m->type==INTERFACE_ME?MODEL_EVENT:MODEL_STEP; return fmi3OK; }
@@ -299,9 +300,11 @@ FMI_EXPORT fmi3Status fmi3GetNumberOfVariableDependencies(fmi3Instance i,fmi3Val
 FMI_EXPORT fmi3Status fmi3GetVariableDependencies(fmi3Instance i,fmi3ValueReference dependent,size_t dependentElements[],fmi3ValueReference independents[],size_t independentElements[],fmi3DependencyKind kinds[],size_t count){(void)i;(void)dependent;(void)dependentElements;(void)independents;(void)independentElements;(void)kinds;(void)count;return fmi3Error;}
 /* An FMU state is a copy of the instance: values, parameters, texts, the
    refresh policy, and the active reduced chart with any latched basis change.
-   The lifecycle state, interface, and logging environment stay the
-   instance's own, and so do a lane build's reports (SPEC_0044 ME-PROJ-003),
-   which, like what the component logged, restoring a state does not undo. */
+   The lifecycle state, interface, logging environment and retained factors
+   stay the instance's own: a state holds the factors' address only, and they
+   are a function of the bits they are bound to (ME-PROJ-001). So do a lane
+   build's reports (SPEC_0044 ME-PROJ-003), which, like what the component
+   logged, restoring a state does not undo. */
 FMI_EXPORT fmi3Status fmi3GetFMUState(fmi3Instance i, fmi3FMUState* state) {
     ModelInstance* m = i; if (!m || !state) return fmi3Error;
     ModelInstance* saved = *state ? (ModelInstance*)*state : malloc(sizeof(ModelInstance));
@@ -313,7 +316,7 @@ FMI_EXPORT fmi3Status fmi3GetFMUState(fmi3Instance i, fmi3FMUState* state) {
 }
 FMI_EXPORT fmi3Status fmi3SetFMUState(fmi3Instance i, fmi3FMUState state) {
     ModelInstance* m = i; const ModelInstance* saved = state; if (!m || !saved) return fmi3Error;
-    enum ModelState mode = m->state; enum InterfaceType type = m->type; fmi3InstanceEnvironment environment = m->environment; fmi3LogMessageCallback logger = m->logger;
+    enum ModelState mode = m->state; enum InterfaceType type = m->type; fmi3InstanceEnvironment environment = m->environment; fmi3LogMessageCallback logger = m->logger;{% if me_refresh.keep.doubles > 0 %} double* keep_d = m->rmc_keep_d; size_t* keep_s = m->rmc_keep_s;{% endif %}
 {%- if me_refresh.kernel or me_refresh.assign.plan.programs|length > 0 %}
 #if defined(RMC_LANE_STATUS)
     RmcLaneStatus reports = m->rmc_lane_status;
@@ -321,7 +324,7 @@ FMI_EXPORT fmi3Status fmi3SetFMUState(fmi3Instance i, fmi3FMUState state) {
 {%- endif %}
     rmc_release_text(m);
     memcpy(m, saved, sizeof(ModelInstance));
-    m->state = mode; m->type = type; m->environment = environment; m->logger = logger;
+    m->state = mode; m->type = type; m->environment = environment; m->logger = logger;{% if me_refresh.keep.doubles > 0 %} m->rmc_keep_d = keep_d; m->rmc_keep_s = keep_s;{% endif %}
 {%- if me_refresh.kernel or me_refresh.assign.plan.programs|length > 0 %}
 #if defined(RMC_LANE_STATUS)
     m->rmc_lane_status = reports;

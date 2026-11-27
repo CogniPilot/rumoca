@@ -2,7 +2,9 @@
 
 use rumoca_eval_solve::TargetIsolationProgram;
 
-use super::block::isolation_kind;
+use super::block::{
+    KEEP_MAX_BYTES, grant_retention, isolation_kind, retained_bytes, retained_storage,
+};
 
 /// An isolation the evaluator answers but no scalar program reproduces
 /// refuses its block before any byte, and never interns an isolator.
@@ -208,4 +210,55 @@ mod isolation_slices {
         assert!(code <= 2 * program.len(), "{code} for {}", program.len());
         assert!(slices.iter().flatten().all(|slice| slice.len() == 21));
     }
+}
+
+/// A block alone fits the retention budget as `KEEP_MAX_BYTES` states: a
+/// dense LU up to 208 unknowns with a full Jacobian and 254 with a
+/// tridiagonal one, and an elimination whatever the size of its block.
+#[test]
+fn a_dense_affine_block_over_the_retention_budget_keeps_nothing() {
+    let fits = |n: usize, nnz: usize| {
+        let storage = retained_storage(n, nnz, None).expect("no overflow");
+        retained_bytes(storage).expect("no overflow") <= KEEP_MAX_BYTES
+    };
+    assert!(fits(208, 208 * 208) && !fits(209, 209 * 209));
+    assert!(fits(254, 3 * 254 - 2) && !fits(255, 3 * 255 - 2));
+    let elimination = retained_storage(300, 3 * 300 - 2, Some((4, 296))).expect("no overflow");
+    assert!(retained_bytes(elimination).expect("no overflow") <= KEEP_MAX_BYTES);
+}
+
+/// A size that overflows `usize`, as a large block can on a 32-bit host,
+/// retains nothing rather than a wrapped, too small storage.
+#[test]
+fn an_overflowing_retained_size_keeps_nothing() {
+    let huge = usize::MAX / 2;
+    assert_eq!(retained_storage(huge, 3, None), None);
+    assert_eq!(
+        retained_storage(4, huge, None).and_then(retained_bytes),
+        None
+    );
+    assert_eq!(retained_storage(4, 10, Some((huge, 2))), None);
+    assert_eq!(retained_bytes((usize::MAX / 8, 1)), None);
+    assert_eq!(
+        grant_retention(&[Some((usize::MAX, 0))]),
+        (vec![None], (0, 0))
+    );
+}
+
+/// The instance budget is shared: blocks are granted in order while their
+/// storage still fits with the ones before them, a block that does not fit
+/// keeps nothing, and a later smaller one still fits after the granted ones.
+#[test]
+fn retaining_blocks_share_one_instance_budget() {
+    let words = |bytes: usize| (bytes / 8 - 1, 1);
+    let (offsets, total) = grant_retention(&[
+        Some(words(600 << 10)),
+        None,
+        Some(words(600 << 10)),
+        Some(words(300 << 10)),
+    ]);
+    let first = words(600 << 10);
+    assert_eq!(offsets, vec![Some((0, 0)), None, None, Some(first)]);
+    assert_eq!(total, (first.0 + words(300 << 10).0, 2));
+    assert!(retained_bytes(total).expect("no overflow") <= KEEP_MAX_BYTES);
 }

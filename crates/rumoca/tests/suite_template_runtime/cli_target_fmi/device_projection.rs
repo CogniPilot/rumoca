@@ -211,6 +211,76 @@ fn a_lowered_model_the_c_kernel_refuses_renders_no_device_unit() {
     );
 }
 
+/// A lane reset leaves the retained factors of a lane as they are and clears
+/// only their key flags: from a lane of garbage, the reset writes none of the
+/// retained storage but each block's key flag, and the lanes still refresh
+/// as the FMI component (`a_device_build_refreshes_every_lane_as_the_fmi_component`).
+#[test]
+fn a_lane_reset_leaves_the_retained_factors_alone() {
+    let runs = Command::new("c++").arg("--version").output().is_ok();
+    if !crate::template_runtime_policy::prerequisites_are_available(
+        "host build of the device lane reset",
+        &[("c++", runs)],
+    ) {
+        return;
+    }
+    let (compiled, _) = models()
+        .into_iter()
+        .find(|(_, model)| *model == "DeviceAffineChain")
+        .expect("the affine chain test model");
+    let driver = r#"
+int main(void) {
+    ModelInstance* m = (ModelInstance*)malloc(sizeof *m);
+    if (!m) return 2;
+    memset((void*)m, 0xA5, sizeof *m);
+    rmc_lane_reset(m);
+    size_t written = 0, keys = 0;
+    const unsigned char* bytes = (const unsigned char*)m->rmc_keep_d;
+    for (size_t i = 0; i < sizeof m->rmc_keep_d; ++i) written += bytes[i] != 0xA5;
+    for (size_t b = 0; b < sizeof rmc_block_desc / sizeof rmc_block_desc[0]; ++b) {
+        if (!rmc_block_desc[b].keep) continue;
+        keys += 1;
+        if (m->rmc_keep_s[rmc_block_desc[b].keep_s] != 0) written += 1000000;
+        m->rmc_keep_s[rmc_block_desc[b].keep_s] = (size_t)0xA5A5A5A5A5A5A5A5ull;
+    }
+    bytes = (const unsigned char*)m->rmc_keep_s;
+    for (size_t i = 0; i < sizeof m->rmc_keep_s; ++i) written += bytes[i] != 0xA5;
+    printf("%zu %zu\n", keys, written);
+    free(m);
+    return 0;
+}
+"#;
+    let work = tempdir().expect("lane reset work directory");
+    let source = work.path().join("lane_reset.cpp");
+    let binary = work.path().join("lane_reset");
+    fs::write(
+        &source,
+        format!(
+            "#include <stdio.h>\n#include <stdlib.h>\n#include <string.h>\n{}\n{driver}",
+            device_unit(&compiled)
+        ),
+    )
+    .expect("write the lane reset driver");
+    checked_output(
+        Command::new("c++")
+            .args([
+                "-std=c++17",
+                "-O2",
+                "-Wall",
+                "-Wextra",
+                "-Werror",
+                "-ffp-contract=off",
+            ])
+            .args(["-D__device__=", "-D__host__="])
+            .arg(&source)
+            .arg("-o")
+            .arg(&binary),
+        "compile the lane reset driver",
+    );
+    let output = checked_output(&mut Command::new(&binary), "run the lane reset driver");
+    assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "1 0");
+}
+
 /// A device unit defines no strong external symbol, so the units of several
 /// models link into one host program.
 #[test]

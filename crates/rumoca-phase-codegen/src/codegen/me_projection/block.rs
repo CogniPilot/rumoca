@@ -42,6 +42,16 @@ const NO_TARGET: usize = 0;
 /// chain, or one step answered by its row's grouped isolator.
 const RUN_CHAIN: usize = 0;
 const RUN_ISOLATOR: usize = 1;
+/// The flags that lead a block's retained sizes (`RMC_KEEP_FLAGS`).
+const KEEP_FLAGS: usize = 4;
+/// The most storage the coupled affine blocks of one instance retain
+/// together, in bytes at 8 per double or size index (`grant_retention`). A
+/// block of `n` unknowns keeps about `2 n^2` words with a sparse Jacobian and
+/// `3 n^2` with a full one, so a dense LU alone fits up to 254 unknowns of
+/// a tridiagonal block and 208 of a full one.
+pub(super) const KEEP_MAX_BYTES: usize = 1 << 20;
+/// A retained storage, or its offsets, as (doubles, size indices).
+pub(super) type Retained = (usize, usize);
 
 /// One block descriptor: counts, flags, and pool offsets, in the field order
 /// of the C `RmcBlockDesc`.
@@ -113,6 +123,12 @@ pub(super) struct BlockRecord {
     /// Reduced residual rows of the torn tangent plan: `(lane function, lane
     /// outputs, output offset, group)` per tear row.
     tangent_residuals: usize,
+    /// Whether an affine block keeps its factorization from one call to the
+    /// next, and the offsets of its retained doubles and sizes in the
+    /// retained storage of the instance (`BlockRecord::retained`).
+    keep: bool,
+    keep_d: usize,
+    keep_s: usize,
     /// The block's ES016 fold message, read from the problem of the chart
     /// the block belongs to; the C table holds its offset in a pool instead.
     #[serde(skip)]
@@ -1006,6 +1022,26 @@ fn program_span(
 }
 
 impl BlockRecord {
+    /// The instance storage a coupled affine block keeps its factorization
+    /// in from one call to the next (the linked `SparseNewtonCache`), as
+    /// (doubles, size indices): the bits of the Jacobian and both scale
+    /// vectors the factors were formed from, then the elimination at its
+    /// promotion capacity when the block has one, else the dense LU with its
+    /// pivots and the nonzero lists of its triangular factors. `None` for
+    /// any other block, and for one whose size overflows `usize`.
+    pub(super) fn retained(&self) -> Option<Retained> {
+        if !self.affine || self.n < 2 {
+            return None;
+        }
+        let elimination = self.elimination.then_some((self.elim_capacity, self.nelim));
+        retained_storage(self.n, self.nnz, elimination)
+    }
+
+    /// Place the retained storage at these offsets.
+    pub(super) fn keep_at(&mut self, (doubles, sizes): Retained) {
+        (self.keep, self.keep_d, self.keep_s) = (true, doubles, sizes);
+    }
+
     /// The block's ES016 fold message, if it has one.
     pub(super) fn fold(&self) -> Option<&[u8]> {
         self.fold.as_deref()
@@ -1043,4 +1079,71 @@ impl BlockRecord {
         let sizes = 9 * n + 6 * (k + 1) + 16;
         (doubles, sizes)
     }
+}
+
+/// The storage `BlockRecord::retained` lays out for an affine block of `n`
+/// unknowns and `nnz` Jacobian entries, with its elimination's promotion
+/// capacity and step count when it has one; `None` when a count overflows
+/// `usize`, as it can on a 32-bit host.
+pub(super) fn retained_storage(
+    n: usize,
+    nnz: usize,
+    elimination: Option<(usize, usize)>,
+) -> Option<Retained> {
+    let sum = |terms: &[Option<usize>]| {
+        terms
+            .iter()
+            .try_fold(0usize, |total, term| total.checked_add((*term)?))
+    };
+    let key = nnz.checked_add(n.checked_mul(2)?);
+    match elimination {
+        Some((cap, steps)) => Some((
+            sum(&[
+                key,
+                nnz.checked_add(1),
+                n.checked_mul(cap)?.checked_add(1),
+                cap.checked_mul(cap)?.checked_add(1),
+            ])?,
+            sum(&[
+                Some(KEEP_FLAGS),
+                cap.checked_add(1)?.checked_mul(3),
+                steps.checked_add(1),
+            ])?,
+        )),
+        None => Some((
+            sum(&[key, n.checked_mul(n)])?,
+            sum(&[
+                Some(KEEP_FLAGS),
+                Some(n),
+                n.checked_add(1)?.checked_mul(2),
+                n.checked_mul(n.checked_sub(1)?),
+            ])?,
+        )),
+    }
+}
+
+/// The bytes of a retained storage, at 8 per double or size index; `None`
+/// when they overflow `usize`.
+pub(super) fn retained_bytes((doubles, sizes): Retained) -> Option<usize> {
+    doubles.checked_add(sizes)?.checked_mul(8)
+}
+
+/// The offsets (doubles, size indices) each block's retained storage takes
+/// in the instance, in block order: a block whose storage still fits in
+/// `KEEP_MAX_BYTES` with those granted before it is placed after them, and
+/// any other keeps nothing. Returns the offsets and the total.
+pub(super) fn grant_retention(storage: &[Option<Retained>]) -> (Vec<Option<Retained>>, Retained) {
+    let mut end: Retained = (0, 0);
+    let offsets = storage
+        .iter()
+        .map(|retained| {
+            let (doubles, sizes) = (*retained)?;
+            let next = (end.0.checked_add(doubles)?, end.1.checked_add(sizes)?);
+            if retained_bytes(next)? > KEEP_MAX_BYTES {
+                return None;
+            }
+            Some(std::mem::replace(&mut end, next))
+        })
+        .collect();
+    (offsets, end)
 }
