@@ -1216,7 +1216,7 @@ checksum = "6184e33543162437515c2e2b48714794e37845ec9851711914eec9d308f6ebe8"
 [[package]]
 name = "diffsol"
 version = "0.13.2"
-source = "git+https://github.com/CogniPilot/diffsol?rev=80ffcb582680128916e8e2deedb3ac8eacfe5e61#80ffcb582680128916e8e2deedb3ac8eacfe5e61"
+source = "git+https://github.com/CogniPilot/diffsol?rev=d08fec4f592480fcc3d49e4026267242fd83ceca#d08fec4f592480fcc3d49e4026267242fd83ceca"
 dependencies = [
  "faer",
  "faer-traits",

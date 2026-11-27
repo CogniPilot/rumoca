@@ -316,4 +316,4 @@ opt-level = 3
 [patch.crates-io]
 # Keep the numerical corrections in the maintained 0.13.2 fork.
 # Provenance: docs/dev-guide/src/runtime/diffsol-maintenance.md.
-diffsol = { git = "https://github.com/CogniPilot/diffsol", rev = "80ffcb582680128916e8e2deedb3ac8eacfe5e61" }
+diffsol = { git = "https://github.com/CogniPilot/diffsol", rev = "d08fec4f592480fcc3d49e4026267242fd83ceca" }
