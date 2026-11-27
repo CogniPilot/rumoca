@@ -1,5 +1,6 @@
 //! Unit tests for trace comparison and reference-scale normalization.
 
+mod excursion_scale;
 mod json_loading;
 mod json_roundtrip;
 mod phasor;
@@ -19,6 +20,7 @@ impl ChannelRule<'_> {
             use_step_hold,
             array_group_floor: None,
             phasor: None,
+            omc_tight: None,
         }
     }
 }
@@ -101,7 +103,7 @@ fn channel_normalized_l1_matches_expected_value() {
 
     // integral_abs_error = 0.075, duration = 1.0
     // reference range uses P95-P05 over sampled reference values.
-    let scale = reference_scale(&[0.0, 1.1, 1.1, 2.1], false, None);
+    let scale = reference_scale(&[0.0, 1.1, 1.1, 2.1], &[0.0, 1.1, 2.1], false, None);
     assert_eq!(scale.normalization_scale, scale.range);
     let expected = 0.075 / scale.range;
     assert!((metric.normalized_l1_error - expected).abs() < 1.0e-12);
@@ -866,6 +868,7 @@ fn agreement_band_thresholds_classify_model_rollups_as_expected() {
         worst_variables: Vec::new(),
         undefined_phasor_channels: Vec::new(),
         unbounded_channels: Vec::new(),
+        excursion_channels: Vec::new(),
     };
     assert_eq!(
         classify_trace_metric(
@@ -898,6 +901,7 @@ fn agreement_band_thresholds_classify_model_rollups_as_expected() {
         worst_variables: Vec::new(),
         undefined_phasor_channels: Vec::new(),
         unbounded_channels: Vec::new(),
+        excursion_channels: Vec::new(),
     };
     assert_eq!(
         classify_trace_metric(
@@ -930,6 +934,7 @@ fn agreement_band_thresholds_classify_model_rollups_as_expected() {
         worst_variables: Vec::new(),
         undefined_phasor_channels: Vec::new(),
         unbounded_channels: Vec::new(),
+        excursion_channels: Vec::new(),
     };
     assert_eq!(
         classify_trace_metric(
@@ -1099,6 +1104,7 @@ fn channel_distribution_metric(
         worst_variables: Vec::new(),
         undefined_phasor_channels: Vec::new(),
         unbounded_channels: Vec::new(),
+        excursion_channels: Vec::new(),
     }
 }
 
@@ -1642,7 +1648,7 @@ proptest! {
     fn discrete_channel_scale_never_below_one(
         levels in prop::collection::vec(-4.0_f64..4.0, 2..30),
     ) {
-        let scale = reference_scale(&levels, true, None);
+        let scale = reference_scale(&levels, &levels, true, None);
         prop_assert!(scale.normalization_scale >= DISCRETE_SCALE_FLOOR);
         prop_assert!(scale.normalization_scale >= scale.range);
     }

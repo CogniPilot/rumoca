@@ -1,8 +1,10 @@
+mod excursion;
 mod normalization;
 mod phasor;
 #[cfg(test)]
 mod tests;
 
+use excursion::{channel_reference_scale, window_mean_abs_error};
 use normalization::{
     ReferenceScale, array_element_base, range_is_degenerate, reference_scale,
     robust_reference_percentiles, sample_range,
@@ -11,6 +13,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::Path;
 
+pub use excursion::{ExcursionChannel, ExcursionClass, ExcursionEvidence};
 pub use phasor::PhasorChannelEvidence;
 
 const GRID_DEDUP_EPS: f64 = 1.0e-12;
@@ -286,6 +289,11 @@ pub struct ChannelDeviationMetric {
     pub initial_bounded_normalized_error: Option<f64>,
     /// How this channel was compared as a function of a phasor, when the
     /// Rumoca trace records one for it (see the `phasor` module).
+    /// The supported excursion an information-free reference has outside its
+    /// robust band, with its class, when it has one (see the `excursion`
+    /// module).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reference_excursion: Option<ExcursionEvidence>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub phasor: Option<PhasorChannelEvidence>,
 }
@@ -386,6 +394,13 @@ pub struct ModelDeviationMetric {
     /// are recorded here and kept out of the channel bands.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub unbounded_channels: Vec<String>,
+    /// Every channel whose information-free reference has a supported
+    /// excursion, with its class (see the `excursion` module). An
+    /// `Unclassified` channel is scored exactly as before; a runner that wants
+    /// it classified simulates the reference again at a tighter tolerance and
+    /// compares with it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub excursion_channels: Vec<ExcursionChannel>,
 }
 
 /// The magnitude at and above which a sample stands for an unbounded value:
@@ -459,17 +474,43 @@ pub fn compare_model_traces(
     rumoca: &SimTrace,
     omc: &SimTrace,
 ) -> Result<ModelDeviationMetric, TraceCompareError> {
+    compare_model_traces_with_tight_reference(model_name, rumoca, omc, None)
+}
+
+/// As [`compare_model_traces`], with `omc_tight`, the same OMC reference
+/// simulated at a tighter tolerance, used to classify the excursions of
+/// information-free channels as events or noise (see the `excursion` module).
+/// Without it, such channels are scored exactly as before and listed in
+/// [`ModelDeviationMetric::excursion_channels`] as `Unclassified`.
+pub fn compare_model_traces_with_tight_reference(
+    model_name: &str,
+    rumoca: &SimTrace,
+    omc: &SimTrace,
+    omc_tight: Option<&SimTrace>,
+) -> Result<ModelDeviationMetric, TraceCompareError> {
     if rumoca.times.is_empty() || omc.times.is_empty() {
         return Err(TraceCompareError::MissingTimes);
     }
     validate_trace("Rumoca", rumoca)?;
     validate_trace("OMC", omc)?;
+    if let Some(tight) = omc_tight {
+        validate_trace("OMC (tight tolerance)", tight)?;
+    }
 
     let CommonChannels {
         mut channels,
         undefined_phasor_channels,
         unbounded_channels,
-    } = compare_common_channels(rumoca, omc)?;
+    } = compare_common_channels(rumoca, omc, omc_tight)?;
+    let excursion_channels = channels
+        .iter()
+        .filter_map(|channel| {
+            Some(ExcursionChannel {
+                name: channel.name.clone(),
+                class: channel.reference_excursion?.class,
+            })
+        })
+        .collect::<Vec<_>>();
     channels.sort_by(|a, b| {
         b.bounded_normalized_l1_error
             .partial_cmp(&a.bounded_normalized_l1_error)
@@ -530,6 +571,7 @@ pub fn compare_model_traces(
         worst_variables,
         undefined_phasor_channels,
         unbounded_channels,
+        excursion_channels,
     })
 }
 
@@ -543,8 +585,9 @@ pub fn compare_model_traces(
 fn compare_common_channels(
     rumoca: &SimTrace,
     omc: &SimTrace,
+    omc_tight: Option<&SimTrace>,
 ) -> Result<CommonChannels, TraceCompareError> {
-    let pair = TracePair::new(rumoca, omc)?;
+    let pair = TracePair::new(rumoca, omc, omc_tight)?;
     let (unbounded_channels, bounded): (Vec<&String>, Vec<&String>) = pair
         .common
         .iter()
@@ -590,11 +633,16 @@ struct CommonChannels {
 
 /// The two traces' channels, keyed by name, with what comparing one of their
 /// common channels needs.
+/// Each channel's samples in one trace, by name.
+type SeriesMap<'a> = HashMap<String, &'a [Option<f64>]>;
+
 struct TracePair<'a> {
     rumoca: &'a SimTrace,
     omc: &'a SimTrace,
-    rumoca_series: HashMap<String, &'a [Option<f64>]>,
-    omc_series: HashMap<String, &'a [Option<f64>]>,
+    /// The OMC reference simulated at a tighter tolerance, with its series.
+    omc_tight: Option<(&'a SimTrace, SeriesMap<'a>)>,
+    rumoca_series: SeriesMap<'a>,
+    omc_series: SeriesMap<'a>,
     rumoca_discrete_channels: HashSet<String>,
     omc_discrete_channels: HashSet<String>,
     common: BTreeSet<String>,
@@ -602,7 +650,11 @@ struct TracePair<'a> {
 }
 
 impl<'a> TracePair<'a> {
-    fn new(rumoca: &'a SimTrace, omc: &'a SimTrace) -> Result<Self, TraceCompareError> {
+    fn new(
+        rumoca: &'a SimTrace,
+        omc: &'a SimTrace,
+        omc_tight: Option<&'a SimTrace>,
+    ) -> Result<Self, TraceCompareError> {
         let rumoca_series = series_map(rumoca);
         let omc_series = series_map(omc);
         let common = rumoca_series
@@ -626,6 +678,7 @@ impl<'a> TracePair<'a> {
         Ok(Self {
             rumoca,
             omc,
+            omc_tight: omc_tight.map(|tight| (tight, series_map(tight))),
             rumoca_series,
             omc_series,
             rumoca_discrete_channels,
@@ -685,6 +738,10 @@ impl<'a> TracePair<'a> {
                 .copied()
         };
         let (rumoca, omc) = self.series(name)?;
+        let omc_tight = self
+            .omc_tight
+            .as_ref()
+            .and_then(|(trace, series)| Some(ChannelSeries::new(&trace.times, series.get(name)?)));
         compare_channel(
             name,
             rumoca,
@@ -693,6 +750,7 @@ impl<'a> TracePair<'a> {
                 use_step_hold: is_discrete_channel,
                 array_group_floor,
                 phasor,
+                omc_tight,
             },
         )
     }
@@ -704,6 +762,9 @@ struct ChannelRule<'a> {
     use_step_hold: bool,
     array_group_floor: Option<f64>,
     phasor: Option<&'a phasor::PhasorRule<'a>>,
+    /// This channel in the OMC reference simulated at a tighter tolerance,
+    /// used only to classify an excursion (see the `excursion` module).
+    omc_tight: Option<ChannelSeries<'a>>,
 }
 
 fn validate_trace(trace_label: &'static str, trace: &SimTrace) -> Result<(), TraceCompareError> {
@@ -781,7 +842,7 @@ fn comparison_window(rumoca_times: &[f64], omc_times: &[f64]) -> Option<(f64, f6
 /// replaces.
 fn reference_array_group_floors(
     omc_times: &[f64],
-    omc_series: &HashMap<String, &[Option<f64>]>,
+    omc_series: &SeriesMap<'_>,
     names: &BTreeSet<String>,
     rumoca_discrete_channels: &HashSet<String>,
     omc_discrete_channels: &HashSet<String>,
@@ -1048,7 +1109,7 @@ pub fn count_channel_agreement_bands_default(
     )
 }
 
-fn series_map(trace: &SimTrace) -> HashMap<String, &[Option<f64>]> {
+fn series_map(trace: &SimTrace) -> SeriesMap<'_> {
     trace
         .names
         .iter()
@@ -1176,9 +1237,17 @@ fn compare_channel(
     // deviation (bounded 1.0) and the metric stays finite.
     let integral_abs_error = saturate(acc.integral_abs_error);
     let mean_abs_error = saturate(integral_abs_error / acc.integral_duration);
-    let scale = reference_scale(&acc.ref_samples, use_step_hold, rule.array_group_floor);
+    let ordered = collapse_repeated_sample_times(&acc.paired_samples);
+    let scale = channel_reference_scale(&acc.ref_samples, &ordered, rule);
     let normalization_scale = scale.normalization_scale;
-    let normalized_l1_error = saturate(mean_abs_error / normalization_scale);
+    // A channel scaled by an event is scored over the event's own window: its
+    // only information is the event, and a whole-run mean would dilute a
+    // missed event to nothing (see the `excursion` module).
+    let scored_error = scale
+        .event_window()
+        .and_then(|run| window_mean_abs_error(&ordered[run.first..=run.last]))
+        .unwrap_or(mean_abs_error);
+    let normalized_l1_error = saturate(scored_error / normalization_scale);
     let bounded_normalized_l1_error = bounded_error(normalized_l1_error);
     let initial_abs_error = initial_abs_error(rumoca, omc, rule.phasor);
     let initial_bounded_normalized_error =
@@ -1210,10 +1279,17 @@ fn compare_channel(
         initial_abs_error,
         initial_bounded_normalized_error,
         phasor: rule.phasor.map(|phasor| phasor.evidence(undefined_samples)),
+        reference_excursion: scale.excursion.map(|excursion| ExcursionEvidence {
+            class: excursion.class,
+            amplitude: excursion.run.amplitude,
+            window_start: ordered[excursion.run.first].0,
+            window_end: ordered[excursion.run.last].0,
+            samples: excursion.run.last - excursion.run.first + 1,
+        }),
     })
 }
 
-/// An error that overflowed to infinity, held at the largest finite value.
+/// An error that overflowed to infinity), held at the largest finite value.
 fn saturate(value: f64) -> f64 {
     if value.is_infinite() {
         f64::MAX.copysign(value)
@@ -1265,7 +1341,13 @@ fn compare_single_instant(
     if !error.is_finite() {
         return None;
     }
-    let scale = reference_scale(&[omc_value], rule.use_step_hold, rule.array_group_floor);
+    // One sample has no run, so a single-instant channel has no excursion.
+    let scale = reference_scale(
+        &[omc_value],
+        &[],
+        rule.use_step_hold,
+        rule.array_group_floor,
+    );
     let normalization_scale = scale.normalization_scale;
     let normalized_l1_error = saturate(error / normalization_scale);
     let bounded_normalized_l1_error = bounded_error(normalized_l1_error);
@@ -1295,6 +1377,7 @@ fn compare_single_instant(
         initial_abs_error: Some(error),
         initial_bounded_normalized_error: Some(bounded_normalized_l1_error),
         phasor: None,
+        reference_excursion: None,
     })
 }
 

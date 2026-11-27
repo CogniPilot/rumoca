@@ -103,6 +103,9 @@
 //! discrete level difference of one is a full disagreement by construction, and
 //! they neither contribute to nor consume an array group floor.
 
+use super::excursion::{
+    ExcursionClass, ReferenceExcursion, SupportedRun, classify_run, dominant_run, excursion_scale,
+};
 use super::{RANGE_HIGH_QUANTILE, RANGE_LOW_QUANTILE};
 
 /// Fraction of a channel's own magnitude treated as a meaningful deviation.
@@ -146,9 +149,40 @@ pub(super) struct ReferenceScale {
     /// sibling has one. Only consulted for information-free channels; see the
     /// module docs.
     pub array_group_floor: Option<f64>,
+    /// The supported run an information-free channel's reference has outside
+    /// its robust band, if any, with its class; see the `excursion` module.
+    pub excursion: Option<ReferenceExcursion>,
 }
 
 impl ReferenceScale {
+    /// This scale with the excursion classified against the reference
+    /// simulated at a tighter tolerance and resampled onto the same grid, and
+    /// the normalization scale it implies. A scale without an excursion is
+    /// returned unchanged.
+    pub(super) fn classified(self, tight_on_grid: &[f64]) -> Self {
+        let Some(excursion) = self.excursion else {
+            return self;
+        };
+        let excursion = ReferenceExcursion {
+            class: classify_run(excursion.run, tight_on_grid, self.p05, self.p95),
+            ..excursion
+        };
+        Self {
+            normalization_scale: excursion_scale(excursion, self.normalization_scale),
+            excursion: Some(excursion),
+            ..self
+        }
+    }
+
+    /// The window over which the channel's error is averaged: the event's own
+    /// window (as indices into the ordered reference) when the channel is
+    /// scaled by an event, so a missed event cannot be diluted over the run.
+    pub(super) fn event_window(&self) -> Option<SupportedRun> {
+        self.excursion
+            .filter(|excursion| excursion.class == ExcursionClass::Event)
+            .map(|excursion| excursion.run)
+    }
+
     /// True when the reference channel carries no usable signal at all: a flat
     /// line, at zero or at any other level. Used by shape classification to flag
     /// a probable channel mapping error rather than a numeric deviation.
@@ -159,8 +193,11 @@ impl ReferenceScale {
     /// zero one — which is where the pre-normalization implementation put it
     /// (it tested `normalization_scale <= 1e-11`, and the unfloored scale of a
     /// flat channel was its `1e-12` floor regardless of level).
+    ///
+    /// A channel scaled by an event is not flat: its reference carries a real
+    /// event outside the robust band.
     pub(super) fn reference_is_degenerate(&self) -> bool {
-        range_is_degenerate(self.range)
+        range_is_degenerate(self.range) && self.event_window().is_none()
     }
 }
 
@@ -173,10 +210,17 @@ pub(super) fn range_is_degenerate(range: f64) -> bool {
 
 /// Build the normalization scale for one channel from its reference samples.
 ///
-/// `array_group_floor` is the sibling-derived scale of the array this channel
-/// belongs to, if any; see [`ReferenceScale::array_group_floor`].
+/// `ref_samples` are the reference values the error integral was built from;
+/// their percentiles are the robust band, exactly as before. `ordered_reference`
+/// is the same reference in time order, one value per compared grid point, and
+/// is only read to find an information-free channel's excursion, which starts
+/// out unclassified and leaves the scale unchanged until
+/// [`ReferenceScale::classified`]. `array_group_floor` is the sibling-derived
+/// scale of the array this channel belongs to, if any; see
+/// [`ReferenceScale::array_group_floor`].
 pub(super) fn reference_scale(
     ref_samples: &[f64],
+    ordered_reference: &[f64],
     use_step_hold: bool,
     array_group_floor: Option<f64>,
 ) -> ReferenceScale {
@@ -188,6 +232,13 @@ pub(super) fn reference_scale(
     } else {
         continuous_scale(range, magnitude, array_group_floor)
     };
+    let excursion = (!use_step_hold && reference_is_information_free(range, magnitude))
+        .then(|| dominant_run(ordered_reference, p05, p95))
+        .flatten()
+        .map(|run| ReferenceExcursion {
+            run,
+            class: ExcursionClass::Unclassified,
+        });
     ReferenceScale {
         p05,
         p95,
@@ -196,6 +247,7 @@ pub(super) fn reference_scale(
         normalization_scale,
         use_step_hold,
         array_group_floor,
+        excursion,
     }
 }
 

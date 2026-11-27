@@ -388,6 +388,7 @@ mod tests {
             worst_variables: Vec::new(),
             undefined_phasor_channels: Vec::new(),
             unbounded_channels: Vec::new(),
+            excursion_channels: Vec::new(),
         }
     }
 }
