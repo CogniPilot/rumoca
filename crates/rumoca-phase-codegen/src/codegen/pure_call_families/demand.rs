@@ -64,15 +64,17 @@ impl PureCallFamilies {
                 continue;
             }
             let owner = &table.owners()[id];
-            let mut view = owner_json(id, owner)?;
-            let (body, json, target) = if tangent {
-                let (Some(body), Some(json)) = (owner.directional(), view.directional.take())
-                else {
-                    continue;
-                };
-                (body.body(), json, &mut families.directional)
+            let view = owner_json(id, owner)?;
+            let candidate = if tangent {
+                owner
+                    .directional()
+                    .zip(view.directional)
+                    .map(|(body, json)| (body.body(), json, &mut families.directional))
             } else {
-                (owner.body(), view.primal, &mut families.owners)
+                Some((owner.body(), view.primal, &mut families.owners))
+            };
+            let Some((body, json, target)) = candidate else {
+                continue;
             };
             let liveness = solve::SolveLiveness::of(
                 body,
