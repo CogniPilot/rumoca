@@ -4,7 +4,7 @@ use diffsol::nonlinear_solver::{
     convergence::{Convergence, ConvergenceStatus},
     newton::newton_iteration,
 };
-use diffsol::{BacktrackingLineSearch, DiffsolError, FaerVec, LineSearch, Vector};
+use diffsol::{BacktrackingLineSearch, DiffsolError, FaerVec, LineSearch, NoLineSearch, Vector};
 
 fn vector(value: f64) -> FaerVec<f64> {
     FaerVec::from_vec(vec![value], Default::default())
@@ -36,11 +36,55 @@ fn backtracking_measures_contraction_for_each_affine_solve() {
         .unwrap();
         assert_eq!(point[0], root);
     }
+    // Three residuals for the first solve (initial, contraction, returned
+    // point). The second may take its convergence proposal from the retained
+    // rate, but the fresh correction at the returned point still decides it.
     assert_eq!(
         calls.get(),
-        6,
-        "each affine solve must measure current contraction and certify its returned point"
+        5,
+        "each affine solve must certify its returned point with a fresh correction"
     );
+}
+
+#[test]
+fn full_step_newton_keeps_the_retained_rate_guard() {
+    // Without a line search no fresh correction checks the returned point, so
+    // a rate retained from another solve must not certify a large first
+    // correction here.
+    let atol = vector(1e-6);
+    let mut convergence = Convergence::new(0.0, &atol);
+    let mut search = NoLineSearch;
+    let mut point = vector(1.0);
+    let mut correction = vector(0.0);
+    let scale = vector(1.0);
+    newton_iteration(
+        &mut point,
+        &mut correction,
+        &scale,
+        |x, out| out[0] = x[0],
+        |_delta| Ok(()),
+        &mut convergence,
+        &mut search,
+    )
+    .unwrap();
+    assert_eq!(point[0], 0.0);
+    point[0] = 1.0;
+    let result = newton_iteration(
+        &mut point,
+        &mut correction,
+        &scale,
+        |x, out| out[0] = x[0] + 0.01 * x[0] * x[0],
+        |_delta| Ok(()),
+        &mut convergence,
+        &mut search,
+    );
+    if result.is_ok() {
+        assert!(
+            point[0].abs() <= 0.2 * atol[0],
+            "stale affine rate accepted x={} outside current nonlinear budget",
+            point[0]
+        );
+    }
 }
 
 #[test]
