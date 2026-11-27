@@ -336,10 +336,34 @@ fn verdict(
     } else {
         candidate < reference
     };
+    // Formatted as the ratchet script formats it, so both print one line.
+    let format = |value: f64| {
+        if matches!(metric.field, Field::IcMass) {
+            to_exponential_6(value)
+        } else {
+            value.to_string()
+        }
+    };
     Some((
         !improved,
-        format!("{}{scope}: {reference} -> {candidate}", metric.label),
+        format!(
+            "{}{scope}: {} -> {}",
+            metric.label,
+            format(reference),
+            format(candidate)
+        ),
     ))
+}
+
+/// JavaScript's `Number.prototype.toExponential(6)`, e.g. `1.234560e+2`.
+pub(super) fn to_exponential_6(value: f64) -> String {
+    let formatted = format!("{value:.6e}");
+    match formatted.split_once('e') {
+        Some((mantissa, exponent)) if !exponent.starts_with('-') => {
+            format!("{mantissa}e+{exponent}")
+        }
+        _ => formatted,
+    }
 }
 
 fn sum_over<'a>(
@@ -383,7 +407,7 @@ fn compare_runtime(
     let cohort = &reference.evidence.runtime_ratio_cohort_models;
     // Bind fresh evidence now. Historical-reference validation belongs to the
     // separately reviewed baseline rollout; keep its existing reader contract.
-    let ratios = snapshot_ratios(candidate, "candidate baseline")?;
+    let ratios = snapshot_ratios(candidate.into(), "candidate baseline")?;
     let matched = match ratios {
         Some(ratios) if !cohort.is_empty() => Some(
             cohort
@@ -426,7 +450,11 @@ fn compare_runtime(
             ),
             None => (recorded_median, String::new()),
         };
-        let line = format!("{label}{scope}: {reference_median} -> {candidate_median}");
+        let line = format!(
+            "{label}{scope}: {} -> {}",
+            to_exponential_6(reference_median),
+            to_exponential_6(candidate_median)
+        );
         let floor = reference_median * (1.0 - tolerance);
         if candidate_median + f64::EPSILON * floor.abs().max(1.0) < floor {
             verdict.regressions.push(line);
@@ -437,9 +465,43 @@ fn compare_runtime(
     Ok(())
 }
 
+/// What binding a snapshot's per-model runtime ratios reads.
+#[derive(Clone, Copy)]
+struct RuntimeView<'a> {
+    quality_gate_version: Option<u64>,
+    evidence: &'a CohortEvidence,
+    runtime: &'a RuntimeRatioStats,
+}
+
+impl<'a> From<CohortSnapshot<'a>> for RuntimeView<'a> {
+    fn from(snapshot: CohortSnapshot<'a>) -> Self {
+        Self {
+            quality_gate_version: snapshot.quality_gate_version,
+            evidence: snapshot.evidence,
+            runtime: snapshot.runtime,
+        }
+    }
+}
+
+/// Check a snapshot's per-model runtime ratios against its recorded cohort and
+/// medians, as a promotable snapshot must (the baseline ratchet).
+pub(super) fn validate_runtime_ratios(
+    quality_gate_version: Option<u64>,
+    evidence: &CohortEvidence,
+    runtime: &RuntimeRatioStats,
+    name: &str,
+) -> Result<()> {
+    let view = RuntimeView {
+        quality_gate_version,
+        evidence,
+        runtime,
+    };
+    snapshot_ratios(view, name).map(|_| ())
+}
+
 /// The candidate's per-model ratios, bound to its recorded cohort and medians.
 fn snapshot_ratios<'a>(
-    candidate: CohortSnapshot<'a>,
+    candidate: RuntimeView<'a>,
     name: &str,
 ) -> Result<Option<&'a BTreeMap<String, ModelRatio>>> {
     let modern = candidate
@@ -483,16 +545,19 @@ fn snapshot_ratios<'a>(
             && ratios.keys().map(String::as_str).eq(cohort.iter().copied()),
         "{name}: runtime_model_ratios does not cover runtime_ratio_cohort_models"
     );
-    for count in [
-        candidate.runtime.system_ratio_both_success.sample_count,
-        candidate.runtime.wall_ratio_both_success.sample_count,
-    ]
-    .into_iter()
-    .flatten()
-    {
+    for (stats_key, count) in [
+        (
+            "system_ratio_both_success",
+            candidate.runtime.system_ratio_both_success.sample_count,
+        ),
+        (
+            "wall_ratio_both_success",
+            candidate.runtime.wall_ratio_both_success.sample_count,
+        ),
+    ] {
         ensure!(
-            count == ratios.len(),
-            "{name}: runtime_model_ratios disagree with sample_count"
+            count.is_none_or(|count| count == ratios.len()),
+            "{name}: runtime_model_ratios disagree with {stats_key} sample_count"
         );
     }
     for (recorded, derived) in [

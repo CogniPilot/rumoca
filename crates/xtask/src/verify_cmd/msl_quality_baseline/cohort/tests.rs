@@ -94,7 +94,7 @@ fn resolver_and_ratchet_reach_the_shared_cohort_verdicts() {
         let reference = case_snapshot(&cases, &case["reference"]);
         let candidate = case_snapshot(&cases, &case["candidate"]);
         if case["validate_side"].as_str() == Some("reference") {
-            let result = super::snapshot_ratios(reference.view(), "reference baseline");
+            let result = super::snapshot_ratios(reference.view().into(), "reference baseline");
             let message = format!("{:#}", result.expect_err(name));
             assert!(
                 message.contains(case["error"].as_str().unwrap()),
@@ -150,6 +150,6 @@ fn candidate_binding_does_not_activate_the_historical_reference_reader() {
     );
     let verdict = cohort_comparison(reference.view(), candidate.view()).unwrap();
     assert!(verdict.regressions.is_empty());
-    assert!(super::snapshot_ratios(reference.view(), "new snapshot").is_err());
+    assert!(super::snapshot_ratios(reference.view().into(), "new snapshot").is_err());
     assert!(cohort_comparison(candidate.view(), reference.view()).is_err());
 }

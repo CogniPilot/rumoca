@@ -1926,11 +1926,50 @@ jobs:
         run: |
           set -euo pipefail
           previous="${{ steps.release-baseline.outputs.path }}"
+          source="${{ steps.msl-quality-snapshot.outputs.path }}"
           promoted="target/msl-baseline-ratchet/$MSL_BASELINE_RELEASE_ASSET"
+          rust_promoted="target/msl-baseline-ratchet/rust-$MSL_BASELINE_RELEASE_ASSET"
           cp "$previous" "$promoted"
+          cp "$previous" "$rust_promoted"
+          # The xtask ratchet runs beside the script on the same inputs until a
+          # run on main shows them identical; the script still decides. The
+          # step fails when their exit statuses, stdout or written baselines
+          # differ, refusals included; stderr is printed, not compared.
+          out=target/msl-baseline-ratchet
+          js_status=0
           node .github/scripts/msl-baseline-ratchet.mjs \
-            --source "${{ steps.msl-quality-snapshot.outputs.path }}" \
-            --baseline "$promoted"
+            --source "$source" \
+            --baseline "$promoted" > "$out/js.log" 2> "$out/js.err" || js_status=$?
+          rust_status=0
+          cargo xtask verify msl-ratchet \
+            --source "$source" \
+            --baseline "$rust_promoted" > "$out/rust.log" 2> "$out/rust.err" || rust_status=$?
+          for log in js.log js.err rust.log rust.err; do
+            echo "--- $log"
+            cat "$out/$log"
+          done
+          agree=true
+          if [[ "$js_status" -ne "$rust_status" ]]; then
+            echo "Ratchet exit statuses differ: script $js_status, xtask $rust_status."
+            agree=false
+          fi
+          if ! cmp -s "$out/js.log" "$out/rust.log"; then
+            echo "Ratchet stdout differs:"
+            diff "$out/js.log" "$out/rust.log" || true
+            agree=false
+          fi
+          if ! cmp -s "$promoted" "$rust_promoted"; then
+            echo "Ratchet written baselines differ."
+            agree=false
+          fi
+          if [[ "$agree" != true ]]; then
+            echo "The xtask MSL baseline ratchet disagrees with the script."
+            exit 1
+          fi
+          if [[ "$js_status" -ne 0 ]]; then
+            echo "MSL baseline ratchet refused (both exit $js_status)."
+            exit "$js_status"
+          fi
 
           if cmp -s "$previous" "$promoted"; then
             echo "MSL quality baseline did not improve the promoted release baseline."

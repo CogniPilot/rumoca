@@ -138,6 +138,20 @@ pub(crate) enum TemplateRuntimeBackend {
     Wasm,
 }
 
+/// Arguments of `verify msl-ratchet`.
+#[derive(Debug, Args, Clone, PartialEq, Eq)]
+pub(crate) struct VerifyMslRatchetArgs {
+    /// The full CI quality snapshot offered for promotion
+    #[arg(long)]
+    source: PathBuf,
+    /// The published baseline, overwritten with the source when it improves
+    #[arg(long)]
+    baseline: PathBuf,
+    /// The reviewed checked-in baseline of this commit (default: the tracked one)
+    #[arg(long)]
+    checked_in: Option<PathBuf>,
+}
+
 #[derive(Debug, Args, Clone, PartialEq, Eq, Default)]
 #[command(args_conflicts_with_subcommands = true)]
 pub(crate) struct VerifyMslParityArgs {
@@ -468,6 +482,9 @@ pub(crate) enum VerifyCommand {
     Docs,
     /// Full MSL/OMC parity gate harness
     MslParity(Box<VerifyMslParityArgs>),
+    /// Promote an MSL quality snapshot over the published baseline when it
+    /// improves some ratchet metric and regresses none
+    MslRatchet(VerifyMslRatchetArgs),
     /// Pre-landing gate: CI's blocking steps over a committed snapshot
     Gate(gate::VerifyGateArgs),
     /// Generate real flamegraph SVGs for the hottest compile and sim models from the latest MSL run
@@ -664,12 +681,27 @@ pub(crate) fn run(args: VerifyArgs, root: &Path) -> Result<()> {
         VerifyCommand::Binaries => test_cmd::run_workspace_binary_build(root),
         VerifyCommand::Docs => test_cmd::run_workspace_docs(root),
         VerifyCommand::MslParity(args) => parity_sweep::run(root, &args, &mut run_msl_quality_gate),
+        VerifyCommand::MslRatchet(args) => run_msl_ratchet(root, &args),
         VerifyCommand::Gate(args) => gate::run(root, &args),
         VerifyCommand::MslHotspots => run_msl_hotspot_flamegraphs(root),
         VerifyCommand::Fuzz(args) => fuzz::run(&args, root),
         VerifyCommand::CorpusPin(args) => corpus_pin::run(root, &args),
         VerifyCommand::Embedded(args) => embedded::run(root, &args),
     }
+}
+
+fn run_msl_ratchet(root: &Path, args: &VerifyMslRatchetArgs) -> Result<()> {
+    let checked_in = args
+        .checked_in
+        .clone()
+        .unwrap_or_else(|| root.join(msl_quality_baseline::MSL_QUALITY_BASELINE_FALLBACK_REL));
+    msl_quality_baseline::ratchet::promote_baseline_if_improved(
+        &args.source,
+        &args.baseline,
+        &checked_in,
+        &mut |line| println!("{line}"),
+    )
+    .map(|_| ())
 }
 
 fn run_examples_smoke(root: &Path) -> Result<()> {

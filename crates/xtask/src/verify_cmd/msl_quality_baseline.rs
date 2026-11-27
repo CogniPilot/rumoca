@@ -1,5 +1,6 @@
 mod budget_metadata;
 mod cohort;
+pub(super) mod ratchet;
 mod reference_boundary;
 #[cfg(test)]
 mod tests;
@@ -16,7 +17,7 @@ use super::VerifyMslParityArgs;
 use reference_boundary::{ReferenceBoundaryMigration, validate_reference_boundary_migration};
 
 const MSL_QUALITY_BASELINE_ASSET_URL: &str = "https://github.com/CogniPilot/rumoca/releases/download/msl-quality-baseline/msl_quality_baseline.json";
-const MSL_QUALITY_BASELINE_FALLBACK_REL: &str =
+pub(super) const MSL_QUALITY_BASELINE_FALLBACK_REL: &str =
     "crates/rumoca-test-msl/tests/msl_tests/msl_quality_baseline.json";
 const MSL_QUALITY_GATE_VERSION: u64 = 15;
 /// The reviewed boundary just behind the checked-in one.
