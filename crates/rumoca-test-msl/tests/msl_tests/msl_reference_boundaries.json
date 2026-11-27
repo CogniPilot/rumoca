@@ -6,11 +6,11 @@
     "change": "typed-trace-exceptions-v7",
     "strict_high_before": 304,
     "strict_high_after": 304,
-    "policy_excluded_after": 54,
+    "policy_excluded_after": 48,
     "excluded_strict_high_before": 0,
     "excluded_non_high_before": 1,
     "exclusions_file": "crates/rumoca-test-msl/tests/msl_tests/msl_trace_compare_exclusions.json",
-    "exclusions_sha256": "dbd79465290de942e805cbb369bb805e9eba0b42effeef3237a0f0d093e2c11f",
+    "exclusions_sha256": "255972308fb7cc45af7f89d7238ffecaab1a0810a01a397ceea38d386550924c",
     "evidence_git_commit": "128f70a6ea97334cef5a18ae8546a57abaf50168",
     "evidence_run": "roomco2withcontrols-focused",
     "policy_excluded_before": 53,
@@ -175,6 +175,21 @@
           }
         }
       }
-    }
+    },
+    "roster_additions": [
+      {
+        "model_name": "Modelica.Fluid.Examples.AST_BatchPlant.Test.TwoTanks",
+        "cause": "Rumoca integration-accuracy gap on a constant-temperature tank: its error is about the solver tolerance, OMC's about an eighth of it",
+        "facts": [
+          "tank1 only drains through its bottom port, so its exact temperature is the constant 323.15 K; the 11 non-high of 85 channels are aliases of tank1 temperature (K and degC), specific enthalpy and internal energy",
+          "OMC (dassl, rtol 1e-6) spreads 6.4e-6 K and 0.027 J/kg on the specific enthalpy (2.092e5 J/kg): 1.3e-7 relative, 0.13 x rtol",
+          "Rumoca (bdf, rtol 1e-6, atol 1e-10) has mean error 5.0e-5 K and 0.21 J/kg on the specific enthalpy: 1.0e-6 relative, 1.0 x rtol, 7.9 x OMC",
+          "at rtol = atol = 1e-10 Rumoca's drift falls to 3.6e-9 K, so the gap is integration error, not a model defect",
+          "the diffsol revision 80ffcb58 raised it 1.63 x (3.1e-5 to 5.0e-5 K); other Modelica.Fluid tank models moved the same way (EmptyTanks 1.68 x, ControlledTanks 1.27 x), while the corpus median is unchanged",
+          "previously excluded as comparator_limitation near_zero_channel_scaling; scored since that exclusion was retired"
+        ],
+        "owner": "solver accuracy lane (BDF integration error on Modelica.Fluid tank energy balances)"
+      }
+    ]
   }
 }

@@ -157,16 +157,16 @@ under schema `msl_trace_exceptions_v2`. Every row is typed and evidenced:
 
 ```json
 {
-  "model_name": "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierBridge2mPulse.ThyristorBridge2mPulse_R",
+  "model_name": "Modelica.Electrical.Analog.Examples.OpAmps.ControlCircuit",
   "kind": "comparator_limitation",
-  "reason": "The 17 differing channels are all aliases of one degenerate node ...",
+  "reason": "At the 0.1 s input step, OMC records the pre-event PIA resistor loss powers at t=0.1 and the post-event values at t=0.1000000001100004 ...",
   "evidence": {
     "facts": [
-      "17 differing channels are aliases of the supply star point, 0 V in exact arithmetic",
-      "all 401 other channels strict-high"
+      "281/283 channels strict-high",
+      "OMC records pre-event values at t=0.1 and post-event values at t=0.1000000001100004; Rumoca records post-event values at t=0.1"
     ]
   },
-  "retired_by": "near_zero_channel_scaling"
+  "retired_by": "event_instant_alignment"
 }
 ```
 
@@ -178,8 +178,11 @@ under schema `msl_trace_exceptions_v2`. Every row is typed and evidenced:
 | `nonidentifiable` | a reviewed proof that pointwise comparison cannot identify the model |
 | `comparator_limitation` | the comparator cannot identify the channels; `retired_by` names the improvement that retires the row |
 
-A `comparator_limitation` row names one of `near_zero_channel_scaling`,
-`event_instant_alignment`, or `aggregate_tolerance_at_annotation_scale`. Angle
+A `comparator_limitation` row names one of `event_instant_alignment` or
+`aggregate_tolerance_at_annotation_scale`. An improvement that has landed is
+removed from the list with the last row it retired: a channel whose flat
+reference carries an event is now scaled by that event (the excursion rule), so
+`near_zero_channel_scaling` no longer exists. Angle
 and power-factor channels compare under the phasor rule (SPEC_0050) and need no
 row. The end state is fewer exceptions through a better comparator.
 

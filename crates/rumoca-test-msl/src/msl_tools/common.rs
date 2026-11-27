@@ -503,9 +503,6 @@ impl TraceExceptionKind {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ComparatorImprovement {
-    /// Normalize channels whose reference is zero in exact arithmetic by a
-    /// physical scale instead of the reference's own near-zero spread.
-    NearZeroChannelScaling,
     /// Align samples at an event instant by event side, so pre- and
     /// post-event values recorded at shifted coordinates compare.
     EventInstantAlignment,
@@ -515,13 +512,26 @@ pub enum ComparatorImprovement {
 }
 
 impl ComparatorImprovement {
+    /// Every improvement, by its `retired_by` name: the one list both parsing
+    /// and the error message read. An improvement that has landed is deleted
+    /// here with the last row it retired, so no row can cite a finished fix.
+    const ALL: [(Self, &'static str); 2] = [
+        (Self::EventInstantAlignment, "event_instant_alignment"),
+        (
+            Self::AggregateToleranceAtAnnotationScale,
+            "aggregate_tolerance_at_annotation_scale",
+        ),
+    ];
+
     fn parse(value: &str) -> Option<Self> {
-        Some(match value {
-            "near_zero_channel_scaling" => Self::NearZeroChannelScaling,
-            "event_instant_alignment" => Self::EventInstantAlignment,
-            "aggregate_tolerance_at_annotation_scale" => Self::AggregateToleranceAtAnnotationScale,
-            _ => return None,
-        })
+        Self::ALL
+            .iter()
+            .find(|(_, name)| *name == value)
+            .map(|(improvement, _)| *improvement)
+    }
+
+    fn names() -> String {
+        Self::ALL.map(|(_, name)| name).join(", ")
     }
 }
 
@@ -707,9 +717,8 @@ fn parse_retired_by(
                 .map(Some)
                 .with_context(|| {
                     format!(
-                        "exception '{model_name}' names no known `retired_by` improvement \
-                     (near_zero_channel_scaling, event_instant_alignment, \
-                     aggregate_tolerance_at_annotation_scale)"
+                        "exception '{model_name}' names no known `retired_by` improvement ({})",
+                        ComparatorImprovement::names()
                     )
                 })
         }
@@ -1042,7 +1051,7 @@ mod tests {
                {"model_name":"B.Chaos","kind":"model_issue","reason":"chaotic",
                 "evidence":{"facts":["StopTime=50000 s"],"artifact":"msl:B.Chaos"}},
                {"model_name":"C.Node","kind":"comparator_limitation","reason":"zero node",
-                "evidence":{"facts":["374/391 channels high"]},"retired_by":"near_zero_channel_scaling"}"#,
+                "evidence":{"facts":["374/391 channels high"]},"retired_by":"event_instant_alignment"}"#,
         );
         let exceptions = load_trace_exclusions_file(&path).expect("load exceptions");
         assert_eq!(exceptions.len(), 3);
@@ -1052,7 +1061,7 @@ mod tests {
         assert_eq!(noise.retired_by, None);
         assert_eq!(
             exceptions["C.Node"].retired_by,
-            Some(ComparatorImprovement::NearZeroChannelScaling)
+            Some(ComparatorImprovement::EventInstantAlignment)
         );
         let reasons = typed_exception_reasons(exceptions);
         assert_eq!(reasons["B.Chaos"], "model_issue: chaotic");
@@ -1122,6 +1131,12 @@ mod tests {
                 "no known `retired_by`",
             ),
             (
+                // A landed improvement retires nothing: a row cannot cite it.
+                "landedretire",
+                r#"{"model_name":"A","kind":"comparator_limitation","reason":"r","evidence":{"facts":["f"]},"retired_by":"near_zero_channel_scaling"}"#,
+                "(event_instant_alignment, aggregate_tolerance_at_annotation_scale)",
+            ),
+            (
                 "strayretire",
                 r#"{"model_name":"A","kind":"model_issue","reason":"r","evidence":{"facts":["f"]},"retired_by":"event_instant_alignment"}"#,
                 "not a comparator_limitation",
@@ -1141,7 +1156,7 @@ mod tests {
         let root = workspace_root_from_manifest_dir(env!("CARGO_MANIFEST_DIR"));
         let exceptions = load_trace_exclusions_file(&root.join(TRACE_EXCLUSIONS_FILE_REL))
             .expect("tracked exceptions must parse");
-        assert_eq!(exceptions.len(), 54);
+        assert_eq!(exceptions.len(), 48);
         let count = |kind| {
             exceptions
                 .values()
@@ -1150,7 +1165,7 @@ mod tests {
         };
         assert_eq!(count(TraceExceptionKind::ReferenceFailure), 31);
         assert_eq!(count(TraceExceptionKind::ModelIssue), 7);
-        assert_eq!(count(TraceExceptionKind::ComparatorLimitation), 16);
+        assert_eq!(count(TraceExceptionKind::ComparatorLimitation), 10);
         for (model, exception) in &exceptions {
             if let Some(artifact) = &exception.evidence.artifact {
                 assert!(
