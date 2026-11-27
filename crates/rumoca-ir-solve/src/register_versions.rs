@@ -1,4 +1,6 @@
 //! Canonical immutable source-point register range versions.
+mod call_demand;
+pub use call_demand::ScalarCallDemand;
 mod parameter_gathers;
 mod program;
 #[cfg(test)]
