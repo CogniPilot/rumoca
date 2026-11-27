@@ -150,6 +150,26 @@ pub(crate) struct VerifyMslRatchetArgs {
     /// The reviewed checked-in baseline of this commit (default: the tracked one)
     #[arg(long)]
     checked_in: Option<PathBuf>,
+    /// The generated accuracy statement (default: the tracked one)
+    #[arg(long)]
+    accuracy_changes: Option<PathBuf>,
+}
+
+/// Arguments of `verify msl-accuracy-changes`.
+#[derive(Debug, Args, Clone, PartialEq, Eq)]
+pub(crate) struct VerifyMslAccuracyChangesArgs {
+    /// The MSL quality snapshot of this change's run
+    #[arg(long)]
+    source: PathBuf,
+    /// The baseline the run is judged against
+    #[arg(long)]
+    baseline: PathBuf,
+    /// The reviewed checked-in baseline of this commit (default: the tracked one)
+    #[arg(long)]
+    checked_in: Option<PathBuf>,
+    /// Where to write the statement (default: the tracked one)
+    #[arg(long)]
+    out: Option<PathBuf>,
 }
 
 #[derive(Debug, Args, Clone, PartialEq, Eq, Default)]
@@ -440,10 +460,22 @@ fn write_parity_config(root: &Path, args: &VerifyMslParityArgs) -> Result<()> {
             .with_context(|| format!("failed to create {}", parent.display()))?;
     }
     let mut config = args.clone();
+    let mut promoted = None;
     if args.quality_baseline.is_some() || args.uses_baseline_relative_quality_gate() {
-        config.quality_baseline = Some(resolve_msl_quality_baseline(root, args)?);
+        let resolved = resolve_msl_quality_baseline(root, args)?;
+        promoted = resolved.promoted_raw;
+        config.quality_baseline = Some(resolved.selected);
     }
-    let json = serde_json::to_string_pretty(&config.to_parity_config_json())?;
+    let mut json = config.to_parity_config_json();
+    // The per-model rule judges against the raw promoted asset, the baseline
+    // promotion judges against, so both key the accuracy statement alike.
+    if let (Some(promoted), Some(object)) = (promoted, json.as_object_mut()) {
+        object.insert(
+            "promoted_baseline_file".into(),
+            promoted.to_string_lossy().into_owned().into(),
+        );
+    }
+    let json = serde_json::to_string_pretty(&json)?;
     fs::write(&path, json).with_context(|| format!("failed to write {}", path.display()))?;
     Ok(())
 }
@@ -485,6 +517,9 @@ pub(crate) enum VerifyCommand {
     /// Promote an MSL quality snapshot over the published baseline when it
     /// improves some ratchet metric and regresses none
     MslRatchet(VerifyMslRatchetArgs),
+    /// Generate the statement of every model whose mean channel error rose
+    /// against the baseline (or delete it when none rose)
+    MslAccuracyChanges(VerifyMslAccuracyChangesArgs),
     /// Pre-landing gate: CI's blocking steps over a committed snapshot
     Gate(gate::VerifyGateArgs),
     /// Generate real flamegraph SVGs for the hottest compile and sim models from the latest MSL run
@@ -682,6 +717,7 @@ pub(crate) fn run(args: VerifyArgs, root: &Path) -> Result<()> {
         VerifyCommand::Docs => test_cmd::run_workspace_docs(root),
         VerifyCommand::MslParity(args) => parity_sweep::run(root, &args, &mut run_msl_quality_gate),
         VerifyCommand::MslRatchet(args) => run_msl_ratchet(root, &args),
+        VerifyCommand::MslAccuracyChanges(args) => run_msl_accuracy_changes(root, &args),
         VerifyCommand::Gate(args) => gate::run(root, &args),
         VerifyCommand::MslHotspots => run_msl_hotspot_flamegraphs(root),
         VerifyCommand::Fuzz(args) => fuzz::run(&args, root),
@@ -695,13 +731,37 @@ fn run_msl_ratchet(root: &Path, args: &VerifyMslRatchetArgs) -> Result<()> {
         .checked_in
         .clone()
         .unwrap_or_else(|| root.join(msl_quality_baseline::MSL_QUALITY_BASELINE_FALLBACK_REL));
+    let accuracy_changes = args
+        .accuracy_changes
+        .clone()
+        .unwrap_or_else(|| root.join(rumoca_msl_quality::ACCURACY_STATEMENT_FILE));
     msl_quality_baseline::ratchet::promote_baseline_if_improved(
         &args.source,
         &args.baseline,
         &checked_in,
+        &accuracy_changes,
         &mut |line| println!("{line}"),
     )
     .map(|_| ())
+}
+
+fn run_msl_accuracy_changes(root: &Path, args: &VerifyMslAccuracyChangesArgs) -> Result<()> {
+    let checked_in = args
+        .checked_in
+        .clone()
+        .unwrap_or_else(|| root.join(msl_quality_baseline::MSL_QUALITY_BASELINE_FALLBACK_REL));
+    let out = args
+        .out
+        .clone()
+        .unwrap_or_else(|| root.join(rumoca_msl_quality::ACCURACY_STATEMENT_FILE));
+    let done = msl_quality_baseline::ratchet::write_accuracy_statement(
+        &args.source,
+        &args.baseline,
+        &checked_in,
+        &out,
+    )?;
+    println!("{done}");
+    Ok(())
 }
 
 fn run_examples_smoke(root: &Path) -> Result<()> {

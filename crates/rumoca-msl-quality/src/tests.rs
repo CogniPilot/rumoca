@@ -376,3 +376,139 @@ fn every_model_whose_error_rose_is_listed_even_when_the_sum_falls() {
     let unchanged = ModelStates::from([("A".to_string(), scored(1.0e-3))]);
     assert_eq!(accuracy_change(&unchanged, &unchanged), None);
 }
+
+#[test]
+fn an_omc_change_excuses_only_what_depends_on_omc() {
+    let cause = |cause| Regression::LeftScoring(cause);
+    for excused in [
+        Regression::BandDropped {
+            from: BandLabel::High,
+            to: BandLabel::Deviation,
+        },
+        Regression::ChannelsDropped { from: 2, to: 1 },
+        Regression::Uncertified,
+        cause(UnscoredCause::OmcFailed),
+    ] {
+        assert!(excused.depends_on_omc(), "{excused}");
+    }
+    for kept in [
+        Regression::LeftTargets,
+        Regression::StageDropped {
+            from: ModelStage::Simulated,
+            to: ModelStage::Compiled,
+        },
+        cause(UnscoredCause::RumocaTraceMissing),
+        cause(UnscoredCause::RumocaTraceError),
+        cause(UnscoredCause::TraceNonidentifiable),
+        cause(UnscoredCause::PolicyExcluded(
+            TraceExceptionKind::ReferenceFailure,
+        )),
+        Regression::ExclusionKindChanged {
+            from: TraceExceptionKind::ReferenceFailure,
+            to: TraceExceptionKind::ModelIssue,
+        },
+    ] {
+        assert!(!kept.depends_on_omc(), "{kept}");
+    }
+    // Through judge: a rumoca trace error counts across an OMC change, a band
+    // drop does not.
+    let before = ModelStates::from([
+        ("Band".to_string(), simulated(BandLabel::High, 2)),
+        ("Trace".to_string(), simulated(BandLabel::High, 2)),
+    ]);
+    let after = ModelStates::from([
+        ("Band".to_string(), simulated(BandLabel::Deviation, 2)),
+        (
+            "Trace".to_string(),
+            unscored(UnscoredCause::RumocaTraceError),
+        ),
+    ]);
+    let reviewed = ReviewedChanges::default();
+    let across = judge(&before, &after, &reviewed, None, true);
+    assert_eq!(across.regressions.len(), 1, "{:?}", across.regressions);
+    assert!(across.regressions[0].starts_with("Trace: "));
+    let within = judge(&before, &after, &reviewed, None, false);
+    // Within one context both count (and the band drop also moves a floor).
+    for model in ["Band: ", "Trace: "] {
+        assert!(
+            within
+                .regressions
+                .iter()
+                .any(|line| line.starts_with(model)),
+            "{:?}",
+            within.regressions
+        );
+    }
+}
+
+#[test]
+fn a_reviewed_removal_passes_and_the_same_removal_without_it_refuses() {
+    let before = ModelStates::from([
+        ("Kept".to_string(), simulated(BandLabel::High, 2)),
+        ("Gone".to_string(), simulated(BandLabel::High, 2)),
+    ]);
+    let after = ModelStates::from([("Kept".to_string(), simulated(BandLabel::High, 2))]);
+    let link = serde_json::json!({
+        "to_quality_gate_version": 16,
+        "reviewed_changes": { "removed_targets": ["Gone"] },
+    });
+    let other = serde_json::json!({ "to_quality_gate_version": 15 });
+    let reviewed = ReviewedChanges::from_links(&[&link, &other]).unwrap();
+    let verdict = judge(&before, &after, &reviewed, None, false);
+    assert!(verdict.regressions.is_empty(), "{:?}", verdict.regressions);
+    assert!(
+        verdict.report.iter().any(|line| line.starts_with("Gone: ")),
+        "{:?}",
+        verdict.report
+    );
+    let unreviewed = ReviewedChanges::from_links(&[&other]).unwrap();
+    let verdict = judge(&before, &after, &unreviewed, None, false);
+    assert_eq!(
+        verdict.regressions,
+        vec!["Gone: left the sim targets without a reviewed removal".to_string()]
+    );
+    // A misspelled field is refused, not ignored.
+    let typo = serde_json::json!({ "reviewed_changes": { "removed_target": ["Gone"] } });
+    assert!(ReviewedChanges::from_links(&[&typo]).is_err());
+}
+
+#[test]
+fn the_accuracy_statement_is_keyed_to_one_baseline_and_must_match_exactly() {
+    let scored = |error: f64| ModelState {
+        mean_channel_bounded_l1: Some(error),
+        ..simulated(BandLabel::High, 10)
+    };
+    let before = ModelStates::from([("A".to_string(), scored(1.0e-3))]);
+    let after = ModelStates::from([("A".to_string(), scored(1.5e-3))]);
+    let reviewed = ReviewedChanges::default();
+    let key = sha256_hex(b"baseline bytes");
+    let measured = accuracy_change(&before, &after);
+    let text = accuracy_statement(&key, measured.as_ref()).expect("A rose");
+    // Generated, then read back against the same baseline: it passes.
+    let stated = stated_accuracy(Some(text.as_bytes()), &key).unwrap();
+    assert_eq!(stated, measured);
+    let verdict = judge(&before, &after, &reviewed, stated.as_ref(), false);
+    assert!(verdict.regressions.is_empty(), "{:?}", verdict.regressions);
+    assert!(
+        verdict
+            .report
+            .iter()
+            .any(|line| line.contains("A 1e-3 -> 1.5e-3"))
+    );
+    // Unstated: refused.
+    let verdict = judge(&before, &after, &reviewed, None, false);
+    assert_eq!(verdict.regressions.len(), 1, "{:?}", verdict.regressions);
+    // Keyed to another baseline: refused as stale.
+    let stale = stated_accuracy(Some(text.as_bytes()), &sha256_hex(b"promoted since"));
+    assert!(stale.unwrap_err().starts_with("stale accuracy statement"));
+    // Stated with no rise measured: refused.
+    let verdict = judge(&before, &before, &reviewed, stated.as_ref(), false);
+    assert_eq!(verdict.regressions.len(), 1, "{:?}", verdict.regressions);
+    // No rise: no file to generate; an empty file or another schema is refused.
+    assert_eq!(accuracy_statement(&key, None), None);
+    let empty = format!(r#"{{"schema_version":1,"baseline_sha256":"{key}","rose":[]}}"#);
+    assert!(stated_accuracy(Some(empty.as_bytes()), &key).is_err());
+    let other = text.replace("\"schema_version\": 1", "\"schema_version\": 2");
+    assert!(stated_accuracy(Some(other.as_bytes()), &key).is_err());
+    assert_eq!(stated_accuracy(None, &key), Ok(None));
+}

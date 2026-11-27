@@ -264,9 +264,9 @@ pub(super) struct MslReferenceBoundaryMigration {
     /// The pinned old-side model states of a crossing from a baseline that predates them.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     evidence_model_states: Option<serde_json::Value>,
-    /// The per-model accuracy rises this boundary states (`rumoca_msl_quality::AccuracyChange`).
+    /// What this boundary allows to change per model (`rumoca_msl_quality::ReviewedChanges`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    accuracy_change: Option<serde_json::Value>,
+    reviewed_changes: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     previous: Option<Box<MslReferenceBoundaryMigration>>,
 }

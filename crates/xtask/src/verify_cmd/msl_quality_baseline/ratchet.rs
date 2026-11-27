@@ -122,15 +122,18 @@ pub(crate) fn promote_baseline_if_improved(
     source_path: &Path,
     baseline_path: &Path,
     checked_in_baseline_path: &Path,
+    accuracy_statement_path: &Path,
     log: &mut dyn FnMut(&str),
 ) -> Result<RatchetDecision> {
     let source_text = fs::read_to_string(source_path)
         .with_context(|| format!("read {}", source_path.display()))?;
     let source = parse_json(&source_text, source_path)?;
-    let baseline = parse_json(&read(baseline_path)?, baseline_path)?;
+    let baseline_text = read(baseline_path)?;
+    let baseline = parse_json(&baseline_text, baseline_path)?;
     let checked_in = parse_json(&read(checked_in_baseline_path)?, checked_in_baseline_path)?;
+    let accuracy = AccuracyInput::read(baseline_text.as_bytes(), accuracy_statement_path)?;
 
-    let decision = ratchet_decision(&source, &baseline, &checked_in)?;
+    let decision = ratchet_decision_with(&source, &baseline, &checked_in, &accuracy)?;
     for line in &decision.report {
         log(line);
     }
@@ -148,6 +151,43 @@ pub(crate) fn promote_baseline_if_improved(
     fs::write(baseline_path, source_text)
         .with_context(|| format!("write {}", baseline_path.display()))?;
     Ok(decision)
+}
+
+/// Write the accuracy statement `source` measures against `baseline` to
+/// `out`, or delete `out` when no model's error rose. Returns what it did.
+pub(crate) fn write_accuracy_statement(
+    source_path: &Path,
+    baseline_path: &Path,
+    checked_in_baseline_path: &Path,
+    out: &Path,
+) -> Result<String> {
+    let source = parse_json(&read(source_path)?, source_path)?;
+    let baseline_text = read(baseline_path)?;
+    let baseline = parse_json(&baseline_text, baseline_path)?;
+    let checked_in = parse_json(&read(checked_in_baseline_path)?, checked_in_baseline_path)?;
+    let crossed = crossed_reference_boundaries(&source, &baseline, &checked_in)?;
+    let measured = per_model::measured(&source, &baseline, &crossed)?;
+    let key = rumoca_msl_quality::sha256_hex(baseline_text.as_bytes());
+    match rumoca_msl_quality::accuracy_statement(&key, measured.as_ref()) {
+        Some(text) => {
+            fs::write(out, text).with_context(|| format!("write {}", out.display()))?;
+            Ok(format!(
+                "wrote {}: {} models' mean channel error rose against baseline {key}",
+                out.display(),
+                measured.map_or(0, |change| change.rose.len())
+            ))
+        }
+        None => match fs::remove_file(out) {
+            Ok(()) => Ok(format!(
+                "no model's error rose against baseline {key}; deleted {}",
+                out.display()
+            )),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(format!(
+                "no model's error rose against baseline {key}; no statement needed"
+            )),
+            Err(error) => Err(error).with_context(|| format!("delete {}", out.display())),
+        },
+    }
 }
 
 fn read(path: &Path) -> Result<String> {
@@ -249,10 +289,21 @@ fn ensure_runtime_ratios(snapshot: &Value, name: &str) -> Result<()> {
     )
 }
 
+/// [`ratchet_decision_with`] with no accuracy statement.
+#[cfg(test)]
 pub(crate) fn ratchet_decision(
     current: &Value,
     baseline: &Value,
     checked_in: &Value,
+) -> Result<RatchetDecision> {
+    ratchet_decision_with(current, baseline, checked_in, &AccuracyInput::default())
+}
+
+pub(crate) fn ratchet_decision_with(
+    current: &Value,
+    baseline: &Value,
+    checked_in: &Value,
+    accuracy: &AccuracyInput,
 ) -> Result<RatchetDecision> {
     ensure!(
         checked_in.is_object(),
@@ -277,7 +328,7 @@ pub(crate) fn ratchet_decision(
     // With per-model states, each model is judged against its own previous
     // state, which subsumes the stage and trace count floors and the
     // certified roster; otherwise the aggregate rule applies.
-    let per_model = per_model::judge_snapshot(current, baseline, &crossed, omc_context_changed)?;
+    let per_model = per_model::judge_snapshot(current, baseline, &crossed, accuracy)?;
     let mut verdict = Verdict::default();
     let floored = applies_timing_margin(current) && applies_timing_margin(baseline);
     if per_model.is_none() {
@@ -901,5 +952,7 @@ fn value_at<'a>(snapshot: &'a Value, path: &[&str]) -> Result<&'a Value> {
 }
 
 mod per_model;
+
+use per_model::AccuracyInput;
 #[cfg(test)]
 mod tests;

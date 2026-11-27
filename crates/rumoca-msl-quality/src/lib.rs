@@ -9,6 +9,8 @@
 //! This crate depends on no workspace crate, so xtask can share the rules
 //! without building the compiler.
 
+pub mod snapshot;
+
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -265,8 +267,12 @@ pub struct ModelState {
 /// Every sim target's state, by model name.
 pub type ModelStates = BTreeMap<String, ModelState>;
 
-/// What a reviewed reference boundary allows to change between two snapshots.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+/// What a reviewed reference boundary allows to change between two snapshots:
+/// a boundary's `reviewed_changes`, which is reviewed with the boundary chain
+/// it sits in (the ratchet requires the snapshot's chain to equal the checked-in
+/// one).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
 pub struct ReviewedChanges {
     /// Sim targets the boundary removes.
     pub removed_targets: BTreeSet<String>,
@@ -275,6 +281,25 @@ pub struct ReviewedChanges {
     /// Models whose compared channel set the boundary changes (for example a
     /// compiler rename).
     pub channel_set_changes: BTreeSet<String>,
+}
+
+impl ReviewedChanges {
+    /// The changes of every boundary a promotion crosses, read from each
+    /// link's `reviewed_changes`.
+    pub fn from_links(links: &[&serde_json::Value]) -> Result<Self, String> {
+        let mut all = Self::default();
+        for link in links {
+            let Some(changes) = link.get("reviewed_changes") else {
+                continue;
+            };
+            let changes: Self = serde_json::from_value(changes.clone())
+                .map_err(|error| format!("a boundary's reviewed_changes: {error}"))?;
+            all.removed_targets.extend(changes.removed_targets);
+            all.newly_excluded.extend(changes.newly_excluded);
+            all.channel_set_changes.extend(changes.channel_set_changes);
+        }
+        Ok(all)
+    }
 }
 
 /// Why a model is worse than its own previous state.
@@ -299,6 +324,27 @@ pub enum Regression {
         from: TraceExceptionKind,
         to: TraceExceptionKind,
     },
+}
+
+impl Regression {
+    /// Whether an OMC context change can explain this regression: what it
+    /// measures depends on the OMC reference (the band, the compared channel
+    /// names, the timing margin, which is relative to OMC time, and an OMC
+    /// failure). A stage drop, a target that leaves, a rumoca trace failure and
+    /// an exclusion kind change are rumoca's or policy's, and are never
+    /// excused by one.
+    pub fn depends_on_omc(&self) -> bool {
+        match self {
+            Self::BandDropped { .. }
+            | Self::ChannelsDropped { .. }
+            | Self::Uncertified
+            | Self::LeftScoring(UnscoredCause::OmcFailed) => true,
+            Self::LeftTargets
+            | Self::StageDropped { .. }
+            | Self::LeftScoring(_)
+            | Self::ExclusionKindChanged { .. } => false,
+        }
+    }
 }
 
 impl fmt::Display for Regression {
@@ -559,8 +605,8 @@ pub struct ModelAccuracy {
 /// The unit is the model, not the sum: a sum can fall while one model gets
 /// worse. A rise is never refused on its size, since a legitimate change can
 /// trade some models' accuracy for others'. It must instead be **stated** by the
-/// reviewed boundary the promotion crosses, and the statement must equal the
-/// measured list exactly: every rising model, with its values. Simulations and
+/// generated, checked-in [`AccuracyStatement`] keyed to the baseline, and the
+/// statement must equal the measured list exactly: every rising model, with its values. Simulations and
 /// the comparator are deterministic (bit-equal across runners), so a stale,
 /// incomplete or guessed statement cannot match, and an unstated rise is
 /// refused. The summed error is reported, not ruled on.
@@ -606,13 +652,82 @@ pub fn verify_evidence(bytes: &[u8], pinned_sha256: &str) -> Result<EvidenceStat
     parse_evidence_states(text)
 }
 
-/// How per-model accuracy rises are treated.
-#[derive(Debug, Clone, Copy)]
-pub enum AccuracyRule<'a> {
-    /// Promotion: every rise must be stated, exactly, by this statement.
-    Stated(Option<&'a AccuracyChange>),
-    /// A pull request: rises are listed, largest first, and not ruled on.
-    Reported,
+/// The checked-in accuracy statement, relative to the workspace root.
+pub const ACCURACY_STATEMENT_FILE: &str =
+    "crates/rumoca-test-msl/tests/msl_tests/msl_accuracy_changes.json";
+
+/// The schema of an [`AccuracyStatement`] file.
+pub const ACCURACY_STATEMENT_SCHEMA_VERSION: u32 = 1;
+
+/// The checked-in, generated statement of every model whose mean channel error
+/// rose against one baseline, keyed to that baseline's sha256. Once another
+/// baseline is promoted the key no longer matches and the file is refused as
+/// stale, so a statement is used against exactly one baseline.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AccuracyStatement {
+    pub schema_version: u32,
+    /// The sha256 of the baseline file the rises are measured against.
+    pub baseline_sha256: String,
+    pub rose: Vec<ModelAccuracy>,
+}
+
+/// The lowercase hex sha256 of `bytes`.
+pub fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    format!("{:x}", Sha256::digest(bytes))
+}
+
+/// The accuracy change a statement file states against the baseline whose
+/// sha256 is `baseline_sha256`; `None` when there is no file. A file keyed to
+/// another baseline, of another schema, or stating no rise is refused.
+pub fn stated_accuracy(
+    statement: Option<&[u8]>,
+    baseline_sha256: &str,
+) -> Result<Option<AccuracyChange>, String> {
+    let Some(bytes) = statement else {
+        return Ok(None);
+    };
+    let statement: AccuracyStatement = serde_json::from_slice(bytes)
+        .map_err(|error| format!("invalid accuracy statement: {error}"))?;
+    if statement.schema_version != ACCURACY_STATEMENT_SCHEMA_VERSION {
+        return Err(format!(
+            "accuracy statement schema {} is not {ACCURACY_STATEMENT_SCHEMA_VERSION}",
+            statement.schema_version
+        ));
+    }
+    if statement.baseline_sha256 != baseline_sha256 {
+        return Err(format!(
+            "stale accuracy statement: it is keyed to baseline {}, the run is judged against \
+             {baseline_sha256}; regenerate it with `cargo xtask verify msl-accuracy-changes` (it deletes the file \
+             when no model's error rose)",
+            statement.baseline_sha256
+        ));
+    }
+    if statement.rose.is_empty() {
+        return Err("the accuracy statement states no rise; delete it".to_string());
+    }
+    Ok(Some(AccuracyChange {
+        rose: statement.rose,
+    }))
+}
+
+/// The statement file for `measured` against the baseline `baseline_sha256`,
+/// or `None` when no model's error rose (then there must be no file).
+pub fn accuracy_statement(
+    baseline_sha256: &str,
+    measured: Option<&AccuracyChange>,
+) -> Option<String> {
+    let measured = measured?;
+    let statement = AccuracyStatement {
+        schema_version: ACCURACY_STATEMENT_SCHEMA_VERSION,
+        baseline_sha256: baseline_sha256.to_string(),
+        rose: measured.rose.clone(),
+    };
+    let mut text = serde_json::to_string_pretty(&statement)
+        .expect("an accuracy statement of strings and finite floats serializes");
+    text.push('\n');
+    Some(text)
 }
 
 /// The per-model rule's decision, as lines.
@@ -626,25 +741,25 @@ pub struct PerModelVerdict {
     pub report: Vec<String>,
 }
 
-/// Judge `after` against `before` model by model: the transition table, the
-/// continuous floors over the models scored in both, and the accuracy rule.
-/// Across an OMC context change only OMC-independent transitions count (a
-/// stage drop, a target that leaves), and the trace measures are not compared.
+/// Judge `after` against `before` model by model: the transition table (with
+/// the changes the crossed boundaries review), the continuous floors over the
+/// models scored in both, and the accuracy rule: every model whose mean channel
+/// error rose is listed, largest first, and the list must equal `stated`
+/// exactly. Across an OMC context change only the regressions an OMC change
+/// cannot explain count ([`Regression::depends_on_omc`]), and the trace
+/// measures are not compared.
 pub fn judge(
     before: &ModelStates,
     after: &ModelStates,
-    accuracy: AccuracyRule<'_>,
+    reviewed: &ReviewedChanges,
+    stated: Option<&AccuracyChange>,
     omc_context_changed: bool,
 ) -> PerModelVerdict {
     let mut verdict = PerModelVerdict::default();
-    for (model, transition) in transitions(before, after, &ReviewedChanges::default()) {
+    for (model, transition) in transitions(before, after, reviewed) {
         match transition {
             Transition::Regressed(why) => {
-                let omc_independent = matches!(
-                    why,
-                    Regression::StageDropped { .. } | Regression::LeftTargets
-                );
-                if omc_independent || !omc_context_changed {
+                if !(omc_context_changed && why.depends_on_omc()) {
                     verdict.regressions.push(format!("{model}: {why}"));
                 }
             }
@@ -653,7 +768,10 @@ pub fn judge(
             Transition::New => verdict
                 .improvements
                 .push(format!("{model}: new sim target")),
-            Transition::Reviewed | Transition::Unchanged => {}
+            Transition::Reviewed => verdict
+                .report
+                .push(format!("{model}: changed as a crossed boundary reviews")),
+            Transition::Unchanged => {}
         }
     }
     if omc_context_changed {
@@ -667,42 +785,31 @@ pub fn judge(
         floors.models
     ));
     let measured = accuracy_change(before, after);
-    match accuracy {
-        AccuracyRule::Reported => {
-            if let Some(change) = &measured {
-                let mut ranked = change.rose.clone();
-                ranked.sort_by(|a, b| (b.after - b.before).total_cmp(&(a.after - a.before)));
-                verdict.report.push(format!(
-                    "{} models' mean channel error rose, largest first:",
-                    ranked.len()
-                ));
-                verdict.report.extend(ranked.iter().map(|model| {
-                    format!("  {} {:e} -> {:e}", model.model, model.before, model.after)
-                }));
-            }
-        }
-        AccuracyRule::Stated(stated) if measured.as_ref() != stated => {
-            verdict.regressions.push(match &measured {
-                Some(change) => format!(
-                    "{} models' mean channel error rose and the crossed boundary does not \
-                     state exactly that: {}",
-                    change.rose.len(),
-                    change
-                        .rose
-                        .iter()
-                        .map(|model| format!(
-                            "{} {:e} -> {:e}",
-                            model.model, model.before, model.after
-                        ))
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                ),
-                None => "a crossed boundary states an accuracy change, but no model's mean \
-                         channel error rose"
-                    .to_string(),
-            });
-        }
-        AccuracyRule::Stated(_) => {}
+    if let Some(change) = &measured {
+        let mut ranked = change.rose.clone();
+        ranked.sort_by(|a, b| (b.after - b.before).total_cmp(&(a.after - a.before)));
+        verdict.report.push(format!(
+            "{} models' mean channel error rose, largest first:",
+            ranked.len()
+        ));
+        verdict.report.extend(
+            ranked
+                .iter()
+                .map(|model| format!("  {} {:e} -> {:e}", model.model, model.before, model.after)),
+        );
+    }
+    if measured.as_ref() != stated {
+        verdict.regressions.push(match &measured {
+            Some(change) => format!(
+                "{} models' mean channel error rose and {ACCURACY_STATEMENT_FILE} does not state \
+                 exactly that; regenerate it with `cargo xtask verify msl-accuracy-changes`",
+                change.rose.len()
+            ),
+            None => format!(
+                "{ACCURACY_STATEMENT_FILE} states an accuracy change, but no model's mean channel \
+                 error rose; delete it"
+            ),
+        });
     }
     verdict
 }

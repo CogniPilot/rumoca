@@ -120,6 +120,10 @@ pub(crate) struct MslParityConfig {
     /// Resolved quality baseline JSON file. Relative paths are resolved from
     /// the workspace root.
     pub quality_baseline_file: Option<PathBuf>,
+    /// The raw promoted baseline asset the per-model rule judges against (the
+    /// baseline promotion judges against). Relative paths are resolved from
+    /// the workspace root.
+    pub promoted_baseline_file: Option<PathBuf>,
     /// Opt into the generated simulation-targets file when no explicit file or
     /// committed file applies.
     pub generated_sim_targets_file: Option<bool>,
@@ -285,6 +289,17 @@ pub(crate) fn msl_results_dir() -> PathBuf {
         return path.clone();
     }
     msl_workspace_root().join(path)
+}
+
+pub(crate) fn promoted_baseline_file() -> Option<PathBuf> {
+    let path = parity_config().promoted_baseline_file.as_ref()?;
+    if path.as_os_str().is_empty() {
+        return None;
+    }
+    if path.is_absolute() {
+        return Some(path.clone());
+    }
+    Some(msl_workspace_root().join(path))
 }
 
 pub(crate) fn quality_baseline_file_override() -> Option<PathBuf> {

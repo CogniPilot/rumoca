@@ -523,6 +523,7 @@ impl Fixtures {
             &self.dir.join("source.json"),
             &self.dir.join("baseline.json"),
             &self.dir.join("checked-in.json"),
+            &self.dir.join("msl_accuracy_changes.json"),
             &mut |_| {},
         )
         .unwrap()
@@ -809,33 +810,120 @@ mod per_model_rule {
     }
 
     #[test]
-    fn an_accuracy_rise_must_be_stated_exactly_by_a_crossed_boundary() {
-        let before = full_snapshot(3);
-        let mut before = with_states(before, json!({ "A": simulated(1.0e-3) }));
-        before["reference_boundary_migration"] = boundary_chain(3);
-        let rose = json!({ "rose": [{ "model": "A", "before": 1.0e-3, "after": 2.0e-3 }] });
-        let current_with = |statement: Option<Value>| {
-            let mut current = with_states(full_snapshot(4), json!({ "A": simulated(2.0e-3) }));
-            if let Some(statement) = statement {
-                current["reference_boundary_migration"]["accuracy_change"] = statement;
-            }
-            current
+    fn an_accuracy_rise_must_be_stated_exactly_by_the_statement_keyed_to_the_baseline() {
+        let before = with_states(
+            full_snapshot(4),
+            json!({ "A": simulated(1.0e-3), "B": state(
+                ModelStage::Compiled,
+                TraceState::Unscored(UnscoredCause::NotSimulated),
+                None,
+            ) }),
+        );
+        // A gets less accurate, B newly simulates (so there is progress).
+        let current = with_states(
+            full_snapshot(4),
+            json!({ "A": simulated(2.0e-3), "B": simulated(1.0e-3) }),
+        );
+        let baseline_bytes = serde_json::to_vec_pretty(&before).unwrap();
+        let key = rumoca_msl_quality::sha256_hex(&baseline_bytes);
+        let statement = |key: &str, after: f64| AccuracyInput {
+            baseline_sha256: rumoca_msl_quality::sha256_hex(&baseline_bytes),
+            statement: Some(
+                json!({
+                    "schema_version": 1,
+                    "baseline_sha256": key,
+                    "rose": [{ "model": "A", "before": 1.0e-3, "after": after }],
+                })
+                .to_string()
+                .into_bytes(),
+            ),
         };
-        let checked_in_for = |current: &Value| {
+        let judge = |accuracy: &AccuracyInput| {
+            ratchet_decision_with(&current, &before, &full_snapshot(4), accuracy)
+        };
+        let unstated = judge(&AccuracyInput::default()).unwrap();
+        assert!(!unstated.promote);
+        assert!(unstated.reason.unwrap().contains("mean channel error rose"));
+        let stated = judge(&statement(&key, 2.0e-3)).unwrap();
+        assert!(stated.promote, "{:?}", stated.reason);
+        assert!(
+            stated
+                .report
+                .iter()
+                .any(|line| line.contains("A 1e-3 -> 2e-3"))
+        );
+        let wrong_value = judge(&statement(&key, 1.9e-3)).unwrap();
+        assert!(!wrong_value.promote);
+        let wrong_key = error_of(judge(&statement(&"0".repeat(64), 2.0e-3)));
+        assert!(
+            wrong_key.starts_with("stale accuracy statement"),
+            "{wrong_key}"
+        );
+    }
+
+    #[test]
+    fn a_reviewed_removal_passes_and_the_same_removal_without_the_link_refuses() {
+        let before = with_states(
+            full_snapshot(3),
+            json!({ "A": simulated(1.0e-3), "Gone": simulated(1.0e-3) }),
+        );
+        let current_with = |reviewed: Option<Value>| {
+            let mut current = with_states(full_snapshot(4), json!({ "A": simulated(1.0e-3) }));
+            if let Some(reviewed) = reviewed {
+                current["reference_boundary_migration"]["reviewed_changes"] = reviewed;
+            }
             let mut checked_in = full_snapshot(4);
             checked_in["reference_boundary_migration"] =
                 current["reference_boundary_migration"].clone();
-            checked_in
+            (current, checked_in)
         };
-        let judge =
-            |current: &Value| ratchet_decision(current, &before, &checked_in_for(current)).unwrap();
-        let unstated = judge(&current_with(None));
-        assert!(!unstated.promote);
-        assert!(unstated.reason.unwrap().contains("mean channel error rose"));
-        assert!(judge(&current_with(Some(rose.clone()))).promote);
-        let mut stale = rose;
-        stale["rose"][0]["after"] = json!(1.9e-3);
-        assert!(!judge(&current_with(Some(stale))).promote);
+        let (current, checked_in) = current_with(Some(json!({ "removed_targets": ["Gone"] })));
+        let reviewed = ratchet_decision(&current, &before, &checked_in).unwrap();
+        assert!(reviewed.promote, "{:?}", reviewed.reason);
+        let (current, checked_in) = current_with(None);
+        let unreviewed = ratchet_decision(&current, &before, &checked_in).unwrap();
+        assert!(!unreviewed.promote);
+        assert!(
+            unreviewed
+                .reason
+                .unwrap()
+                .contains("Gone: left the sim targets without a reviewed removal")
+        );
+    }
+
+    #[test]
+    fn the_generator_writes_the_measured_rises_and_deletes_a_needless_statement() {
+        let before = with_states(full_snapshot(4), json!({ "A": simulated(1.0e-3) }));
+        let rose = with_states(full_snapshot(4), json!({ "A": simulated(2.0e-3) }));
+        let fixtures = Fixtures::new("accuracy", &before, &rose, &full_snapshot(4));
+        let out = fixtures.dir.join("msl_accuracy_changes.json");
+        let generate = |source: &str| {
+            write_accuracy_statement(
+                &fixtures.dir.join(source),
+                &fixtures.dir.join("baseline.json"),
+                &fixtures.dir.join("checked-in.json"),
+                &out,
+            )
+            .unwrap()
+        };
+        assert!(generate("source.json").starts_with("wrote "));
+        // What it wrote is exactly what the ratchet then accepts.
+        let accuracy = AccuracyInput::read(fixtures.baseline_text().as_bytes(), &out).unwrap();
+        let decision = ratchet_decision_with(&rose, &before, &full_snapshot(4), &accuracy).unwrap();
+        assert!(
+            decision.regressions.is_empty(),
+            "{:?}",
+            decision.regressions
+        );
+        // A run with no rise deletes it.
+        fs::write(
+            fixtures.dir.join("same.json"),
+            serde_json::to_string(&before).unwrap(),
+        )
+        .unwrap();
+        assert!(generate("same.json").contains("deleted"));
+        assert!(!out.exists());
+        assert!(generate("same.json").contains("no statement needed"));
     }
 
     #[test]
@@ -860,7 +948,7 @@ mod per_model_rule {
             &current,
             &baseline,
             &[&pinned],
-            false,
+            &AccuracyInput::default(),
             &dir,
         )
         .unwrap()
@@ -871,16 +959,21 @@ mod per_model_rule {
             &current,
             &baseline,
             &[&forged],
-            false,
+            &AccuracyInput::default(),
             &dir,
         )
         .unwrap_err()
         .to_string();
         assert!(error.contains("the reviewed boundary pins 0000"), "{error}");
-        let none =
-            super::super::per_model::judge_snapshot_at(&current, &baseline, &[], false, &dir)
-                .unwrap_err()
-                .to_string();
+        let none = super::super::per_model::judge_snapshot_at(
+            &current,
+            &baseline,
+            &[],
+            &AccuracyInput::default(),
+            &dir,
+        )
+        .unwrap_err()
+        .to_string();
         assert!(error_contains(
             &none,
             "no crossed reference boundary pins evidence"
