@@ -169,6 +169,10 @@ impl SolveRuntime {
             .map(|program| vec![0.0; program.output_scalar_count()])
             .collect();
         let event_transaction_coverage = PreparedEventTransactionCoverage::new(model);
+        // A condition the dependence analysis cannot follow keeps every
+        // assertion on the accepted-step check, as before the analysis.
+        let accepted_step_assertions = rumoca_ir_solve::fmi::accepted_step_assertions(model)
+            .unwrap_or_else(|| vec![true; model.problem.events.actions.len()]);
         let observation_refresh_scalar_rows = model
             .problem
             .discrete
@@ -624,6 +628,7 @@ impl SolveRuntime {
             guarded_assignment_programs,
             event_transaction_programs,
             event_transaction_coverage,
+            accepted_step_assertions,
             initialization_update_rhs: prepare(
                 |primary| &primary.initialization_update_rhs,
                 model.problem.initialization.update_rhs().clone(),

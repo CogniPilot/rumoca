@@ -104,6 +104,7 @@ pub use root_location::{
     RootBracket, RootLocationPlan, RootRefinementMethod, RootTieBreak, SlidingModes,
 };
 pub use scalar_events::{ScalarEventProfile, scalar_event_profile};
+pub use static_assertions::accepted_step_assertions;
 
 /// Configuration-Mode capability declared by the checked FMI component.
 ///

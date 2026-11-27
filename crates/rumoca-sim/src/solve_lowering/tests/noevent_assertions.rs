@@ -428,3 +428,95 @@ fn a_model_exchange_import_does_not_check_trial_points() {
     let run = fixed_step_import(source, "TrialOnly", 0.01).expect("no accepted point violates it");
     assert_eq!(run.times.len(), 100);
 }
+
+/// Whether a run of `source` checks its unclocked error-level assertions at
+/// each accepted step, on the native and reference backends alike.
+fn checks_at_accepted_steps(source: &str, model: &str) -> bool {
+    let dae = compile(source, model);
+    let model = lower_dae_for_simulation(&dae, &SimOptions::default()).unwrap();
+    let backend = crate::native_execution::backend(&model.pure_calls).unwrap();
+    let native =
+        rumoca_solver::SolveRuntime::new_with_execution_backend(&model, Some(backend)).unwrap();
+    let reference = rumoca_solver::SolveRuntime::new(&model).unwrap();
+    let native = native.has_unclocked_error_assertions().unwrap();
+    assert_eq!(native, reference.has_unclocked_error_assertions().unwrap());
+    native
+}
+
+fn assertion_model(declarations: &str, condition: &str) -> String {
+    format!(
+        concat!(
+            "model Checked\n",
+            "  Real x(start = 0, fixed = true);\n",
+            "{}",
+            "equation\n",
+            "  der(x) = sin(10*time);\n",
+            "  assert({}, \"checked\");\n",
+            "end Checked;\n",
+        ),
+        declarations, condition
+    )
+}
+
+/// A condition that reads only parameters and constants cannot change
+/// between events, so no accepted step re-observes the coordinate for it
+/// (the run-phase cost of #694 on MSL models, whose asserts are parameter
+/// checks); a violated one still stops the run at its first output point.
+#[test]
+fn a_parameter_only_assertion_is_not_checked_at_accepted_steps() {
+    let source = assertion_model("  parameter Real k = 1;\n", "k > 0");
+    assert!(!checks_at_accepted_steps(&source, "Checked"));
+    let violated = assertion_model("  parameter Real k = -1;\n", "k > 0");
+    let error = simulate_dae(&compile(&violated, "Checked"), &SimOptions::default())
+        .expect_err("a violated parameter assertion must stop the run");
+    assert_eq!(failure_time(&error, "checked").to_bits(), 0.0_f64.to_bits());
+}
+
+/// A condition on a state keeps the accepted-step check, whether it lies
+/// inside `noEvent` (no root) or outside it (rooted).
+#[test]
+fn a_state_assertion_is_checked_at_accepted_steps() {
+    for condition in ["noEvent(x > -10)", "x > -10"] {
+        let source = assertion_model("", condition);
+        assert!(checks_at_accepted_steps(&source, "Checked"), "{condition}");
+    }
+}
+
+/// A top-level input can change between events without one, so an assertion
+/// on it keeps the accepted-step check.
+#[test]
+fn an_input_assertion_is_checked_at_accepted_steps() {
+    let source = assertion_model("  input Real u = 0;\n", "noEvent(u < 10)");
+    assert!(checks_at_accepted_steps(&source, "Checked"));
+}
+
+/// A discrete value is held between events, so an assertion that reads only
+/// it leaves the accepted-step check; when an event changes it into a
+/// violation, the run still stops no later than the next output point.
+#[test]
+fn an_assertion_violated_by_an_event_update_stops_by_the_next_output_point() {
+    let source = concat!(
+        "model EventViolated\n",
+        "  Real x(start = 0, fixed = true);\n",
+        "  discrete Real k(start = 1, fixed = true);\n",
+        "equation\n",
+        "  der(x) = 1;\n",
+        "  when time > 0.5 then\n",
+        "    k = -1;\n",
+        "  end when;\n",
+        "  assert(k > 0, \"checked\");\n",
+        "end EventViolated;\n",
+    );
+    let dae = compile(source, "EventViolated");
+    let options = SimOptions {
+        t_end: 1.0,
+        dt: Some(0.1),
+        ..SimOptions::default()
+    };
+    let error = simulate_dae(&dae, &options).expect_err("the event update violates the assertion");
+    let time = failure_time(&error, "checked");
+    assert!(
+        (0.5..=0.6 + 1e-9).contains(&time),
+        "failed at t = {time}, expected the event at 0.5 or the next output point 0.6"
+    );
+}

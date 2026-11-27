@@ -390,6 +390,9 @@ struct ScalarExecutionInventory {
     guarded_assignment_programs: Vec<PreparedGuardedAssignmentProgram>,
     event_transaction_programs: Vec<PreparedEventTransactionProgram>,
     event_transaction_coverage: PreparedEventTransactionCoverage,
+    /// Per event action, whether an accepted step checks it: an error-level
+    /// assertion whose condition may change between events (warnings.rs).
+    accepted_step_assertions: Vec<bool>,
     initialization_update_rhs: PreparedScalarProgramBlock,
     dynamic_time_event_rhs: PreparedScalarProgramBlock,
     runtime_assignment_rhs: PreparedScalarProgramBlock,
