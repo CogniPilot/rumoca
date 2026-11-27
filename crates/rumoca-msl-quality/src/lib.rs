@@ -11,6 +11,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
+use std::fmt;
 
 /// Which agreement band the comparator placed a model in, or `Absent` when the
 /// model is not in the compared set at all.
@@ -247,6 +248,15 @@ pub struct ModelState {
     pub outcome: Option<String>,
     pub trace: TraceState,
     pub compared_channels: usize,
+    /// The comparator's violation mass over the compared channels, when the
+    /// model is scored.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trace_violation_mass: Option<f64>,
+    /// The mean of the compared channels' bounded normalized L1 errors, when
+    /// the model is scored: a continuous accuracy measure that moves inside a
+    /// band, where violation mass (deviation channels only) stays zero.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mean_channel_bounded_l1: Option<f64>,
     pub certified: bool,
     pub roster: bool,
     pub stage_seconds: StageSeconds,
@@ -289,6 +299,58 @@ pub enum Regression {
         from: TraceExceptionKind,
         to: TraceExceptionKind,
     },
+}
+
+impl fmt::Display for Regression {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::LeftTargets => write!(f, "left the sim targets without a reviewed removal"),
+            Self::StageDropped { from, to } => write!(f, "stage dropped: {from:?} -> {to:?}"),
+            Self::BandDropped { from, to } => {
+                write!(f, "band dropped: {} -> {}", from.as_str(), to.as_str())
+            }
+            Self::ChannelsDropped { from, to } => {
+                write!(f, "compared channels dropped: {from} -> {to}")
+            }
+            Self::LeftScoring(cause) => write!(f, "left scoring: {cause:?}"),
+            Self::Uncertified => write!(f, "no longer certified"),
+            Self::ExclusionKindChanged { from, to } => write!(
+                f,
+                "exclusion kind changed without a boundary: {} -> {}",
+                from.as_str(),
+                to.as_str()
+            ),
+        }
+    }
+}
+
+/// The schema of an [`EvidenceStates`] file.
+pub const EVIDENCE_STATES_SCHEMA_VERSION: u32 = 1;
+
+/// Model states measured for the old side of a crossing whose promoted
+/// baseline predates `model_states`, pinned by a reviewed boundary.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct EvidenceStates {
+    pub schema_version: u32,
+    /// The run the states were derived from.
+    pub source_run: String,
+    pub source_commit: String,
+    /// What a reader must know about that run before trusting a comparison.
+    pub caveats: Vec<String>,
+    pub model_states: ModelStates,
+}
+
+/// Parse an evidence file, refusing one of another schema.
+pub fn parse_evidence_states(text: &str) -> Result<EvidenceStates, String> {
+    let evidence: EvidenceStates = serde_json::from_str(text)
+        .map_err(|error| format!("parse the evidence model states: {error}"))?;
+    if evidence.schema_version != EVIDENCE_STATES_SCHEMA_VERSION {
+        return Err(format!(
+            "evidence model states schema {} is not the supported {}",
+            evidence.schema_version, EVIDENCE_STATES_SCHEMA_VERSION
+        ));
+    }
+    Ok(evidence)
 }
 
 /// What happened to one model between two snapshots.
@@ -399,6 +461,134 @@ fn transition(
     } else {
         Transition::Unchanged
     }
+}
+
+/// The continuous trace measures over the models **scored on both sides**: a
+/// newly scored model cannot move them, so they stay floors without counting
+/// progress as regression. They catch an accuracy loss that stays inside every
+/// model's band, which band transitions alone cannot see.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SharedFloors {
+    pub models: usize,
+    pub violation_mass: (f64, f64),
+    pub high_or_near: (usize, usize),
+    /// Sum of the models' mean channel bounded L1 errors, before and after.
+    pub mean_channel_bounded_l1: (f64, f64),
+}
+
+/// Relative tolerance of the violation-mass floor, the ratchet's float rule.
+const VIOLATION_MASS_EPSILON: f64 = 1.0e-9;
+
+pub fn shared_floors(before: &ModelStates, after: &ModelStates) -> SharedFloors {
+    let high_or_near = |state: &ModelState| {
+        matches!(
+            state.trace,
+            TraceState::Scored(BandLabel::High | BandLabel::Near)
+        )
+    };
+    let mut floors = SharedFloors {
+        models: 0,
+        violation_mass: (0.0, 0.0),
+        high_or_near: (0, 0),
+        mean_channel_bounded_l1: (0.0, 0.0),
+    };
+    for (model, previous) in before {
+        let Some(current) = after.get(model) else {
+            continue;
+        };
+        let (Some(was), Some(is)) = (previous.trace_violation_mass, current.trace_violation_mass)
+        else {
+            continue;
+        };
+        floors.models += 1;
+        floors.violation_mass.0 += was;
+        floors.violation_mass.1 += is;
+        floors.high_or_near.0 += usize::from(high_or_near(previous));
+        floors.high_or_near.1 += usize::from(high_or_near(current));
+        floors.mean_channel_bounded_l1.0 += previous.mean_channel_bounded_l1.unwrap_or(0.0);
+        floors.mean_channel_bounded_l1.1 += current.mean_channel_bounded_l1.unwrap_or(0.0);
+    }
+    floors
+}
+
+impl SharedFloors {
+    /// The rise of the shared models' summed mean channel error, as a sentence,
+    /// when it rose at all. Simulations are deterministic, so on the same
+    /// comparator unchanged accuracy is bit-equal and any rise is real.
+    pub fn accuracy_change(&self) -> Option<String> {
+        let (was, is) = self.mean_channel_bounded_l1;
+        (is > was).then(|| {
+            format!(
+                "mean channel bounded L1 over {} models scored in both: {was:.6e} -> {is:.6e}",
+                self.models
+            )
+        })
+    }
+
+    /// Each floor this comparison lowers, as a sentence.
+    pub fn regressions(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        let (was, is) = self.violation_mass;
+        if is > was + VIOLATION_MASS_EPSILON * was.abs().max(1.0) {
+            out.push(format!(
+                "trace violation mass over {} models scored in both: {was:.6e} -> {is:.6e}",
+                self.models
+            ));
+        }
+        let (was, is) = self.high_or_near;
+        if is < was {
+            out.push(format!(
+                "high+near trace agreement over {} models scored in both: {was} -> {is}",
+                self.models
+            ));
+        }
+        out
+    }
+}
+
+/// One model's mean channel bounded L1 error before and after.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ModelAccuracy {
+    pub model: String,
+    pub before: f64,
+    pub after: f64,
+}
+
+/// Every model scored on both sides whose mean channel bounded L1 error rose.
+///
+/// The unit is the model, not the sum: a sum can fall while one model gets
+/// worse. A rise is never refused on its size, since a legitimate change can
+/// trade some models' accuracy for others'. It must instead be **stated** by the
+/// reviewed boundary the promotion crosses, and the statement must equal the
+/// measured list exactly: every rising model, with its values. Simulations and
+/// the comparator are deterministic (bit-equal across runners), so a stale,
+/// incomplete or guessed statement cannot match, and an unstated rise is
+/// refused. The summed error is reported, not ruled on.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AccuracyChange {
+    /// The rising models, by name.
+    pub rose: Vec<ModelAccuracy>,
+}
+
+/// The models scored on both sides whose mean channel error rose, or `None`
+/// when none did.
+pub fn accuracy_change(before: &ModelStates, after: &ModelStates) -> Option<AccuracyChange> {
+    let rose = before
+        .iter()
+        .filter_map(|(model, previous)| {
+            let current = after.get(model)?;
+            let (was, is) = (
+                previous.mean_channel_bounded_l1?,
+                current.mean_channel_bounded_l1?,
+            );
+            (is > was).then(|| ModelAccuracy {
+                model: model.clone(),
+                before: was,
+                after: is,
+            })
+        })
+        .collect::<Vec<_>>();
+    (!rose.is_empty()).then_some(AccuracyChange { rose })
 }
 
 /// Fail on any regression; otherwise inconclusive while anything must be

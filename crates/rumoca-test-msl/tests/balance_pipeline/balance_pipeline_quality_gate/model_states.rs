@@ -101,6 +101,7 @@ pub(super) fn model_states(
     rows: &[BandRow],
     certified: &IndexSet<String>,
     roster: &IndexSet<String>,
+    masses: &BTreeMap<String, f64>,
 ) -> Result<ModelStates, String> {
     let results = results
         .iter()
@@ -118,11 +119,31 @@ pub(super) fn model_states(
                 .ok_or_else(|| format!("sim target {model} has no model result"))?;
             let (stage, outcome) = stage_of(result)?;
             let row = rows.get(model.as_str()).copied();
+            let trace = trace_of(row)?;
+            let (trace_violation_mass, mean_channel_bounded_l1) = match trace {
+                TraceState::Scored(_) => (
+                    Some(
+                        masses
+                            .get(model.as_str())
+                            .copied()
+                            .ok_or_else(|| format!("{model}: scored without a violation mass"))?,
+                    ),
+                    Some(
+                        row.and_then(|row| row.mean_channel_bounded_normalized_l1)
+                            .ok_or_else(|| {
+                                format!("{model}: scored without a mean channel error")
+                            })?,
+                    ),
+                ),
+                TraceState::Unscored(_) => (None, None),
+            };
             let state = ModelState {
                 stage,
                 outcome,
-                trace: trace_of(row)?,
+                trace,
                 compared_channels: row.map_or(0, |row| row.compared_variables),
+                trace_violation_mass,
+                mean_channel_bounded_l1,
                 certified: certified.contains(model),
                 roster: roster.contains(model),
                 stage_seconds: StageSeconds {
@@ -178,8 +199,8 @@ pub(super) fn insert_model_states(
     root: &mut serde_json::Map<String, serde_json::Value>,
     summary: &MslSummary,
     rows: &[BandRow],
-    certified: &IndexSet<String>,
-    roster: &IndexSet<String>,
+    (certified, roster): (&IndexSet<String>, &IndexSet<String>),
+    masses: &BTreeMap<String, f64>,
 ) -> io::Result<()> {
     let states = model_states(
         &summary.sim_target_models,
@@ -187,6 +208,7 @@ pub(super) fn insert_model_states(
         rows,
         certified,
         roster,
+        masses,
     )
     .map_err(io::Error::other)?;
     let value = serde_json::to_value(states)
@@ -203,6 +225,9 @@ mod tests {
         let mut row = serde_json::json!({
             "model_name": model, "band": band, "compared_variables": compared,
         });
+        if band != "absent" {
+            row["mean_channel_bounded_normalized_l1"] = serde_json::json!(1.0e-3);
+        }
         if let Some(exit) = exit {
             row["exit_reason"] = serde_json::json!(exit);
         }
@@ -229,7 +254,12 @@ mod tests {
             .collect::<Vec<_>>();
         let certified = IndexSet::from(["High".to_string()]);
         let roster = IndexSet::from(["Dev".to_string()]);
-        model_states(&targets, &results, &rows, &certified, &roster).expect("states")
+        // Every scored model carries a mass; the value only matters to the floors.
+        let masses = rows
+            .iter()
+            .map(|row| (row.model_name.clone(), 0.5))
+            .collect::<BTreeMap<_, _>>();
+        model_states(&targets, &results, &rows, &certified, &roster, &masses).expect("states")
     }
 
     #[test]
@@ -317,6 +347,7 @@ mod tests {
                 &rows,
                 &IndexSet::new(),
                 &IndexSet::new(),
+                &BTreeMap::new(),
             )
             .unwrap_err()
         };
@@ -346,6 +377,22 @@ mod tests {
     }
 
     #[test]
+    fn a_scored_model_without_a_violation_mass_is_refused() {
+        let targets = ["M".to_string()];
+        let simulated = result("M", "Success", Some("ic_ok"), Some("sim_ok"));
+        let error = model_states(
+            &targets,
+            &[simulated],
+            &[row("M", "high", None, 4)],
+            &IndexSet::new(),
+            &IndexSet::new(),
+            &BTreeMap::new(),
+        )
+        .unwrap_err();
+        assert!(error.contains("violation mass"), "{error}");
+    }
+
+    #[test]
     fn a_parse_failure_ranks_below_a_resolve_failure() {
         let states = states(
             vec![
@@ -365,6 +412,7 @@ mod tests {
             &[],
             &IndexSet::new(),
             &IndexSet::new(),
+            &BTreeMap::new(),
         )
         .unwrap_err();
         assert!(error.contains("Missing"), "{error}");

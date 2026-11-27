@@ -112,6 +112,8 @@ pub(crate) struct RatchetDecision {
     pub(crate) reason: Option<String>,
     pub(crate) improvements: Vec<String>,
     pub(crate) regressions: Vec<String>,
+    /// Printed with the decision, not ruled on.
+    pub(crate) report: Vec<String>,
 }
 
 /// Overwrite `baseline_path` with the snapshot at `source_path`, byte for
@@ -129,6 +131,9 @@ pub(crate) fn promote_baseline_if_improved(
     let checked_in = parse_json(&read(checked_in_baseline_path)?, checked_in_baseline_path)?;
 
     let decision = ratchet_decision(&source, &baseline, &checked_in)?;
+    for line in &decision.report {
+        log(line);
+    }
     if !decision.promote {
         log(&format!(
             "MSL quality baseline not promoted: {}",
@@ -269,25 +274,37 @@ pub(crate) fn ratchet_decision(
         validate_omc_context_migration(current, baseline, checked_in)?;
     }
 
+    // With per-model states, each model is judged against its own previous
+    // state, which subsumes the stage and trace count floors and the
+    // certified roster; otherwise the aggregate rule applies.
+    let per_model = per_model::judge(current, baseline, &crossed, omc_context_changed)?;
     let mut verdict = Verdict::default();
-    compare_certified_roster(current, baseline, &mut verdict)?;
     let floored = applies_timing_margin(current) && applies_timing_margin(baseline);
-    verdict.integers(
-        CONTEXT_INDEPENDENT_HIGHER_IS_BETTER,
-        current,
-        baseline,
-        true,
-        floored,
-    )?;
-    verdict.integers(
-        CONTEXT_INDEPENDENT_LOWER_IS_BETTER,
-        current,
-        baseline,
-        false,
-        floored,
-    )?;
+    if per_model.is_none() {
+        compare_certified_roster(current, baseline, &mut verdict)?;
+        verdict.integers(
+            CONTEXT_INDEPENDENT_HIGHER_IS_BETTER,
+            current,
+            baseline,
+            true,
+            floored,
+        )?;
+        verdict.integers(
+            CONTEXT_INDEPENDENT_LOWER_IS_BETTER,
+            current,
+            baseline,
+            false,
+            floored,
+        )?;
+    }
     if !omc_context_changed {
-        compare_omc_dependent(current, baseline, floored, &mut verdict)?;
+        compare_omc_dependent(
+            current,
+            baseline,
+            floored,
+            per_model.is_none(),
+            &mut verdict,
+        )?;
     } else {
         verdict
             .improvements
@@ -306,6 +323,14 @@ pub(crate) fn ratchet_decision(
         ));
     }
 
+    let mut report = Vec::new();
+    let mut inconclusive = Vec::new();
+    if let Some(per_model) = per_model {
+        verdict.regressions.extend(per_model.regressions);
+        verdict.improvements.extend(per_model.improvements);
+        inconclusive = per_model.inconclusive;
+        report = per_model.report;
+    }
     let Verdict {
         improvements,
         regressions,
@@ -314,6 +339,11 @@ pub(crate) fn ratchet_decision(
         Some(format!(
             "ratchet metric regression(s): {}",
             regressions.join("; ")
+        ))
+    } else if !inconclusive.is_empty() {
+        Some(format!(
+            "re-measure first, these models are inconclusive: {}",
+            inconclusive.join("; ")
         ))
     } else if improvements.is_empty() {
         Some("source snapshot is equivalent to the committed baseline".to_string())
@@ -325,12 +355,36 @@ pub(crate) fn ratchet_decision(
         reason,
         improvements,
         regressions,
+        report,
     })
 }
 
 /// The metrics only comparable under one OMC context: trace agreement, the
 /// rosters, the trace exception file and the cohort-relative totals.
 fn compare_omc_dependent(
+    current: &Value,
+    baseline: &Value,
+    floored: bool,
+    aggregates: bool,
+    verdict: &mut Verdict,
+) -> Result<()> {
+    if aggregates {
+        compare_trace_aggregates(current, baseline, floored, verdict)?;
+    }
+    compare_unexcepted_roster(current, baseline, verdict)?;
+    compare_trace_exceptions(current, baseline, verdict)?;
+    let cohort = cohort_comparison(
+        CohortInput::read(baseline, "baseline snapshot")?.view(),
+        CohortInput::read(current, "current snapshot")?.view(),
+    )?;
+    verdict.improvements.extend(cohort.improvements);
+    verdict.regressions.extend(cohort.regressions);
+    Ok(())
+}
+
+/// The trace count and mass floors of the aggregate rule, which per-model
+/// transitions replace.
+fn compare_trace_aggregates(
     current: &Value,
     baseline: &Value,
     floored: bool,
@@ -357,16 +411,7 @@ fn compare_omc_dependent(
             number_at(baseline, path, "baseline snapshot")?,
         );
     }
-    compare_derived_metrics(current, baseline, floored, verdict)?;
-    compare_unexcepted_roster(current, baseline, verdict)?;
-    compare_trace_exceptions(current, baseline, verdict)?;
-    let cohort = cohort_comparison(
-        CohortInput::read(baseline, "baseline snapshot")?.view(),
-        CohortInput::read(current, "current snapshot")?.view(),
-    )?;
-    verdict.improvements.extend(cohort.improvements);
-    verdict.regressions.extend(cohort.regressions);
-    Ok(())
+    compare_derived_metrics(current, baseline, floored, verdict)
 }
 
 /// A promoted baseline at an older quality schema is crossed only through the
@@ -855,5 +900,6 @@ fn value_at<'a>(snapshot: &'a Value, path: &[&str]) -> Result<&'a Value> {
     Ok(value)
 }
 
+mod per_model;
 #[cfg(test)]
 mod tests;

@@ -36,15 +36,10 @@ pub(super) fn insert_cohort_evidence(
     root: &mut serde_json::Map<String, serde_json::Value>,
     parity: &MslParityGateInput,
     table: &BandTable,
+    trace: &serde_json::Value,
 ) -> io::Result<()> {
     let path = msl_results_dir().join(TRACE_COMPARISON_FILE);
-    let trace: serde_json::Value = serde_json::from_slice(&fs::read(&path)?).map_err(|error| {
-        io::Error::other(format!(
-            "invalid comparator output {}: {error}",
-            path.display()
-        ))
-    })?;
-    let evidence = trace_model_evidence(&trace)?;
+    let evidence = trace_model_evidence(trace)?;
     let compared = table
         .compared_rows()
         .map(|row| row.model_name.as_str())
@@ -67,6 +62,39 @@ pub(super) fn insert_cohort_evidence(
         to_json(&runtime_model_ratios(parity))?,
     );
     Ok(())
+}
+
+/// The comparator output the band table was derived from.
+pub(super) fn load_trace_comparison() -> io::Result<serde_json::Value> {
+    let path = msl_results_dir().join(TRACE_COMPARISON_FILE);
+    serde_json::from_slice(&fs::read(&path)?).map_err(|error| {
+        io::Error::other(format!(
+            "invalid comparator output {}: {error}",
+            path.display()
+        ))
+    })
+}
+
+/// Each compared model's trace violation mass in a comparator output.
+pub(super) fn trace_violation_masses(
+    trace: &serde_json::Value,
+) -> io::Result<BTreeMap<String, f64>> {
+    let models = trace
+        .get("models")
+        .and_then(serde_json::Value::as_object)
+        .ok_or_else(|| io::Error::other("comparator output has no models map"))?;
+    models
+        .iter()
+        .map(|(name, model)| {
+            json_f64_field(model, "channel_violation_mass")
+                .map(|mass| (name.clone(), mass))
+                .ok_or_else(|| {
+                    io::Error::other(format!(
+                        "comparator output has no violation mass for {name}"
+                    ))
+                })
+        })
+        .collect()
 }
 
 /// The per-model initial-condition and state-set evidence of a comparator

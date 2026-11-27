@@ -6,6 +6,8 @@ fn simulated(band: BandLabel, channels: usize) -> ModelState {
         outcome: None,
         trace: TraceState::Scored(band),
         compared_channels: channels,
+        trace_violation_mass: Some(0.0),
+        mean_channel_bounded_l1: Some(0.0),
         certified: band == BandLabel::High,
         roster: false,
         stage_seconds: StageSeconds::default(),
@@ -18,6 +20,8 @@ fn failed(stage: ModelStage, outcome: &str) -> ModelState {
         outcome: Some(outcome.to_string()),
         trace: TraceState::Unscored(UnscoredCause::NotSimulated),
         compared_channels: 0,
+        trace_violation_mass: None,
+        mean_channel_bounded_l1: None,
         certified: false,
         roster: false,
         stage_seconds: StageSeconds::default(),
@@ -28,6 +32,8 @@ fn unscored(cause: UnscoredCause) -> ModelState {
     ModelState {
         trace: TraceState::Unscored(cause),
         compared_channels: 0,
+        trace_violation_mass: None,
+        mean_channel_bounded_l1: None,
         certified: false,
         ..simulated(BandLabel::High, 0)
     }
@@ -261,4 +267,112 @@ fn an_exclusion_that_changes_kind_needs_a_boundary() {
         Some(TraceExceptionKind::ComparatorLimitation)
     );
     assert_eq!(TraceExceptionKind::parse("near_zero"), None);
+}
+
+#[test]
+fn an_evidence_file_of_another_schema_is_refused() {
+    let file = |version: u32| {
+        serde_json::json!({
+            "schema_version": version,
+            "source_run": "ci-1",
+            "source_commit": "abc",
+            "caveats": [],
+            "model_states": { "M": simulated(BandLabel::High, 3) },
+        })
+        .to_string()
+    };
+    let evidence = parse_evidence_states(&file(EVIDENCE_STATES_SCHEMA_VERSION)).unwrap();
+    assert_eq!(evidence.model_states.len(), 1);
+    let error = parse_evidence_states(&file(EVIDENCE_STATES_SCHEMA_VERSION + 1)).unwrap_err();
+    assert!(error.contains("is not the supported"), "{error}");
+}
+
+#[test]
+fn a_regression_reads_as_a_sentence() {
+    assert_eq!(
+        Regression::BandDropped {
+            from: BandLabel::High,
+            to: BandLabel::Deviation
+        }
+        .to_string(),
+        "band dropped: high -> deviation"
+    );
+}
+
+#[test]
+fn the_continuous_floors_count_only_models_scored_on_both_sides() {
+    let scored = |mass: f64, band| ModelState {
+        trace_violation_mass: Some(mass),
+        ..simulated(band, 10)
+    };
+    let before = ModelStates::from([
+        ("Kept".to_string(), scored(1.0, BandLabel::High)),
+        ("Hidden".to_string(), unscored(UnscoredCause::NotSimulated)),
+    ]);
+    // A newly scored model with a large mass does not move the floor.
+    let after = ModelStates::from([
+        ("Kept".to_string(), scored(1.0, BandLabel::High)),
+        ("Hidden".to_string(), scored(7.5, BandLabel::Deviation)),
+    ]);
+    let floors = shared_floors(&before, &after);
+    assert_eq!(floors.models, 1);
+    assert!(
+        floors.regressions().is_empty(),
+        "{:?}",
+        floors.regressions()
+    );
+    // An accuracy loss that stays inside the band is caught.
+    let worse = ModelStates::from([("Kept".to_string(), scored(2.0, BandLabel::High))]);
+    let regressions = shared_floors(&before, &worse).regressions();
+    assert_eq!(regressions.len(), 1, "{regressions:?}");
+    assert!(regressions[0].starts_with("trace violation mass over 1 models"));
+}
+
+#[test]
+fn an_accuracy_loss_inside_the_band_shows_in_the_mean_channel_error() {
+    let scored = |error: f64| ModelState {
+        mean_channel_bounded_l1: Some(error),
+        ..simulated(BandLabel::High, 10)
+    };
+    let before = ModelStates::from([("Tank".to_string(), scored(1.0e-3))]);
+    let after = ModelStates::from([("Tank".to_string(), scored(2.3e-3))]);
+    let floors = shared_floors(&before, &after);
+    // Same band, zero violation mass: only the continuous measure moves.
+    assert!(floors.regressions().is_empty());
+    assert!(floors.accuracy_change().unwrap().contains("over 1 models"));
+    assert_eq!(shared_floors(&before, &before).accuracy_change(), None);
+}
+
+#[test]
+fn every_model_whose_error_rose_is_listed_even_when_the_sum_falls() {
+    let scored = |error: f64| ModelState {
+        mean_channel_bounded_l1: Some(error),
+        ..simulated(BandLabel::High, 10)
+    };
+    let before = ModelStates::from([
+        ("A".to_string(), scored(1.0e-3)),
+        ("B".to_string(), scored(5.0e-3)),
+    ]);
+    // A gets worse, B gets much better: the sum falls, A must still be named.
+    let after = ModelStates::from([
+        ("A".to_string(), scored(1.5e-3)),
+        ("B".to_string(), scored(1.0e-3)),
+    ]);
+    let floors = shared_floors(&before, &after);
+    assert!(floors.mean_channel_bounded_l1.1 < floors.mean_channel_bounded_l1.0);
+    let change = accuracy_change(&before, &after).expect("A rose");
+    assert_eq!(
+        change.rose,
+        vec![ModelAccuracy {
+            model: "A".to_string(),
+            before: 1.0e-3,
+            after: 1.5e-3
+        }]
+    );
+    // A statement must be the measured list exactly.
+    let mut stated = change.clone();
+    stated.rose[0].after += f64::EPSILON;
+    assert_ne!(stated, change);
+    let unchanged = ModelStates::from([("A".to_string(), scored(1.0e-3))]);
+    assert_eq!(accuracy_change(&unchanged, &unchanged), None);
 }

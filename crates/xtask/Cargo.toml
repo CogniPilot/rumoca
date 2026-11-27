@@ -19,6 +19,7 @@ path = "src/bin/rumoca-traversal-policy-check.rs"
 # and shells out. Compiler-linked work runs on demand through commands in the
 # owning package. The CI arch check enforces this boundary.
 [dependencies]
+rumoca-msl-quality = { workspace = true }
 anyhow = { workspace = true }
 rustc-demangle = "0.1"
 clap = { workspace = true }

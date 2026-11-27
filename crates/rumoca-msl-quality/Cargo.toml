@@ -12,8 +12,6 @@ publish = false
 # building the compiler (see the architecture test that pins this).
 [dependencies]
 serde = { workspace = true }
-
-[dev-dependencies]
 serde_json = { workspace = true }
 
 [lints]

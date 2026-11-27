@@ -725,3 +725,157 @@ fn the_run_cohort_not_the_whole_run_carries_the_runtime_medians() {
             .contains("runtime wall speedup median over 2 reference cohort models")
     );
 }
+
+mod per_model_rule {
+    use super::*;
+    use rumoca_msl_quality::{
+        BandLabel, ModelStage, ModelState, StageSeconds, TraceState, UnscoredCause,
+    };
+    use sha2::{Digest, Sha256};
+
+    fn state(stage: ModelStage, trace: TraceState, error: Option<f64>) -> Value {
+        serde_json::to_value(ModelState {
+            stage,
+            outcome: None,
+            trace,
+            compared_channels: 4,
+            trace_violation_mass: error.map(|_| 0.0),
+            mean_channel_bounded_l1: error,
+            certified: false,
+            roster: false,
+            stage_seconds: StageSeconds::default(),
+        })
+        .unwrap()
+    }
+
+    fn simulated(error: f64) -> Value {
+        state(
+            ModelStage::Simulated,
+            TraceState::Scored(BandLabel::Near),
+            Some(error),
+        )
+    }
+
+    fn with_states(mut snapshot: Value, states: Value) -> Value {
+        snapshot["model_states"] = states;
+        snapshot
+    }
+
+    #[test]
+    fn a_model_worse_than_its_own_state_refuses_and_progress_promotes() {
+        let baseline = with_states(
+            full_snapshot(4),
+            json!({ "A": simulated(1.0e-3), "B": state(ModelStage::Compiled, TraceState::Unscored(UnscoredCause::NotSimulated), None) }),
+        );
+        let dropped = with_states(
+            full_snapshot(4),
+            json!({ "A": state(ModelStage::Compiled, TraceState::Unscored(UnscoredCause::NotSimulated), None), "B": state(ModelStage::Compiled, TraceState::Unscored(UnscoredCause::NotSimulated), None) }),
+        );
+        let decision = decide(&dropped, &baseline);
+        assert!(!decision.promote);
+        assert!(
+            decision
+                .regressions
+                .iter()
+                .any(|line| line.starts_with("A: stage dropped")),
+            "{:?}",
+            decision.regressions
+        );
+
+        // B newly simulates: progress, and the aggregate count floors no
+        // longer apply, so it promotes on its own.
+        let progressed = with_states(
+            full_snapshot(4),
+            json!({ "A": simulated(1.0e-3), "B": simulated(2.0e-3) }),
+        );
+        let decision = decide(&progressed, &baseline);
+        assert!(decision.promote, "{:?}", decision.reason);
+        assert!(decision.improvements.contains(&"B: progressed".to_string()));
+    }
+
+    #[test]
+    fn a_watchdog_kill_holds_promotion_until_it_is_re_measured() {
+        let baseline = with_states(full_snapshot(4), json!({ "A": simulated(1.0e-3) }));
+        let mut killed = state(
+            ModelStage::Initialized,
+            TraceState::Unscored(UnscoredCause::NotSimulated),
+            None,
+        );
+        killed["stage_seconds"]["timeout_phase"] = json!("Sim");
+        let current = with_states(full_snapshot(4), json!({ "A": killed }));
+        let decision = decide(&current, &baseline);
+        assert!(!decision.promote);
+        assert!(decision.reason.unwrap().starts_with("re-measure first"));
+    }
+
+    #[test]
+    fn an_accuracy_rise_must_be_stated_exactly_by_a_crossed_boundary() {
+        let before = full_snapshot(3);
+        let mut before = with_states(before, json!({ "A": simulated(1.0e-3) }));
+        before["reference_boundary_migration"] = boundary_chain(3);
+        let rose = json!({ "rose": [{ "model": "A", "before": 1.0e-3, "after": 2.0e-3 }] });
+        let current_with = |statement: Option<Value>| {
+            let mut current = with_states(full_snapshot(4), json!({ "A": simulated(2.0e-3) }));
+            if let Some(statement) = statement {
+                current["reference_boundary_migration"]["accuracy_change"] = statement;
+            }
+            current
+        };
+        let checked_in_for = |current: &Value| {
+            let mut checked_in = full_snapshot(4);
+            checked_in["reference_boundary_migration"] =
+                current["reference_boundary_migration"].clone();
+            checked_in
+        };
+        let judge =
+            |current: &Value| ratchet_decision(current, &before, &checked_in_for(current)).unwrap();
+        let unstated = judge(&current_with(None));
+        assert!(!unstated.promote);
+        assert!(unstated.reason.unwrap().contains("mean channel error rose"));
+        assert!(judge(&current_with(Some(rose.clone()))).promote);
+        let mut stale = rose;
+        stale["rose"][0]["after"] = json!(1.9e-3);
+        assert!(!judge(&current_with(Some(stale))).promote);
+    }
+
+    #[test]
+    fn the_first_crossing_reads_the_evidence_its_boundary_pins() {
+        let dir = std::env::temp_dir().join(format!("msl-ratchet-evidence-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let evidence = json!({
+            "schema_version": 1,
+            "source_run": "ci-1",
+            "source_commit": "abc",
+            "caveats": [],
+            "model_states": { "A": simulated(1.0e-3) },
+        })
+        .to_string();
+        fs::write(dir.join("evidence.json"), &evidence).unwrap();
+        let sha = format!("{:x}", Sha256::digest(evidence.as_bytes()));
+        let link = |sha: &str| json!({ "evidence_model_states": { "file": "evidence.json", "sha256": sha } });
+        let baseline = full_snapshot(3);
+        let current = with_states(full_snapshot(4), json!({ "A": simulated(1.0e-3) }));
+        let pinned = link(&sha);
+        let found = super::super::per_model::judge_at(&current, &baseline, &[&pinned], false, &dir)
+            .unwrap()
+            .unwrap();
+        assert!(found.regressions.is_empty(), "{:?}", found.regressions);
+        let forged = link("0000");
+        let error = super::super::per_model::judge_at(&current, &baseline, &[&forged], false, &dir)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("the reviewed boundary pins 0000"), "{error}");
+        let none = super::super::per_model::judge_at(&current, &baseline, &[], false, &dir)
+            .unwrap_err()
+            .to_string();
+        assert!(error_contains(
+            &none,
+            "no crossed reference boundary pins evidence"
+        ));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    fn error_contains(error: &str, needle: &str) -> bool {
+        error.contains(needle)
+    }
+}

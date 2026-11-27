@@ -190,6 +190,10 @@
         ],
         "owner": "solver accuracy lane (BDF integration error on Modelica.Fluid tank energy balances)"
       }
-    ]
+    ],
+    "evidence_model_states": {
+      "file": "crates/rumoca-test-msl/tests/msl_tests/msl_v15_crossing_model_states.json",
+      "sha256": "a42ec85c245615df65401ce5715a8d707a71eefdb331e446f6b038d1e0b2b27a"
+    }
   }
 }

@@ -259,6 +259,12 @@ pub(super) struct MslReferenceBoundaryMigration {
     /// naming its open defect (SPEC_0050).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     roster_additions: Vec<MslRosterAddition>,
+    /// The pinned old-side model states of a crossing from a baseline that predates them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    evidence_model_states: Option<serde_json::Value>,
+    /// The per-model accuracy rises this boundary states (`rumoca_msl_quality::AccuracyChange`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    accuracy_change: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     previous: Option<Box<MslReferenceBoundaryMigration>>,
 }
@@ -1178,12 +1184,20 @@ pub(super) fn write_current_msl_quality_snapshot(
             );
         }
         if let Some(cohort) = measurement.cohort() {
+            let trace = load_trace_comparison()?;
             let certified =
                 insert_certified_rosters(root, summary, &cohort.table.rows, phase_budgets)?;
             let roster = insert_soundness_roster(root, &cohort.table)?;
-            insert_model_states(root, summary, &cohort.table.rows, &certified, &roster)?;
+            let masses = trace_violation_masses(&trace)?;
+            insert_model_states(
+                root,
+                summary,
+                &cohort.table.rows,
+                (&certified, &roster),
+                &masses,
+            )?;
             if let Some(parity) = measurement.gate_input() {
-                insert_cohort_evidence(root, parity, &cohort.table)?;
+                insert_cohort_evidence(root, parity, &cohort.table, &trace)?;
             }
         }
     }
