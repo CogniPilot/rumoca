@@ -6,6 +6,12 @@
 #include <string.h>
 #include "model.h"
 
+#ifndef RMC_INLINE_KEEP
+#error "Build the coupled fixture and all host units with -DRMC_FMI3_INLINE_FACTORS"
+#endif
+_Static_assert(sizeof(((ModelInstance*)0)->rmc_keep_d) > sizeof(double *),
+               "the coupled test must transfer retained factors");
+
 #define GPU(call) do { \
     CUresult result = (call); \
     if (result != CUDA_SUCCESS) { \
