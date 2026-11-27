@@ -6,6 +6,12 @@
 #include <string.h>
 #include "model.h"
 
+#ifndef RMC_INLINE_KEEP
+#error "Build the coupled fixture and all host units with -DRMC_FMI3_INLINE_FACTORS"
+#endif
+_Static_assert(sizeof(((ModelInstance*)0)->rmc_keep_d) > sizeof(double *),
+               "the coupled test must transfer retained factors");
+
 #define GPU(call) do { \
     CUresult result = (call); \
     if (result != CUDA_SUCCESS) { \
@@ -80,6 +86,10 @@ int main(int argc, char **argv) {
         check_fmi(fmi3SetFloat64(cpu[lane], &rate_ref, 1, &rate, 1));
         check_fmi(fmi3ExitInitializationMode(cpu[lane]));
         copy[lane] = *cpu[lane];
+        /* Start the GPU with no valid factor key. Its first step must build
+           the factor locally; the CPU reference keeps its host cache. */
+        memset(copy[lane].rmc_keep_s, 0, sizeof copy[lane].rmc_keep_s);
+        memset(copy[lane].rmc_keep_d, 0xa5, sizeof copy[lane].rmc_keep_d);
     }
     GPU(cuMemcpyHtoD(instances, copy, sizeof copy));
     double dt = .02;
@@ -94,6 +104,10 @@ int main(int argc, char **argv) {
             bool event = false, terminate = false, early = false;
             double last, host[3], gpu[3];
             check_fmi(status[lane]);
+            if (!copy[lane].rmc_keep_s[0]) {
+                fprintf(stderr, "CUDA lane %d left the first factor key unbound\n", lane);
+                return 1;
+            }
             check_fmi(fmi3DoStep(cpu[lane], start, dt, true, &event, &terminate, &early, &last));
             check_fmi(fmi3GetFloat64(cpu[lane], observed, 3, host, 3));
             check_fmi(fmi3GetFloat64(&copy[lane], observed, 3, gpu, 3));

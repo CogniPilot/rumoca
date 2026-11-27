@@ -6,6 +6,7 @@ import {dirname, join, resolve} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {lowerBulkCopies} from './bulk-copy.mjs';
 import {lowerLaneWorkspace} from './arena.mjs';
+import {checkNumericInstance} from './layout.mjs';
 
 const [fmu, output] = process.argv.slice(2);
 if (!fmu || !output) throw Error('Usage: node build.mjs EXTRACTED_FMU OUTPUT_DIRECTORY');
@@ -17,11 +18,7 @@ const xml = readFileSync(resolve(fmu, 'modelDescription.xml'), 'utf8');
 if (!xml.includes('<CoSimulation') || !xml.includes('fmiVersion="3.')) {
   throw Error('Expected an FMI 3 co-simulation component.');
 }
-const header = readFileSync(join(source, 'model.h'), 'utf8');
-const layout = header.match(/typedef struct \{ bool assertions_initialized;([\s\S]*?)\} ModelInstance;/)?.[1];
-if (!layout || layout.includes('*') || /<(?:String|Binary)\s/.test(xml)) {
-  throw Error('CUDA lanes require a numeric component with inline state and no host-owned storage.');
-}
+if (/<(?:String|Binary)\s/.test(xml)) throw Error('CUDA export requires numeric FMI variables.');
 const token = xml.match(/instantiationToken="([^"]+)"/)?.[1];
 if (!token) throw Error('Missing FMI instantiation token.');
 
@@ -37,15 +34,20 @@ const run = (executable, ...args) => execFileSync(executable, args, {stdio: 'inh
 const artifact = name => join(out, name);
 mkdirSync(out, {recursive: true});
 
+const deviceFlags = ['--target=nvptx64-nvidia-cuda', '-march=' + arch, '-x', 'c', '-std=c11',
+  '-DNDEBUG', '-DRMC_FMI3_INLINE_FACTORS', '-ffreestanding',
+  '-I' + join(here, 'freestanding'), '-I' + source, '-I' + FMI_INCLUDE];
+const layout = execFileSync(clang, [...deviceFlags, '-Xclang', '-ast-dump=json', '-fsyntax-only',
+  join(source, 'model.h')], {encoding: 'utf8', maxBuffer: 128 * 1024 * 1024});
+checkNumericInstance(JSON.parse(layout));
+
 const entryFile = artifact('rmc_cuda_step.c');
 writeFileSync(entryFile, readFileSync(join(source, 'rmc_cuda_step.c.inc')));
 const units = ['rmc_assign', 'rmc_functions', 'rmc_rows', 'rmc_isolators', 'rmc_jacobian'];
 const sources = [entryFile, ...units.map(unit => join(source, unit + '.c')), join(here, 'support.c')];
 const intermediates = sources.map((path, index) => {
   const destination = artifact('unit-' + index + '.ll');
-  run(clang, '--target=nvptx64-nvidia-cuda', '-march=' + arch, '-x', 'c', '-std=c11', '-DNDEBUG',
-      '-O2', '-ffp-contract=off', '-ffreestanding', '-fno-math-errno',
-      '-I' + join(here, 'freestanding'), '-I' + source, '-I' + FMI_INCLUDE,
+  run(clang, ...deviceFlags, '-O2', '-ffp-contract=off', '-fno-math-errno',
       '-S', '-emit-llvm', path, '-o', destination);
   return destination;
 });
@@ -71,6 +73,7 @@ run(process.env.PTXAS ?? 'ptxas', '-O' + optimization, '-v', '-arch=' + arch,
     artifact('ensemble.ptx'), '-o', artifact('ensemble.cubin'));
 const sha256 = createHash('sha256').update(readFileSync(artifact('ensemble.cubin'))).digest('hex');
 writeFileSync(artifact('ensemble.json'), JSON.stringify({
+  hostDefines: ['RMC_FMI3_INLINE_FACTORS'],
   token, arch, sha256, kernel: 'rmc_fmi3_step', workspacePointer: 'rmc_scratch', workspaceStride: 'rmc_stride',
   functionsWithWorkspace: workspace.functions, maxFrame: workspace.maxFrame, ptxasOptimization: Number(optimization),
 }, null, 2) + '\n');
