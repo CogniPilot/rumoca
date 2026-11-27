@@ -44,6 +44,7 @@ clap = { workspace = true }
 indexmap = { workspace = true }
 rumoca-allocator = { workspace = true }
 rumoca-core = { workspace = true }
+rumoca-msl-quality = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true, features = ["unbounded_depth"] }
 rumoca-compile = { workspace = true }

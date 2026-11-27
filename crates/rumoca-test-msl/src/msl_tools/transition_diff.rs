@@ -1145,7 +1145,10 @@ mod tests {
             .expect("two derivable certifications must be comparable");
         assert_eq!(transitions.counts.left, 1);
         assert_eq!(transitions.left[0].model_name, "Left");
-        assert_eq!(transitions.left[0].before_band, band_table::BandLabel::High);
+        assert_eq!(
+            transitions.left[0].before_band,
+            rumoca_msl_quality::BandLabel::High
+        );
         assert_eq!(
             transitions.left[0].exit_reason,
             band_table::ExitReason::SimFailed

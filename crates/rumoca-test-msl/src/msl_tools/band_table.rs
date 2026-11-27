@@ -116,48 +116,13 @@ const OMC_SIMULATION_REFERENCE_FILE: &str = "omc_simulation_reference.json";
 const PARITY_CONFIG_FILE_REL: &str = "target/msl/parity-config.json";
 const SIM_OK_STATUS: &str = "sim_ok";
 
-/// Which agreement band the comparator placed a model in, or `Absent` when the
-/// model is not in the compared set at all.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum BandLabel {
-    /// Strict-high agreement — the only quotable parity band.
-    High,
-    /// Minor ("near") agreement.
-    Near,
-    /// Measured deviation.
-    Deviation,
-    /// Compared, but a projection block of the run fell back above the policy
-    /// rate (SPEC_0044 ME-PROJ-003); never quoted as strict-high parity,
-    /// whatever its channels.
-    Fallback,
-    /// Not compared in this run; the row carries an [`ExitReason`].
-    Absent,
-}
+use rumoca_msl_quality::BandLabel;
 
-impl BandLabel {
-    /// Stable wire name, matching the serialized form.
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::High => "high",
-            Self::Near => "near",
-            Self::Deviation => "deviation",
-            Self::Fallback => "fallback",
-            Self::Absent => "absent",
-        }
-    }
-
-    /// Whether this model is in the compared set.
-    pub fn is_compared(self) -> bool {
-        !matches!(self, Self::Absent)
-    }
-
-    fn from_agreement(band: AgreementBand) -> Self {
-        match band {
-            AgreementBand::HighAgreement => Self::High,
-            AgreementBand::MinorAgreement => Self::Near,
-            AgreementBand::Deviation => Self::Deviation,
-        }
+fn band_from_agreement(band: AgreementBand) -> BandLabel {
+    match band {
+        AgreementBand::HighAgreement => BandLabel::High,
+        AgreementBand::MinorAgreement => BandLabel::Near,
+        AgreementBand::Deviation => BandLabel::Deviation,
     }
 }
 
@@ -263,7 +228,7 @@ pub struct BandRow {
 
 impl BandRow {
     fn compared(model_name: &str, metric: &ModelDeviationMetric) -> Self {
-        let band = BandLabel::from_agreement(classify_trace_metric_channel_distribution(
+        let band = band_from_agreement(classify_trace_metric_channel_distribution(
             metric,
             MODEL_HIGH_MIN_HIGH_CHANNEL_SHARE,
             MODEL_HIGH_MAX_DEVIATION_CHANNEL_SHARE,

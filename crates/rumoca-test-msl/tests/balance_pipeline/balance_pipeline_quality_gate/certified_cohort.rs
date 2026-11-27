@@ -6,7 +6,8 @@
 //! strict-high in the current full-cohort table.
 
 use super::*;
-use rumoca_test_msl::msl_tools::band_table::{BandLabel, BandRow};
+use rumoca_msl_quality::BandLabel;
+use rumoca_test_msl::msl_tools::band_table::BandRow;
 
 pub(super) fn validate_certified_strict_high_roster(
     baseline: &MslQualityBaseline,

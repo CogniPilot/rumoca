@@ -1,5 +1,6 @@
 use anyhow::{Context, Result, bail};
 use rumoca_core::{msl_cache_dir_from_manifest, workspace_root_from_manifest_dir};
+use rumoca_msl_quality::TraceExceptionKind;
 use serde::Serialize;
 use serde_json::Value;
 use std::collections::HashSet;
@@ -461,53 +462,6 @@ pub const TRACE_EXCLUSIONS_FILE_REL: &str =
 /// Schema tag of the exception file, so a foreign or free-form list is
 /// rejected rather than read as "nothing is excepted".
 pub const TRACE_EXCLUSIONS_SCHEMA: &str = "msl_trace_exceptions_v2";
-
-/// Why a model that simulates is not held to strict-high pointwise parity
-/// (SPEC_0033 typed trace exceptions). There is no other kind: a model that
-/// simulates without one of these must reach the strict-high band.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum TraceExceptionKind {
-    /// A random or impure source: traces differ by construction, so the
-    /// obligation is statistical, not pointwise.
-    ImpureSource,
-    /// The OMC reference does not resolve the model: it is not converged or
-    /// not accurate enough for the observables compared.
-    ReferenceFailure,
-    /// A documented property of the model, such as chaos, a discontinuity
-    /// wrapped in `noEvent` by design, or an observable the model leaves
-    /// underdetermined, makes one trajectory non-identifying.
-    ModelIssue,
-    /// A reviewed proof that pointwise comparison cannot identify the model.
-    Nonidentifiable,
-    /// The comparator, not the model or the reference, cannot identify the
-    /// channels; the row names the comparator improvement that retires it.
-    ComparatorLimitation,
-}
-
-impl TraceExceptionKind {
-    fn parse(value: &str) -> Option<Self> {
-        Some(match value {
-            "impure_source" => Self::ImpureSource,
-            "reference_failure" => Self::ReferenceFailure,
-            "model_issue" => Self::ModelIssue,
-            "nonidentifiable" => Self::Nonidentifiable,
-            "comparator_limitation" => Self::ComparatorLimitation,
-            _ => return None,
-        })
-    }
-
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::ImpureSource => "impure_source",
-            Self::ReferenceFailure => "reference_failure",
-            Self::ModelIssue => "model_issue",
-            Self::Nonidentifiable => "nonidentifiable",
-            Self::ComparatorLimitation => "comparator_limitation",
-        }
-    }
-}
 
 /// The comparator improvement that would retire a `comparator_limitation`
 /// row. The end state is fewer exceptions through a better comparator.

@@ -3,6 +3,7 @@ mod cache;
 mod certified_cohort;
 mod cohort_evidence;
 mod compiler_contract_migration;
+mod model_states;
 mod parity_measurement;
 mod reference_stage;
 mod runtime_cohort;
@@ -25,9 +26,9 @@ use certified_cohort::*;
 use cohort_evidence::*;
 use compiler_contract_migration::*;
 use indexmap::{IndexMap, IndexSet};
+use model_states::*;
 pub(super) use parity_measurement::*;
 pub(super) use reference_stage::*;
-use rumoca_test_msl::msl_tools::band_table::BandLabel;
 use runtime_cohort::*;
 use schema_migrations::*;
 use soundness_roster::*;
@@ -421,22 +422,6 @@ pub(super) struct MslQualityGateInput<'a> {
     tensor_report_errors: usize,
 }
 
-/// Compile phases in pipeline order, with `Success` ranking after all of them.
-///
-/// `MslModelResult::phase_reached` names the phase that *failed* (or `Success`),
-/// so this is the only honest way to answer "did this model get past phase P?".
-/// Keep it in step with the dispatch in `summarize_msl_results`.
-const COMPILE_PHASE_ORDER: &[&str] = &[
-    "Parse",
-    "Resolve",
-    "NeedsInner",
-    "Instantiate",
-    "Typecheck",
-    "Flatten",
-    "ToDae",
-    "Success",
-];
-
 /// True when `phase_reached` shows the model got *past* `phase`.
 ///
 /// The stage floors (`flatten_models`, `dae_models`) are cumulative pass counts,
@@ -451,7 +436,7 @@ const COMPILE_PHASE_ORDER: &[&str] = &[
 /// attribution reads as a compiler regression. An unknown phase string ranks
 /// before everything and therefore never counts towards a floor.
 fn completed_compile_phase(phase_reached: &str, phase: &str) -> bool {
-    let rank = |name: &str| COMPILE_PHASE_ORDER.iter().position(|entry| *entry == name);
+    let rank = rumoca_msl_quality::compile_phase_rank;
     match (rank(phase_reached), rank(phase)) {
         (Some(reached), Some(target)) => reached > target,
         _ => false,
@@ -1193,32 +1178,10 @@ pub(super) fn write_current_msl_quality_snapshot(
             );
         }
         if let Some(cohort) = measurement.cohort() {
-            let strict_high = cohort
-                .table
-                .rows
-                .iter()
-                .filter(|row| row.band == BandLabel::High)
-                .map(|row| row.model_name.as_str());
-            let timing_margin = timing_margin_models(summary, strict_high.clone(), phase_budgets);
-            let certified = strict_high
-                .filter(|model| !timing_margin.contains_key(*model))
-                .map(str::to_string)
-                .collect::<IndexSet<_>>();
-            root.insert(
-                "timing_margin_models".to_string(),
-                serde_json::to_value(timing_margin).map_err(|error| {
-                    io::Error::other(format!("failed to serialize timing-margin roster: {error}"))
-                })?,
-            );
-            root.insert(
-                "certified_strict_high_models".to_string(),
-                serde_json::to_value(certified).map_err(|error| {
-                    io::Error::other(format!(
-                        "failed to serialize certified strict-high roster: {error}"
-                    ))
-                })?,
-            );
-            insert_soundness_roster(root, &cohort.table)?;
+            let certified =
+                insert_certified_rosters(root, summary, &cohort.table.rows, phase_budgets)?;
+            let roster = insert_soundness_roster(root, &cohort.table)?;
+            insert_model_states(root, summary, &cohort.table.rows, &certified, &roster)?;
             if let Some(parity) = measurement.gate_input() {
                 insert_cohort_evidence(root, parity, &cohort.table)?;
             }

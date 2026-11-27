@@ -71,9 +71,8 @@
 //! earlier workflow artifact is not certification evidence.
 
 use super::*;
-use rumoca_test_msl::msl_tools::band_table::{
-    self, BandLabel, BandTable, BandTableRunScope, BandTransitions,
-};
+use rumoca_msl_quality::BandLabel;
+use rumoca_test_msl::msl_tools::band_table::{self, BandTable, BandTableRunScope, BandTransitions};
 use std::sync::OnceLock;
 
 /// Fixed prefix every "no parity reading" line starts with. Operators and the

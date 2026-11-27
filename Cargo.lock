@@ -5052,6 +5052,7 @@ dependencies = [
  "rumoca-ir-dae",
  "rumoca-ir-flat",
  "rumoca-ir-solve",
+ "rumoca-msl-quality",
  "rumoca-phase-dae",
  "rumoca-phase-flatten",
  "rumoca-phase-parse",
