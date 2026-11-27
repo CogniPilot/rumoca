@@ -1,4 +1,5 @@
 use super::*;
+use rumoca_test_msl::msl_tools::runtime_ratio;
 
 /// A runtime comparison remains representative while at least this fraction of
 /// the committed baseline cohort still produces timings in both tools.
@@ -10,26 +11,14 @@ pub(super) struct MslRuntimeGateStats {
     pub(super) cohort_coverage: Option<(usize, usize)>,
 }
 
-fn positive_f64(model: &serde_json::Value, keys: &[&str]) -> Option<f64> {
-    keys.iter().find_map(|key| {
-        let value = model.get(key)?.as_f64()?;
-        (value.is_finite() && value > 0.0).then_some(value)
-    })
-}
-
+/// The model's runtime ratio, by the one definition the OMC reference and
+/// the shard merge also count (see `runtime_ratio`).
 fn model_runtime_ratio(model: &serde_json::Value) -> Option<MslRuntimeModelRatio> {
-    if model.get("status")?.as_str()? != "success"
-        || model.get("rumoca_status")?.as_str()? != "sim_ok"
-    {
-        return None;
-    }
-    let rumoca_system = positive_f64(model, &["rumoca_sim_run_seconds", "rumoca_sim_seconds"])?;
-    let omc_system = positive_f64(model, &["sim_system_seconds"])?;
-    let rumoca_wall = positive_f64(model, &["rumoca_sim_wall_seconds"])?;
-    let omc_wall = positive_f64(model, &["omc_wall_seconds"])?;
+    let ratio =
+        runtime_ratio::model_runtime_ratio(&runtime_ratio::RuntimeSeconds::from_model_json(model))?;
     Some(MslRuntimeModelRatio {
-        system: omc_system / rumoca_system,
-        wall: omc_wall / rumoca_wall,
+        system: ratio.system(),
+        wall: ratio.wall(),
     })
 }
 

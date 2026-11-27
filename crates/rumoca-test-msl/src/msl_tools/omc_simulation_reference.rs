@@ -8,6 +8,7 @@ use super::common::{
     summarize_batch_timings, summarize_omc_error, typed_exception_reasons, unix_timestamp_seconds,
     write_pretty_json,
 };
+use super::runtime_ratio::{RuntimeSeconds, model_runtime_ratio};
 use anyhow::{Context, Result, bail};
 use clap::Args as ClapArgs;
 use rumoca_sim::sim_trace_compare::{
@@ -1765,21 +1766,37 @@ fn compute_runtime_ratio_buckets(state: &SimRunState) -> RuntimeRatioBuckets {
     let both_success = state.all_results.values().filter(|result| {
         result.status == "success" && result.rumoca_status.as_deref() == Some("sim_ok")
     });
-    let system_ratio_both_success =
-        compute_runtime_ratio_stats(both_success.clone().filter_map(|result| {
-            runtime_pair(
-                rumoca_runtime_sim_seconds(result),
-                result.sim_system_seconds,
-            )
-        }));
-    let wall_ratio_both_success = compute_runtime_ratio_stats(both_success.filter_map(|result| {
-        runtime_pair(result.rumoca_sim_wall_seconds, result.omc_wall_seconds)
-    }));
+    // The models the gate records per-model ratios for (see `runtime_ratio`).
+    let ratios = both_success
+        .filter_map(|result| model_runtime_ratio(&runtime_seconds(result)))
+        .collect::<Vec<_>>();
+    let system_ratio_both_success = compute_runtime_ratio_stats(
+        ratios
+            .iter()
+            .map(|ratio| (ratio.omc_system, ratio.rumoca_system)),
+    );
+    let wall_ratio_both_success = compute_runtime_ratio_stats(
+        ratios
+            .iter()
+            .map(|ratio| (ratio.omc_wall, ratio.rumoca_wall)),
+    );
     RuntimeRatioBuckets {
         system_ratio_all_positive,
         system_ratio_both_success,
         wall_ratio_all_positive,
         wall_ratio_both_success,
+    }
+}
+
+fn runtime_seconds(result: &SimModelResult) -> RuntimeSeconds {
+    RuntimeSeconds {
+        both_succeeded: result.status == "success"
+            && result.rumoca_status.as_deref() == Some("sim_ok"),
+        rumoca_sim_run_seconds: result.rumoca_sim_run_seconds,
+        rumoca_sim_seconds: result.rumoca_sim_seconds,
+        rumoca_sim_wall_seconds: result.rumoca_sim_wall_seconds,
+        omc_sim_system_seconds: result.sim_system_seconds,
+        omc_wall_seconds: result.omc_wall_seconds,
     }
 }
 

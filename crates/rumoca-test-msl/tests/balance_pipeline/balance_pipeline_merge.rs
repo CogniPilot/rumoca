@@ -10,6 +10,7 @@
 //! concatenating the shard files.
 
 use super::*;
+use rumoca_test_msl::msl_tools::runtime_ratio::{RuntimeSeconds, model_runtime_ratio};
 use serde_json::{Map, Value, json};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -351,11 +352,15 @@ fn runtime_ratio_bucket(
     both_success_only: bool,
 ) -> Option<Value> {
     runtime_ratio_stats(models.values().filter_map(|model| {
-        if both_success_only
-            && (model_status(model) != Some("success")
-                || model_rumoca_status(model) != Some("sim_ok"))
-        {
-            return None;
+        if both_success_only {
+            // The models the gate records per-model ratios for, so the two
+            // cannot disagree (see `runtime_ratio`).
+            let ratio = model_runtime_ratio(&RuntimeSeconds::from_model_json(model))?;
+            return Some(if wall {
+                (ratio.omc_wall, ratio.rumoca_wall)
+            } else {
+                (ratio.omc_system, ratio.rumoca_system)
+            });
         }
         if wall {
             runtime_pair(
@@ -1498,4 +1503,42 @@ fn merged_omc_timing_keeps_per_shard_worker_counts() {
     assert_eq!(merged["rumoca_sim_workers"], json!(2));
     assert_eq!(merged["shards"], json!(3));
     assert_eq!(merged["batches_ran"], json!(9));
+}
+
+/// The merged runtime statistics count exactly the models that have a runtime
+/// ratio, the ones the gate records per model: otherwise a snapshot's
+/// `sample_count` and medians disagree with its own `runtime_model_ratios`.
+#[test]
+fn merged_runtime_stats_count_exactly_the_models_with_a_runtime_ratio() {
+    let timed = |run: f64, wall: Option<f64>| {
+        let mut model = json!({
+            "status": "success", "rumoca_status": "sim_ok",
+            "rumoca_sim_run_seconds": run, "rumoca_sim_seconds": 0.8,
+            "rumoca_sim_wall_seconds": 1.0, "sim_system_seconds": 2.0,
+        });
+        if let Some(wall) = wall {
+            model["omc_wall_seconds"] = json!(wall);
+        }
+        model
+    };
+    let mut models = Map::new();
+    models.insert("Timed".into(), timed(0.5, Some(4.0)));
+    // A run phase that rounds to zero falls back to the simulation time.
+    models.insert("ZeroRunPhase".into(), timed(0.0, Some(4.0)));
+    // No OMC wall time: no ratio at all, so in neither statistic.
+    models.insert("NoOmcWall".into(), timed(0.5, None));
+    models.insert("NoOmcWallEither".into(), timed(0.5, None));
+    let with_ratio = models
+        .values()
+        .filter(|model| model_runtime_ratio(&RuntimeSeconds::from_model_json(model)).is_some())
+        .count();
+    assert_eq!(with_ratio, 2);
+    let comparison = build_runtime_comparison(&models);
+    for bucket in ["system_ratio_both_success", "wall_ratio_both_success"] {
+        assert_eq!(
+            json_usize(&comparison, &["ratio_stats", bucket, "sample_count"]),
+            Some(with_ratio),
+            "{bucket}"
+        );
+    }
 }
