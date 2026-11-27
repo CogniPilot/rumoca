@@ -137,20 +137,7 @@ fn check_slice_edit(use_view: bool, width: u32) {
                 let start = b.load(inputs[0], span(2))?;
                 let result = b.fold(domain, &[start], &[], span(3), |b, carries, _, _, out| {
                     let old = b.load(carries[0], span(4))?;
-                    let source = b.project_slice(old, vec![1], vec![width], span(5))?;
-                    let updated = if use_view {
-                        b.update_view(
-                            old,
-                            source,
-                            &[solve::ProgramTensorViewAxis::Span {
-                                origin: 2,
-                                extent: width,
-                            }],
-                            span(6),
-                        )?
-                    } else {
-                        b.update_slice(old, source, vec![2], span(6))?
-                    };
+                    let updated = replace_slice(b, old, width, use_view)?;
                     b.store(out[0], updated, span(7))
                 })?;
                 b.store(outputs[0], result[0], span(8))
@@ -184,4 +171,22 @@ int main(void) {
         &source.replace("LAST", if width == 2 { "4" } else { "3" }),
         &["-O2"],
     );
+}
+
+fn replace_slice<'program>(
+    b: &mut solve::TypedProgramBuilder<'program>,
+    old: solve::ProgramRegister<'program>,
+    width: u32,
+    use_view: bool,
+) -> Result<solve::ProgramRegister<'program>, solve::SolveProgramConstructionError> {
+    let source = b.project_slice(old, vec![1], vec![width], span(5))?;
+    if use_view {
+        let axis = solve::ProgramTensorViewAxis::Span {
+            origin: 2,
+            extent: width,
+        };
+        b.update_view(old, source, &[axis], span(6))
+    } else {
+        b.update_slice(old, source, vec![2], span(6))
+    }
 }
