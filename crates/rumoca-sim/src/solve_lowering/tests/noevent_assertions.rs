@@ -383,7 +383,10 @@ fn the_reproduction_fails_before_the_next_coarse_output() {
     };
     let error = simulate_dae(&dae, &options).expect_err("the violation must stop the run");
     let time = failure_time(&error, "must fail at t = 0.5");
-    assert!((0.5..0.51).contains(&time), "failed at t = {time}");
+    assert!(
+        (0.5..0.6).contains(&time),
+        "failed at t = {time}, expected an accepted step before the output point 0.6"
+    );
 }
 
 /// An assertion in a `when` clause belongs to that clause's activation, so a
