@@ -572,7 +572,15 @@ RMC_COLD {{ q }} void rmc_fb_note(ModelInstance* m, size_t site) {
 /* projection.rs: implicit_selected_residuals; with the invariant values `inv`
    of an affine projection call (block_residual_split.rs), a split row's
    dependent part evaluates its program; one that fails hands the pass to
-   the unsplit program, which raises its own error. */
+   the unsplit program, which raises its own error.
+   GCC's maybe-uninitialized analysis cannot see that `out` is written before
+   it is read: the one-row path calls a program first, and in the loop row 0
+   always calls (`last` starts at SIZE_MAX). Zero-filling `out` instead would
+   cost row_max_outputs doubles on every block evaluation. */
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wmaybe-uninitialized"
+#endif
 {{ q }} int rmc_rows_split(ModelInstance* m, const RmcBlock* b, const double* inv, double* residual) {
     /* A one-row block (every singleton) runs one program: no range is held
        across its call. */
@@ -602,6 +610,9 @@ RMC_COLD {{ q }} void rmc_fb_note(ModelInstance* m, size_t site) {
     }
     return 0;
 }
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC diagnostic pop
+#endif
 {{ q }} int rmc_rows(ModelInstance* m, const RmcBlock* b, double* residual) { return rmc_rows_split(m, b, NULL, residual); }
 /* block_residual_split.rs: begin_block_residual_split; NULL when the block has
    no split, an invariant part fails, or the arena has no room for the
