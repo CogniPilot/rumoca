@@ -1098,6 +1098,7 @@ fn explicit_ode_targets_accept_issued_exact_algebraic_assignments() {
         "casadi-ode",
         "jax-ode",
         "cuda-ode",
+        "wgsl-ode",
     ] {
         let target = templates::builtin_targets()
             .iter()
@@ -1113,16 +1114,14 @@ fn explicit_ode_targets_accept_issued_exact_algebraic_assignments() {
 #[test]
 fn target_without_exact_assignment_consumer_rejects_exact_algebraic_schedule() {
     let solve = solve_with_issued_exact_algebraic_assignment();
-    // wgsl-ode renders rows as read-only-`y` expressions and does not consume
-    // exact assignment schedules.
     let target = templates::builtin_targets()
         .iter()
         .find(|target| target.name == "wgsl-ode")
         .expect("wgsl-ode target is built in");
     let manifest = parse_target_manifest(target.manifest).expect("wgsl-ode manifest is valid");
-    let capabilities = manifest.capabilities.as_ref().expect("capabilities");
-
-    let error = validate_solve_target_capabilities(&solve, &manifest, capabilities)
+    let mut capabilities = manifest.capabilities.clone().expect("capabilities");
+    capabilities.exact_algebraic_assignments = Some(false);
+    let error = validate_solve_target_capabilities(&solve, &manifest, &capabilities)
         .expect_err("a target that does not consume exact schedules must fail closed");
     assert!(
         error

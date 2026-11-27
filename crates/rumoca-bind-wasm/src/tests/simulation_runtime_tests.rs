@@ -1206,3 +1206,97 @@ fn interactive_boolean_switch_retains_inactive_gather_after_function_call() {
         }
     }
 }
+
+#[cfg(any(feature = "sim-wasm", feature = "sim-diffsol", feature = "sim-rk45"))]
+#[test]
+fn test_prepare_gpu_simulation_emits_single_periodic_tick() {
+    let _guard = session_test_guard();
+    let source = r#"model SampledDrive
+        Real x(start=0, fixed=true);
+        discrete Real drive(start=2, fixed=true);
+    equation
+        der(x) = drive;
+        when sample(0.05,0.1) then drive=pre(drive)+1; end when;
+    end SampledDrive;"#;
+    let json = prepare_gpu_simulation(source, "SampledDrive").expect("sampled explicit ODE");
+    let prep: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(
+        prep["layout"]["periodic_tick"]["phase"],
+        serde_json::json!([1, 20])
+    );
+    assert_eq!(
+        prep["layout"]["periodic_tick"]["period"],
+        serde_json::json!([1, 10])
+    );
+    let shader = naga::front::wgsl::parse_str(prep["wgsl"].as_str().unwrap()).unwrap();
+    naga::valid::Validator::new(
+        naga::valid::ValidationFlags::all(),
+        naga::valid::Capabilities::empty(),
+    )
+    .validate(&shader)
+    .unwrap();
+    assert!(
+        shader
+            .entry_points
+            .iter()
+            .any(|entry| entry.name == "periodic_tick")
+    );
+    let drive = prep["var_layout"]["bindings"]["drive"]["P"]["index"]
+        .as_u64()
+        .unwrap() as usize;
+    assert_eq!(prep["p0"][drive], 2.);
+    let zero =
+        prepare_gpu_simulation(&source.replace("0.05,0.1", "0,0.1"), "SampledDrive").unwrap();
+    let zero: serde_json::Value = serde_json::from_str(&zero).unwrap();
+    assert_eq!(
+        zero["p0"][drive], 2.,
+        "the start-time tick belongs to the GPU"
+    );
+
+    let multiple = source
+        .replace(
+            "equation",
+            "discrete Real other(start=0,fixed=true); equation",
+        )
+        .replace(
+            "end SampledDrive",
+            "when sample(0.1,0.3) then other=pre(other)+drive; end when; end SampledDrive",
+        );
+    let refusal = prepare_gpu_simulation(&multiple, "SampledDrive").unwrap_err();
+    assert!(
+        refusal.to_string().contains("unsupported-feature:events"),
+        "{refusal}"
+    );
+}
+
+#[cfg(any(feature = "sim-wasm", feature = "sim-diffsol", feature = "sim-rk45"))]
+#[test]
+fn test_prepare_gpu_simulation_emits_ordered_algebraics_for_rc_circuit() {
+    let _guard = session_test_guard();
+    let circuit = include_str!("../../../../examples/models/Circuit.mo");
+    let json = prepare_gpu_simulation(circuit, "Circuit.Test").expect("generated RC circuit");
+    let prep: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(prep["n_states"], 1);
+    assert_eq!(prep["layout"]["algebraic_refresh"], "refresh_algebraics");
+    assert_eq!(prep["state_names"].as_array().unwrap().len(), 1);
+    assert!(
+        prep["variable_names"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|name| name == "res.i")
+    );
+    let shader = naga::front::wgsl::parse_str(prep["wgsl"].as_str().unwrap()).unwrap();
+    naga::valid::Validator::new(
+        naga::valid::ValidationFlags::all(),
+        naga::valid::Capabilities::empty(),
+    )
+    .validate(&shader)
+    .unwrap();
+    assert!(
+        shader
+            .entry_points
+            .iter()
+            .any(|entry| entry.name == "refresh_algebraics")
+    );
+}
