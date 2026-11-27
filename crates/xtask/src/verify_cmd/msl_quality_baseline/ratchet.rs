@@ -1,12 +1,7 @@
 //! The MSL baseline ratchet: promote a full CI quality snapshot over the
 //! published release baseline when it improves some ratchet metric and
-//! regresses none.
-//!
-//! This is the decision `.github/scripts/msl-baseline-ratchet.mjs` makes, read
-//! from the same JSON with the same checks and messages, so the two can run side
-//! by side on one CI run before the script is retired. The cohort-relative
-//! metrics are compared by [`super::cohort`], which the script's cohort module
-//! is already held to by the shared cases.
+//! regresses none. CI publishes the release asset from its decision. The
+//! cohort-relative metrics are compared by [`super::cohort`].
 
 use super::cohort::{
     CohortEvidence, CohortSnapshot, cohort_comparison, to_exponential_6, validate_runtime_ratios,

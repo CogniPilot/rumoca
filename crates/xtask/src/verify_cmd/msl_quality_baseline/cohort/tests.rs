@@ -28,7 +28,7 @@ impl CaseSnapshot {
 
 fn shared_cases() -> Value {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../.github/scripts/msl-baseline-cohort-cases.json");
+        .join("src/verify_cmd/msl_quality_baseline/testdata/cohort-cases.json");
     serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap()
 }
 

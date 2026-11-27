@@ -8,9 +8,8 @@
 //! its strict-high roster names that cohort, the recorded totals otherwise.
 //! Runtime medians follow the quality gate's rule (`runtime_cohort.rs`).
 //!
-//! The baseline ratchet applies the same rule
-//! (`.github/scripts/msl-baseline-cohort.mjs`); the shared cases in
-//! `.github/scripts/msl-baseline-cohort-cases.json` hold both to one verdict.
+//! The baseline ratchet ([`super::ratchet`]) applies the same comparison; the
+//! cases in `testdata/cohort-cases.json` pin its verdicts.
 
 use anyhow::{Result, ensure};
 use serde::Deserialize;

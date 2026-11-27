@@ -627,3 +627,101 @@ fn the_tracked_baseline_ratchets_over_every_promoted_schema_its_chain_reaches() 
         "the tracked schema declares no crossable boundary"
     );
 }
+
+/// A snapshot from per-model evidence, with the totals the evidence sums to.
+fn evidence_snapshot(evidence: &serde_json::Map<String, Value>) -> Value {
+    let models = evidence.values().collect::<Vec<_>>();
+    let sum = |pick: &dyn Fn(&Value) -> i64| models.iter().map(|entry| pick(entry)).sum::<i64>();
+    let count = |key: &str| sum(&|entry| entry[key].as_i64().unwrap());
+    let state = |key: &str| sum(&|entry| entry["state_set"][key].as_i64().unwrap());
+    let exact = sum(&|entry| i64::from(entry["state_set"]["exact"].as_bool().unwrap()));
+    let mass = models
+        .iter()
+        .map(|entry| entry["ic_violation_mass"].as_f64().unwrap())
+        .sum::<f64>();
+    let roster = evidence.keys().cloned().collect::<Vec<_>>();
+    let mut snapshot = full_snapshot(4);
+    snapshot["certified_strict_high_models"] = json!(roster);
+    snapshot["trace_model_evidence"] = Value::Object(evidence.clone());
+    let stats = &mut snapshot["trace_accuracy_stats"];
+    stats["models_compared"] = json!(roster.len());
+    stats["agreement_high"] = json!(roster.len());
+    stats["agreement_minor"] = json!(0);
+    stats["agreement_deviation"] = json!(0);
+    stats["models_with_severe_channel"] = json!(0);
+    stats["initial_condition"] = json!({
+        "models_compared": roster.len(),
+        "deviation_channels_total": count("ic_deviation_channels"),
+        "severe_channels_total": count("ic_severe_channels"),
+        "violation_mass_total": mass,
+    });
+    stats["state_selection"] = json!({
+        "models_compared": roster.len(),
+        "exact_state_set_match_models": exact,
+        "total_rumoca_only_states": state("rumoca_only"),
+        "total_omc_only_states": state("omc_only"),
+    });
+    snapshot
+}
+
+#[test]
+fn real_state_set_evidence_refuses_renamed_states_on_certified_models_only() {
+    let sets: Value =
+        serde_json::from_str(include_str!("../testdata/real-state-sets.json")).unwrap();
+    let side = |key: &str| sets[key].as_object().unwrap().clone();
+    let reference = evidence_snapshot(&side("reference"));
+    let mut candidate = evidence_snapshot(&side("candidate"));
+    bump(&mut candidate, &["sim_ok"], 2);
+    let decision = decide(&candidate, &reference);
+    assert!(!decision.promote);
+    assert_eq!(
+        decision.regressions,
+        vec![
+            "state-set rumoca-only states over 10 shared models: 27 -> 53".to_string(),
+            "state-set omc-only states over 10 shared models: 27 -> 53".to_string(),
+        ]
+    );
+    // The same models as they were: the newly compared models alone, which the
+    // raw totals counted as a regression, promote.
+    let mut merged = side("candidate");
+    merged.extend(side("reference"));
+    let mut unchanged = evidence_snapshot(&merged);
+    bump(&mut unchanged, &["sim_ok"], 2);
+    let promoted = decide(&unchanged, &reference);
+    assert!(promoted.promote, "{:?}", promoted.reason);
+    assert!(
+        unchanged["trace_accuracy_stats"]["state_selection"]["total_rumoca_only_states"]
+            .as_i64()
+            .unwrap()
+            > reference["trace_accuracy_stats"]["state_selection"]["total_rumoca_only_states"]
+                .as_i64()
+                .unwrap()
+    );
+}
+
+#[test]
+fn the_run_cohort_not_the_whole_run_carries_the_runtime_medians() {
+    let mut reference = full_snapshot(4);
+    reference["runtime_ratio_cohort_models"] = json!(["A", "B"]);
+    let mut current = full_snapshot(4);
+    current["sim_ok"] = json!(6);
+    current["runtime_ratio_cohort_models"] = json!(["A", "B", "C"]);
+    current["runtime_model_ratios"] = json!({
+        "A": { "system": 2.0, "wall": 10.0 },
+        "B": { "system": 2.0, "wall": 10.0 },
+        "C": { "system": 0.1, "wall": 0.5 },
+    });
+    assert!(decide(&current, &reference).promote);
+
+    current["runtime_model_ratios"]["A"]["wall"] = json!(1.0);
+    current["runtime_model_ratios"]["B"]["wall"] = json!(1.0);
+    current["runtime_ratio_stats"]["wall_ratio_both_success"]["median"] = json!(1.0);
+    let regressed = decide(&current, &reference);
+    assert!(!regressed.promote);
+    assert!(
+        regressed
+            .reason
+            .unwrap()
+            .contains("runtime wall speedup median over 2 reference cohort models")
+    );
+}

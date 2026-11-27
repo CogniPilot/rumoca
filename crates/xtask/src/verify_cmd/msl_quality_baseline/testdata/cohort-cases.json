@@ -1,5 +1,5 @@
 {
-  "about": "Shared verdicts of the cohort-relative baseline comparison. Each case applies a JSON merge patch (RFC 7396) to `base` for the reference and for the candidate, then lists the metric labels that regress and improve, or the error an inconsistent snapshot raises. Read by .github/scripts/msl-baseline-ratchet.test.mjs and crates/xtask/src/verify_cmd/msl_quality_baseline/cohort/tests.rs.",
+  "about": "Shared verdicts of the cohort-relative baseline comparison. Each case applies a JSON merge patch (RFC 7396) to `base` for the reference and for the candidate, then lists the metric labels that regress and improve, or the error an inconsistent snapshot raises. Read by crates/xtask/src/verify_cmd/msl_quality_baseline/cohort/tests.rs.",
   "base": {
     "certified_strict_high_models": ["A", "B", "C", "D"],
     "trace_model_evidence": {

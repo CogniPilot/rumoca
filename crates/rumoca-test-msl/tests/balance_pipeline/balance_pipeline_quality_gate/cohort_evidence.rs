@@ -5,8 +5,7 @@
 //! more models raises those totals without any model getting worse. The
 //! snapshot records the per-model values so the baseline ratchet and the
 //! baseline resolver compare them over the models both runs measured
-//! (`.github/scripts/msl-baseline-cohort.mjs`,
-//! `crates/xtask/src/verify_cmd/msl_quality_baseline/cohort.rs`).
+//! (`crates/xtask/src/verify_cmd/msl_quality_baseline/cohort.rs`).
 
 use super::*;
 use rumoca_test_msl::msl_tools::band_table::BandTable;
