@@ -14,6 +14,7 @@ members = [
     "crates/rumoca-worker",
     "crates/rumoca-allocator",
     "crates/rumoca-test-msl",
+    "crates/rumoca-msl-quality",
     "crates/rumoca-core",
     "crates/rumoca-contracts",
     # Executable reference semantics (SPEC_0037 verification track)
@@ -151,6 +152,7 @@ rumoca-tool-lsp-galec = { path = "crates/rumoca-tool-lsp-galec", default-feature
 rumoca-bind-wasm = { path = "crates/rumoca-bind-wasm" }
 rumoca-bind-python = { path = "crates/rumoca-bind-python" }
 rumoca-test-msl = { path = "crates/rumoca-test-msl" }
+rumoca-msl-quality = { path = "crates/rumoca-msl-quality" }
 
 # External dependencies
 anyhow = "1.0"
