@@ -883,6 +883,31 @@ pub fn validate_dae_target_capabilities(
     {
         unsupported_feature(manifest, "initialization", "initial equations present")?;
     }
+    validate_dae_event_capabilities(dae, manifest, capabilities)?;
+    if capabilities.dynamic_ranges == Some(false) && dae_has_dynamic_ranges(dae) {
+        unsupported_feature(
+            manifest,
+            "dynamic_ranges",
+            "non-literal range expressions present",
+        )?;
+    }
+    if capabilities.dynamic_derivative_subscripts == Some(false)
+        && dae_has_dynamic_derivative_subscripts(dae)
+    {
+        unsupported_feature(
+            manifest,
+            "dynamic_derivative_subscripts",
+            "derivative references with dynamic subscripts present",
+        )?;
+    }
+    Ok(())
+}
+
+fn validate_dae_event_capabilities(
+    dae: &dae::Dae,
+    manifest: &TargetManifest,
+    capabilities: &TargetCapabilities,
+) -> Result<()> {
     if capabilities.events != Some(true)
         && !supports_static_assertions(manifest, capabilities)
         && !defers_periodic_clock_check(manifest, capabilities)
@@ -902,22 +927,6 @@ pub fn validate_dae_target_capabilities(
         && dae_has_clocks(dae)
     {
         unsupported_feature(manifest, "clocks", "clock partition entries present")?;
-    }
-    if capabilities.dynamic_ranges == Some(false) && dae_has_dynamic_ranges(dae) {
-        unsupported_feature(
-            manifest,
-            "dynamic_ranges",
-            "non-literal range expressions present",
-        )?;
-    }
-    if capabilities.dynamic_derivative_subscripts == Some(false)
-        && dae_has_dynamic_derivative_subscripts(dae)
-    {
-        unsupported_feature(
-            manifest,
-            "dynamic_derivative_subscripts",
-            "derivative references with dynamic subscripts present",
-        )?;
     }
     Ok(())
 }
