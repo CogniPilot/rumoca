@@ -58,7 +58,7 @@ import that path.
 | AST/Flat array-constructor dimension compatibility for fully known operand extents | `rumoca-core::ArrayConstructor::checked_dimensions` | Local shape construction validates element uniformity, promoted concatenation, and extent arithmetic; phase owners supply operand shapes and retain unknown-shape policy. Canonical DAE builtin construction independently checks its typed operands. |
 | `dependency_first_sccs`, `DependencyScc` | `rumoca-core::dependency_graph` | Deterministic, iterative dependency-first SCC decomposition shared by checked recursive-owner construction. |
 | `NativeBody` catalog, its interface signatures, its `ForeignStateCell`s, and its definitional evaluators | `rumoca-core::native_body` | One source for the SPEC_0040 DAE-C30 entry-point identity, the DAE interface proof, the Solve `Native` operation signature, and the value every evaluator and backend computes. |
-| `TranslationRead` catalog of foreign file readers, its interfaces and evaluators, MAT-file reading, and MLS §13.5 resource URIs (`ResourceRoots`) | `rumoca-eval-flat::translation_reads` | One source for the SPEC_0040 FLAT-C06 entry-point identity and the value both translation evaluators (Flatten structural values and the FLAT-C01 fold) compute; only the translation interpreter executes it. |
+| `TranslationRead` catalog of translation-only foreign functions (file readers and `ModelicaStrings` comparison and length), its interfaces and evaluators, MAT-file reading, and MLS §13.5 resource URIs (`ResourceRoots`) | `rumoca-eval-flat::translation_reads` | One source for the SPEC_0040 FLAT-C06 entry-point identity and the value both translation evaluators (Flatten structural values and the FLAT-C01 fold) compute; only the translation interpreter executes it. |
 | Terminal print call identity (`ModelicaInternal_print` interface) | `rumoca-phase-dae::construction::terminal_print` | One predicate for SPEC_0040 DAE-C31 shared by model-algorithm validation, call planning, and lowering. |
 | Iterator provenance (`IndexBinderProvenance`) | `rumoca-core` | Source iterators retain Resolve's allocated `DefId` through AST/Core comprehension, for-index, and structured-domain vocabulary; source spelling is diagnostic data. Parser absence is refused at AST-to-Core lowering. Compiler-created axes explicitly carry `Generated`, not fabricated source declarations; their existing local construction vocabulary remains separate. Provenance constructs source references through checked component-reference construction. Structured-domain wire requires this provenance. |
 | `InstanceId` | `rumoca-core` | Compact concrete-occurrence identity shared by Instanced and Flat reference vocabulary; source declarations continue to use `DefId`. |
@@ -286,12 +286,6 @@ and user-facing command documentation. Commands may return semantic values or
 checked arithmetic/query results; they MUST NOT return target-language
 fragments or perform lowering, name resolution, type repair, target dispatch,
 file assembly, or escaping for a particular output language.
-
-The legacy backend source freeze (decision ledger D001–D096 and its pinned
-revisions R001–R012) was removed by owner decision on Nov 25, 2026. Backend
-changes are reviewed like any other change; the non-active successor design
-remains DRAFT
-[SPEC_0037 §2a](SPEC_0037_FORMALLY_VERIFIED_COMPILER.md#2a-source-bound-backend-retirement).
 
 ## References
 

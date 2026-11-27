@@ -1,9 +1,10 @@
-//! Compiler-defined bodies of cataloged foreign file readers (SPEC_0040
-//! FLAT-C06).
+//! Compiler-defined bodies of cataloged foreign functions that run only at
+//! translation (SPEC_0040 FLAT-C06).
 //!
 //! An external function has the meaning of its foreign body (MLS §12.9). A
-//! foreign entry point that only reads files, and takes or returns String
-//! values, can run only at translation: the runtime owns no String storage.
+//! foreign entry point that takes or returns String values, as the file
+//! readers and the String functions of `ModelicaStrings.c` do, can run only
+//! at translation: the runtime owns no String storage.
 //! Each row of this closed catalog names its exact entry point, its ordered
 //! external argument interface, and one evaluator that reproduces the MSL 4.1
 //! C source over the values of its input arguments. A file name that is an
@@ -17,7 +18,7 @@ pub use resources::ResourceRoots;
 
 use crate::constant::Value;
 
-/// One cataloged foreign file reader.
+/// One cataloged translation-only foreign function.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TranslationRead {
     /// `fullName = ModelicaInternal_fullPathName(name)`.
@@ -27,6 +28,10 @@ pub enum TranslationRead {
     /// `ModelicaIO_readRealMatrix(fileName, matrixName, matrix, nrow, ncol,
     /// verboseRead)`.
     ReadRealMatrix,
+    /// `result = ModelicaStrings_compare(string1, string2, caseSensitive)`.
+    StringsCompare,
+    /// `result = ModelicaStrings_length(string)`: `strlen`, the number of bytes.
+    StringsLength,
 }
 
 /// The Modelica type of one value crossing a reader's interface.
@@ -36,6 +41,9 @@ pub enum ReadElement {
     Integer,
     Real,
     Boolean,
+    /// An enumeration, by its literals in ordinal order; the value crosses the
+    /// interface as its one-based ordinal.
+    Enumeration(&'static [&'static str]),
 }
 
 /// One ordered external argument position of a reader's interface.
@@ -91,6 +99,8 @@ impl TranslationRead {
             Self::FullPathName,
             Self::ReadMatrixSizes,
             Self::ReadRealMatrix,
+            Self::StringsCompare,
+            Self::StringsLength,
         ]
         .into_iter()
         .find(|read| read.entry_point() == entry_point)
@@ -102,6 +112,8 @@ impl TranslationRead {
             Self::FullPathName => "ModelicaInternal_fullPathName",
             Self::ReadMatrixSizes => "ModelicaIO_readMatrixSizes",
             Self::ReadRealMatrix => "ModelicaIO_readRealMatrix",
+            Self::StringsCompare => "ModelicaStrings_compare",
+            Self::StringsLength => "ModelicaStrings_length",
         }
     }
 
@@ -119,6 +131,8 @@ impl TranslationRead {
                 Input(Integer),
                 Input(Boolean),
             ],
+            Self::StringsCompare => &[STRING, STRING, Input(Boolean)],
+            Self::StringsLength => &[STRING],
         }
     }
 
@@ -127,11 +141,14 @@ impl TranslationRead {
         match self {
             Self::FullPathName => Some(ReadElement::String),
             Self::ReadMatrixSizes | Self::ReadRealMatrix => None,
+            Self::StringsCompare => Some(ReadElement::Enumeration(COMPARE_LITERALS)),
+            Self::StringsLength => Some(Integer),
         }
     }
 
     /// Evaluate the row over its input values, in interface order, returning
     /// its output values in interface order followed by the returned value.
+    /// An enumeration is returned as its one-based ordinal.
     pub fn evaluate(
         self,
         inputs: &[Value],
@@ -177,6 +194,17 @@ impl TranslationRead {
                     )));
                 }
                 Ok(vec![row_major(&matrix)])
+            }
+            (
+                Self::StringsCompare,
+                [
+                    Value::String(left),
+                    Value::String(right),
+                    Value::Bool(case_sensitive),
+                ],
+            ) => Ok(vec![Value::Integer(compare(left, right, *case_sensitive))]),
+            (Self::StringsLength, [Value::String(text)]) => {
+                Ok(vec![Value::Integer(extent(text.len()))])
             }
             _ => Err(mismatch()),
         }
@@ -224,6 +252,29 @@ impl TranslationRead {
                 }
             })
         })
+    }
+}
+
+/// The literals of `Modelica.Utilities.Types.Compare`, in the ordinal order of
+/// the `ModelicaStrings.c` result (`Modelica_Utilities_Types_Compare`).
+const COMPARE_LITERALS: &[&str] = &["Less", "Equal", "Greater"];
+
+/// `ModelicaStrings_compare`: `strcmp` of the two strings, or of their
+/// `tolower` images when case is ignored, as the ordinal of its sign. The "C"
+/// locale folds only ASCII letters, and bytes compare unsigned.
+fn compare(left: &str, right: &str, case_sensitive: bool) -> i64 {
+    let fold = |byte: u8| {
+        if case_sensitive {
+            byte
+        } else {
+            byte.to_ascii_lowercase()
+        }
+    };
+    let ordering = left.bytes().map(fold).cmp(right.bytes().map(fold));
+    match ordering {
+        std::cmp::Ordering::Less => 1,
+        std::cmp::Ordering::Equal => 2,
+        std::cmp::Ordering::Greater => 3,
     }
 }
 

@@ -78,7 +78,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.10.4"
+version = "0.11.0"
 edition = "2024"
 license = "Apache-2.0"
 repository = "https://github.com/CogniPilot/rumoca"
@@ -268,6 +268,16 @@ debug = "line-tables-only"
 # it resolves `file:line` only while its `target/debug/deps/*.dwo` files are
 # still in place, so never ship or archive a dev binary on its own.
 split-debuginfo = "unpacked"
+
+# Third-party crates carry no debug info in dev/test builds. Even as line
+# tables, theirs were most of every test binary: `suite_core` was 297.7 MiB
+# with them and is 228.0 MiB without (main e0a856fe, 2026-11-25), against the
+# 300 MiB per-binary ceiling in tests/architecture_hardening_test/
+# build_resource_budget.rs. Workspace crates keep their line tables, so
+# backtraces and `file:line` through rumoca's own code are unchanged; a frame
+# inside a dependency shows its function name without a source line.
+[profile.dev.package."*"]
+debug = false
 
 # `build-override` applies to build scripts and proc-macro crates only.
 # It speeds up codegen-heavy macro/build tooling without forcing all dev crates

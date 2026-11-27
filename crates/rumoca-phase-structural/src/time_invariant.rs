@@ -263,7 +263,8 @@ fn statement_roots<'dae>(
                     statement_roots(branch.statements(), roots);
                 }
             }
-            dae::FunctionStatementView::RequireAssigned { definition, .. } => {
+            dae::FunctionStatementView::RequireAssigned { definition, .. }
+            | dae::FunctionStatementView::CarryAssigned { definition, .. } => {
                 roots.push(definition.rhs())
             }
             dae::FunctionStatementView::Assignment { .. }

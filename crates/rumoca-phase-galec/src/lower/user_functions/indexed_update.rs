@@ -261,8 +261,10 @@ fn reads_replayed_storage<'dae>(
         | dae::ExpressionOperation::FunctionValue { .. }
         | dae::ExpressionOperation::FunctionFoldParameter { .. }
         | dae::ExpressionOperation::FunctionFoldOutput { .. }
+        | dae::ExpressionOperation::AssignedParameter { .. }
         | dae::ExpressionOperation::FunctionConditionalOutput { .. } => {}
-        dae::ExpressionOperation::Unary { operand, .. } => children.push(operand),
+        dae::ExpressionOperation::Unary { operand, .. }
+        | dae::ExpressionOperation::PassAssigned { operand } => children.push(operand),
         dae::ExpressionOperation::Binary { lhs, rhs, .. } => children.extend([lhs, rhs]),
         dae::ExpressionOperation::Conditional(operands)
         | dae::ExpressionOperation::Array(operands)

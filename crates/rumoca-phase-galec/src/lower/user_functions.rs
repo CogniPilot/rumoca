@@ -457,6 +457,7 @@ fn collect_assigned_local_names<'dae>(
                 }
             }
             dae::FunctionStatementView::RequireAssigned { .. }
+            | dae::FunctionStatementView::CarryAssigned { .. }
             | dae::FunctionStatementView::Assertion { .. } => {}
         }
     }
@@ -507,7 +508,8 @@ fn lower_function_statement<'a, 'dae>(
             lower_owned_function_conditional(view, conditional, lowerer, statements)?;
             lowerer.finish_statement_group();
         }
-        dae::FunctionStatementView::RequireAssigned { provenance, .. } => {
+        dae::FunctionStatementView::RequireAssigned { provenance, .. }
+        | dae::FunctionStatementView::CarryAssigned { provenance, .. } => {
             return Err(unsupported(
                 "function-assigned-state",
                 "GALEC function projection does not represent an optional executed-path value"

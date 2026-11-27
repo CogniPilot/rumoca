@@ -665,6 +665,40 @@ end SimulationResult;"#,
         assert_eq!(reference_status(&messages), "success");
     }
 
+    /// MSL `Modelica.Fluid.Examples.TraceSubstances.RoomCO2WithControls`: OMC
+    /// notes a lower bound alone, in the spelling `min constraint`, for a
+    /// roundoff-sized negative mass flow, and the simulation finishes.
+    const LOWER_BOUND_NOTICE: &str = "LOG_ASSERT        | info    | [Fluid/Interfaces.mo:846:3-846:50:writable]
+|                 | |       | The following assertion has been violated at time 172.800000
+|                 | |       | ((ductOut.mCs[1,1] >= 0.0)) --> \\\"Variable violating min constraint: 0.0 <= ductOut.mCs[1,1], has value: -5.52997e-17\\\"";
+
+    #[test]
+    fn an_info_level_lower_or_upper_bound_notice_in_a_finished_run_is_a_reference() {
+        let upper = LOWER_BOUND_NOTICE
+            .replace(
+                "min constraint: 0.0 <= ductOut.mCs[1,1]",
+                "max constraint: ductOut.mCs[1,1] <= 1.0",
+            )
+            .replace(">= 0.0", "<= 1.0");
+        for notice in [LOWER_BOUND_NOTICE.to_string(), upper] {
+            let messages = format!(
+                "LOG_SUCCESS       | info    | The initialization finished successfully with 3 homotopy steps.\n{notice}\nLOG_SUCCESS       | info    | The simulation finished successfully.\n"
+            );
+            assert_eq!(reference_status(&messages), "success", "{notice}");
+        }
+    }
+
+    #[test]
+    fn an_assertion_that_only_resembles_a_one_sided_bound_notice_stays_an_error() {
+        let messages = "LOG_SUCCESS       | info    | The initialization finished successfully without homotopy method.
+LOG_ASSERT        | info    | [Model.mo:3:5-3:40:writable]
+|                 | |       | The following assertion has been violated at time 0.500000
+|                 | |       | ((x > 0.0)) --> \\\"Variable violating min constraint was the old message; x must stay positive\\\"
+LOG_SUCCESS       | info    | The simulation finished successfully.
+";
+        assert_eq!(reference_status(messages), "error");
+    }
+
     #[test]
     fn a_bound_notice_without_a_finished_run_stays_an_error() {
         let messages = format!(
@@ -715,6 +749,19 @@ LOG_SUCCESS       | info    | The simulation finished successfully.
     fn a_plain_line_with_a_warning_field_is_still_read_for_assertions() {
         let messages = "LOG_SUCCESS       | info    | The initialization finished successfully without homotopy method.
 stdout | warning | assertion violated: x must stay below 1
+LOG_SUCCESS       | info    | The simulation finished successfully.
+";
+        assert_eq!(reference_status(messages), "error");
+    }
+
+    /// The notice is OMC's own message: it opens the assertion text. A model
+    /// assertion whose message merely quotes the phrase is still a failure.
+    #[test]
+    fn an_assertion_that_only_quotes_the_bound_notice_stays_an_error() {
+        let messages = "LOG_SUCCESS       | info    | The initialization finished successfully without homotopy method.
+LOG_ASSERT        | info    | [Model.mo:3:5-3:40:writable]
+|                 | |       | The following assertion has been violated at time 0.500000
+|                 | |       | ((x < 1.0)) --> \\\"x is too large (not a Variable violating min/max constraint)\\\"
 LOG_SUCCESS       | info    | The simulation finished successfully.
 ";
         assert_eq!(reference_status(messages), "error");

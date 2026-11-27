@@ -229,6 +229,26 @@ pub struct Model {
     /// Source `DefId`s remain declaration provenance. Concrete containment and
     /// aggregate-to-materialization proofs use `InstanceId` exclusively.
     pub instance_relations: InstanceRelationMap,
+    /// Package constants read by declaration identity alone while two or more
+    /// packages expose them with different values (MLS 3.7 section 7.3): the
+    /// value used is the last exposure recorded, which may not be the package
+    /// the read meant. Reported as a warning, never used for semantics.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub package_constant_ambiguities: Vec<PackageConstantAmbiguity>,
+}
+
+/// One package constant whose value depended on which exposing package was
+/// recorded last (see `Model::package_constant_ambiguities`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PackageConstantAmbiguity {
+    /// The constant as declared, e.g. `Modelica.Media.Interfaces.PartialMedium.nS`.
+    pub constant: String,
+    /// The packages that expose it with differing values, sorted.
+    pub packages: Vec<String>,
+    /// The package whose value was used.
+    pub used: String,
+    /// Where the constant was read, when the read carries a source location.
+    pub span: Option<rumoca_core::Span>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

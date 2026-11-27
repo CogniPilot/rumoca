@@ -500,6 +500,23 @@ pub(super) fn insert_function_definition<'dae>(
         .as_ref()
         .ok_or_else(|| unknown("function body", target.function().index(), provenance))?
         .active_scope;
+    // Only a record assigned to an output may carry: a bare forward or
+    // carried definition as a right-hand side would return a scalar that
+    // may be absent, which no call site can check.
+    if crate::expression::carries_assigned_state(storage, rhs.index())
+        && (!matches!(
+            storage.expressions.nodes.get(rhs.index() as usize),
+            Some(ExprNode::Record { .. })
+        ) || storage.functions[target.function().index() as usize]
+            .values
+            .get(target.ordinal() as usize)
+            .is_none_or(|value| value.role != FunctionValueRole::Output))
+    {
+        return Err(DaeConstructionError::InvalidAssignedStatePass {
+            span: provenance.span(),
+        });
+    }
+    let function = &mut storage.functions[target.function().index() as usize];
     function.definitions.push(FunctionDefinitionEntry {
         target: target.ordinal(),
         rhs: rhs.index(),
@@ -628,9 +645,11 @@ pub(super) fn reject_model_coordinate(
         | ExprNode::FunctionFoldParameter { .. }
         | ExprNode::FunctionFoldOutput { .. }
         | ExprNode::FunctionConditionalOutput { .. }
+        | ExprNode::AssignedParameter { .. }
         | ExprNode::Unary { .. }
         | ExprNode::Binary { .. }
         | ExprNode::Field { .. }
+        | ExprNode::PassAssigned { .. }
         | ExprNode::Range { .. }
         | ExprNode::Comprehension { .. }
         | ExprNode::Index { .. }

@@ -1,5 +1,6 @@
 mod arena;
 mod array_nodes;
+mod assigned_carry;
 mod call_nodes;
 mod clock_nodes;
 mod derivative_calls;
@@ -39,6 +40,7 @@ use type_rules::{
 };
 
 pub(crate) use arena::{ExpressionArenaStorage, FrozenExpressionArenaStorage, OperandRange};
+pub(crate) use assigned_carry::carries_assigned_state;
 pub(crate) use function_nodes::{
     insert_function_conditional_output, insert_function_fold_output,
     insert_function_fold_parameter, insert_function_value_use,
@@ -261,6 +263,7 @@ impl<'dae> ExpressionAt<'_, 'dae> {
             self.provenance,
         )?;
         let function_facts = node_function_facts(self.storage, node, self.provenance)?;
+        assigned_carry::check_carried_operands(self.storage, node, self.provenance)?;
         let mut visible = Ok(());
         node.for_each_child(&self.storage.expressions, |child| {
             if visible.is_ok() {

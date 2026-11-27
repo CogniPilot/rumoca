@@ -65,6 +65,8 @@ fn catalog_rows_are_identified_by_language_and_entry_point() {
         TranslationRead::FullPathName,
         TranslationRead::ReadMatrixSizes,
         TranslationRead::ReadRealMatrix,
+        TranslationRead::StringsCompare,
+        TranslationRead::StringsLength,
     ] {
         assert_eq!(
             TranslationRead::from_external("C", read.entry_point()),
@@ -193,6 +195,59 @@ fn operands_outside_the_interface_are_mismatches() {
     }
     .to_string();
     assert!(message.contains("ModelicaInternal_fullPathName"));
+}
+
+/// The ordinal `ModelicaStrings_compare` returns for two strings.
+fn compared(
+    left: &str,
+    right: &str,
+    case_sensitive: bool,
+) -> Result<Vec<Value>, TranslationReadError> {
+    TranslationRead::StringsCompare.evaluate(
+        &[string(left), string(right), Value::Bool(case_sensitive)],
+        &ResourceRoots::new(),
+    )
+}
+
+#[test]
+fn string_comparison_orders_bytes_as_strcmp_does() {
+    let ordinal = |value: i64| Ok(vec![Value::Integer(value)]);
+    assert_eq!(compared("CO2", "CO2", true), ordinal(2));
+    assert_eq!(compared("", "", true), ordinal(2));
+    assert_eq!(compared("CO", "CO2", true), ordinal(1));
+    assert_eq!(compared("N2", "CO2", true), ordinal(3));
+    // Upper-case letters sort before lower-case ones unless case is ignored.
+    assert_eq!(compared("CO2", "co2", true), ordinal(1));
+    assert_eq!(compared("CO2", "co2", false), ordinal(2));
+    assert_eq!(compared("b", "A", false), ordinal(3));
+    // A byte above 127 is unsigned and is not folded.
+    assert_eq!(compared("é", "z", true), ordinal(3));
+    assert_eq!(compared("É", "é", false), ordinal(1));
+    assert_eq!(
+        TranslationRead::StringsCompare.returns(),
+        Some(ReadElement::Enumeration(&["Less", "Equal", "Greater"]))
+    );
+}
+
+#[test]
+fn string_length_counts_bytes_as_strlen_does() {
+    let roots = ResourceRoots::new();
+    let length = |text: &str| TranslationRead::StringsLength.evaluate(&[string(text)], &roots);
+    assert_eq!(length(""), Ok(vec![Value::Integer(0)]));
+    assert_eq!(length("CO2"), Ok(vec![Value::Integer(3)]));
+    assert_eq!(length("é"), Ok(vec![Value::Integer(2)]));
+    assert_eq!(
+        TranslationRead::StringsLength.evaluate(&[Value::Integer(3)], &roots),
+        Err(TranslationReadError::OperandMismatch {
+            read: TranslationRead::StringsLength
+        })
+    );
+    assert_eq!(
+        TranslationRead::StringsCompare.evaluate(&[string("a"), string("b")], &roots),
+        Err(TranslationReadError::OperandMismatch {
+            read: TranslationRead::StringsCompare
+        })
+    );
 }
 
 #[test]

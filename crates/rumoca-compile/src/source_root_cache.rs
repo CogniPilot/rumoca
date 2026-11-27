@@ -198,6 +198,23 @@ fn collect_modelica_files(path: &Path) -> std::io::Result<Vec<PathBuf>> {
     collect_source_root_source_files(path).map_err(|err| std::io::Error::other(err.to_string()))
 }
 
+/// A file or directory's key path relative to the source root. Everything the
+/// walk found is spelled under `path`, so the root is canonicalized once and the
+/// prefix stripped as written; canonicalizing every entry cost one `readlink`
+/// per path component per file (#152: about 80k per MSL compile). Only a path
+/// not spelled under the root is canonicalized.
+fn source_root_relative(path: &Path, canonical_root: &Path, entry: &Path) -> String {
+    if let Ok(rel) = entry.strip_prefix(path) {
+        return rel.to_string_lossy().to_string();
+    }
+    let canonical = fs::canonicalize(entry).unwrap_or_else(|_| entry.to_path_buf());
+    canonical
+        .strip_prefix(canonical_root)
+        .unwrap_or(&canonical)
+        .to_string_lossy()
+        .to_string()
+}
+
 fn hash_source_root_inputs(path: &Path, files: &[PathBuf]) -> Result<SourceRootInputHash> {
     let canonical_root = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
     let mut dirs = Vec::new();
@@ -209,12 +226,7 @@ fn hash_source_root_inputs(path: &Path, files: &[PathBuf]) -> Result<SourceRootI
         .par_iter()
         .map(
             |file| -> std::io::Result<(PathBuf, String, u64, [u8; 32])> {
-                let canonical_file = fs::canonicalize(file).unwrap_or_else(|_| file.to_path_buf());
-                let rel = canonical_file
-                    .strip_prefix(&canonical_root)
-                    .unwrap_or(&canonical_file)
-                    .to_string_lossy()
-                    .to_string();
+                let rel = source_root_relative(path, &canonical_root, file);
                 let bytes = fs::read(file)?;
                 let digest = *blake3::hash(&bytes).as_bytes();
                 Ok((file.clone(), rel, bytes.len() as u64, digest))
@@ -236,12 +248,7 @@ fn hash_source_root_inputs(path: &Path, files: &[PathBuf]) -> Result<SourceRootI
     hasher.update(canonical_root.to_string_lossy().as_bytes());
     hasher.update(b"\n");
     for dir in dirs {
-        let canonical_dir = fs::canonicalize(&dir).unwrap_or(dir);
-        let rel = canonical_dir
-            .strip_prefix(&canonical_root)
-            .unwrap_or(&canonical_dir)
-            .to_string_lossy()
-            .to_string();
+        let rel = source_root_relative(path, &canonical_root, &dir);
         hasher.update(b"dir:");
         hasher.update(rel.as_bytes());
         hasher.update(b"\n");

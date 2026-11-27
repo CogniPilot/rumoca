@@ -387,6 +387,7 @@ struct StrictCompileWarnings {
     synthesized_inners: Vec<String>,
     synthesized_inner_messages: Vec<String>,
     structural_selections: Vec<rumoca_phase_dae::StructuralSelection>,
+    package_constant_ambiguities: Vec<rumoca_ir_flat::PackageConstantAmbiguity>,
 }
 
 #[derive(Debug, Clone)]
@@ -1578,6 +1579,9 @@ pub struct Document {
     /// Source-root text retained for exact provenance while `content` remains
     /// reserved for a live document overlay.
     source_root_content: Option<Arc<str>>,
+    /// The file text a source map read from disk for a document that carries
+    /// none, kept so every source map of the session reads the file once.
+    disk_text: std::sync::OnceLock<Arc<str>>,
     syntax: Arc<crate::parse::SyntaxFile>,
     query_fingerprints: DocumentQueryFingerprints,
 }
@@ -1589,6 +1593,7 @@ impl Document {
             uri,
             content: Arc::<str>::from(content),
             source_root_content: None,
+            disk_text: std::sync::OnceLock::new(),
             syntax: Arc::new(syntax),
             query_fingerprints,
         }

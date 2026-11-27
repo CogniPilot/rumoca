@@ -359,3 +359,100 @@ fn interpreted_linear_matrix_products_start_each_output_from_its_first_term() {
     let mismatches = signed_zero_dot_mismatches(|result| &result.1);
     assert!(mismatches.is_empty(), "{mismatches:#?}");
 }
+
+/// A whole call runs a batch's programs on the caller's one scratch arena, one
+/// after another. Programs whose register tapes differ in size at the same
+/// scratch site must neither read nor clobber each other's storage, in either
+/// order, and the arena must be whole again for the next call.
+#[test]
+fn a_whole_call_runs_programs_with_different_tapes_on_one_arena() {
+    let tape = |start: usize, count: usize| {
+        vec![
+            LinearOp::TensorLoad {
+                dst_start: 0,
+                input: rumoca_ir_solve::TensorInputKind::Y,
+                input_start: start,
+                count,
+                seed_start: Some(start),
+                lanes: 2,
+            },
+            LinearOp::StoreOutput { src: 1 },
+            LinearOp::StoreOutput {
+                src: (2 * count - 1) as u32,
+            },
+        ]
+    };
+    let y: Vec<f64> = (0..5000).map(|i| i as f64 * 0.25 - 3.0).collect();
+    let seed: Vec<f64> = (0..5000).map(|i| 1.0 / (i as f64 + 1.0)).collect();
+    for rows in [
+        vec![tape(0, 4000), tape(100, 900)],
+        vec![tape(100, 900), tape(0, 4000)],
+    ] {
+        assert!(rows.iter().all(|row| allocates_register_tape(row)));
+        let compiled = compile_jacobian_rows(&rows).unwrap();
+        for call in 0..2 {
+            let before = compiled.program_call_count();
+            let mut whole = [f64::NAN; 4];
+            compiled.call(&y, &[], 0.0, &seed, &mut whole).unwrap();
+            assert_eq!(
+                compiled.program_call_count() - before,
+                1 + rows.len(),
+                "one batch entry, then the test build's program-by-program check"
+            );
+            for (index, value) in whole.iter().enumerate() {
+                let (program, output) = (index / 2, index % 2);
+                let selected = compiled
+                    .call_program_output((program, output), &y, &[], 0.0, &seed, &[])
+                    .unwrap();
+                assert_eq!(
+                    value.to_bits(),
+                    selected.to_bits(),
+                    "call {call}, program {program}, output {output}"
+                );
+            }
+        }
+    }
+}
+
+/// A program that allocates no scratch has its frame removed from the emitted
+/// body, and so does the whole-call batch, which allocates nothing itself; a
+/// program whose register tape lives in scratch keeps it. Both still give the
+/// same bits through a whole call and through their own entries.
+#[test]
+fn only_programs_without_scratch_lose_their_frame() {
+    let small = vec![
+        LinearOp::LoadY { dst: 0, index: 0 },
+        LinearOp::LoadSeed { dst: 1, index: 0 },
+        LinearOp::StoreOutput { src: 1 },
+    ];
+    let taped = vec![
+        LinearOp::TensorLoad {
+            dst_start: 0,
+            input: rumoca_ir_solve::TensorInputKind::Y,
+            input_start: 0,
+            count: 4000,
+            seed_start: Some(0),
+            lanes: 2,
+        },
+        LinearOp::StoreOutput { src: 7999 },
+    ];
+    assert!(!allocates_register_tape(&small) && allocates_register_tape(&taped));
+    let before = super::scratch::elided_frames_on_this_thread();
+    let compiled = compile_jacobian_rows(&[small.clone(), taped.clone(), small]).unwrap();
+    assert_eq!(
+        super::scratch::elided_frames_on_this_thread() - before,
+        3,
+        "the two small programs and the whole-call batch lose their frame; the tape program keeps it"
+    );
+    let y: Vec<f64> = (0..4000).map(|i| i as f64 - 7.5).collect();
+    let seed: Vec<f64> = (0..4000).map(|i| 0.5 + i as f64).collect();
+    let mut whole = [f64::NAN; 3];
+    compiled.call(&y, &[], 0.0, &seed, &mut whole).unwrap();
+    for (program, value) in whole.iter().enumerate() {
+        let selected = compiled
+            .call_program_output((program, 0), &y, &[], 0.0, &seed, &[])
+            .unwrap();
+        assert_eq!(value.to_bits(), selected.to_bits(), "program {program}");
+    }
+    assert_eq!(whole[0].to_bits(), seed[0].to_bits());
+}

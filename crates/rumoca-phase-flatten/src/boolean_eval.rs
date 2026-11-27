@@ -148,7 +148,9 @@ impl rumoca_eval_ast::ast_scalar::AstScalarContext for FlattenScalarAdapter<'_> 
         }
         let lhs = try_resolve_enum_value(self.ctx, lhs, &prefix)?;
         let rhs = try_resolve_enum_value(self.ctx, rhs, &prefix)?;
-        Some(rumoca_core::enum_values_equal(&lhs, &rhs))
+        // Values of different enumeration types are a type error, never
+        // `false`: the comparison stays undecided (MLS 3.7 §10.6.6).
+        rumoca_core::enum_values_compare(&lhs, &rhs)
     }
 
     fn coerce_integral_real(&self, value: f64, _span: rumoca_core::Span) -> Option<i64> {
@@ -824,7 +826,7 @@ mod tests {
     }
 
     #[test]
-    fn enum_equality_rejects_different_enum_type() {
+    fn enum_equality_of_different_enum_types_is_not_decided() {
         let mut ctx = Context::new();
         ctx.enum_parameter_values.insert(
             "mode".to_string(),
@@ -836,7 +838,7 @@ mod tests {
             cref_expr("Modelica.Blocks.Types.SimpleController.PI"),
         );
         let value = try_eval_boolean_with_ctx_inner(&expr, Some(&ctx), &ast::QualifiedName::new());
-        assert_eq!(value, Some(false));
+        assert_eq!(value, None, "a type error, never `false` (MLS 3.7 §10.6.6)");
     }
 
     #[test]

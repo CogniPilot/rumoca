@@ -166,3 +166,52 @@ fn bound_program_fallback_never_replaces_an_exact_callee_operation_span() {
         .unwrap();
     assert_eq!(output, [11.0]);
 }
+
+/// A program that calls a pure function keeps its scratch frame: its call
+/// inputs and outputs live in scratch, and the callee, whose typed body always
+/// has a tape, enters a frame of its own beneath it. A program beside it with
+/// no scratch loses its frame. The whole call and both bound entries agree.
+#[test]
+fn a_program_calling_a_pure_function_keeps_its_frame() {
+    let table = indexed_owner();
+    let calls = compile_pure_call_table(&table).unwrap();
+    let source = ScalarProgramBlock::with_program_spans(
+        vec![
+            vec![
+                LinearOp::LoadY { dst: 0, index: 0 },
+                LinearOp::LoadY { dst: 1, index: 1 },
+                LinearOp::LoadY { dst: 2, index: 2 },
+                LinearOp::PureCall {
+                    dst_start: 3,
+                    input_starts: vec![0, 2].into(),
+                    site: table.owners()[0].call_site(),
+                },
+                LinearOp::StoreOutput { src: 3 },
+            ],
+            vec![
+                LinearOp::LoadY { dst: 0, index: 0 },
+                LinearOp::StoreOutput { src: 0 },
+            ],
+        ],
+        vec![fixture_span(), fixture_span()],
+    )
+    .unwrap();
+    let before = crate::emit::elided_frames_on_this_thread();
+    let compiled =
+        compile_selectable_expression_scalar_program_block(&source, Some(&calls)).unwrap();
+    assert_eq!(
+        crate::emit::elided_frames_on_this_thread() - before,
+        2,
+        "the program without a pure call and the whole-call batch lose their frame"
+    );
+    let y = [7.0, 11.0, 2.0];
+    let mut whole = [f64::NAN; 2];
+    compiled.call(&y, &[], 0.0, &mut whole).unwrap();
+    assert_eq!(whole, [11.0, 7.0]);
+    for (program, expected) in whole.into_iter().enumerate() {
+        let bound = compiled.bind_program(&source, program).unwrap().unwrap();
+        let mut output = [f64::NAN];
+        bound.call(&y, &[], 0.0, &[], &mut output).unwrap();
+        assert_eq!(output[0].to_bits(), expected.to_bits(), "program {program}");
+    }
+}

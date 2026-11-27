@@ -175,6 +175,10 @@ pub enum DaeConstructionError {
         found_definition: u32,
         span: Span,
     },
+    #[error(
+        "a value that may be absent is passed where only the returned record or an accepting call argument may hold it"
+    )]
+    InvalidAssignedStatePass { span: Span },
     #[error("model coordinate `{coordinate}` cannot be captured by a pure function")]
     InvalidFunctionCoordinate {
         coordinate: &'static str,
@@ -400,6 +404,7 @@ impl DaeConstructionError {
             | Self::InvalidFunctionScope { span, .. }
             | Self::InvalidModelActivationScope { span }
             | Self::InvalidFunctionValueRead { span, .. }
+            | Self::InvalidAssignedStatePass { span }
             | Self::InvalidFunctionCoordinate { span, .. }
             | Self::InvalidFunctionDependency { span, .. }
             | Self::InvalidFunctionDerivative { span, .. }

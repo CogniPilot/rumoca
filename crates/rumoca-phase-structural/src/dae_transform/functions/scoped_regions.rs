@@ -177,6 +177,22 @@ impl<'source, 'target> FunctionRebuilder<'source, '_, 'target> {
         self.seed_issued_definition(target, function, region.body(), definition)
     }
 
+    /// The carried form: the same state reissued without a check, for a
+    /// field of the record the function returns.
+    pub(super) fn rebuild_carried_read(
+        &mut self,
+        target: &mut dae::DaeConstruction<'target>,
+        function: &RebuiltFunction<'target>,
+        body: &mut dae::FunctionBody<'target>,
+        value: dae::FunctionValueId<'source>,
+        definition: dae::FunctionDefinitionView<'source>,
+        provenance: dae::DaeProvenance,
+    ) -> Result<(), dae::DaeConstructionError> {
+        let value = function.values[value.ordinal() as usize];
+        target.functions(|functions| functions.carry_assigned(body, value, provenance))?;
+        self.seed_issued_definition(target, function, body, definition)
+    }
+
     fn seed_issued_definition(
         &mut self,
         target: &mut dae::DaeConstruction<'target>,

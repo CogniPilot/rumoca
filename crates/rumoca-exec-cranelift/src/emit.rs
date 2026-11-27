@@ -23,6 +23,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+mod call_batch;
 mod expansion;
 mod host_runtime;
 mod input_validation;
@@ -40,6 +41,8 @@ mod register_storage;
 #[cfg(test)]
 mod register_storage_tests;
 mod scratch;
+#[cfg(test)]
+pub(crate) use scratch::elided_frames_on_this_thread;
 mod selected_jvp;
 mod selected_residual;
 mod status;
@@ -715,6 +718,7 @@ pub(crate) enum RowKind {
     JacobianV,
 }
 
+#[derive(Clone)]
 enum ResidualFuncIds {
     Whole(FuncId),
     Chunked(Vec<FuncId>),
@@ -727,6 +731,22 @@ const RESIDUAL_BATCH_OPS: usize = 12_000;
 static NEXT_FOLD_KERNEL_ID: AtomicUsize = AtomicUsize::new(0);
 static NEXT_RESIDUAL_KERNEL_ID: AtomicUsize = AtomicUsize::new(0);
 static NEXT_ASSIGNMENT_KERNEL_ID: AtomicUsize = AtomicUsize::new(0);
+
+#[cfg(test)]
+thread_local! {
+    static LOWERED_PROGRAM_BODIES: Cell<usize> = const { Cell::new(0) };
+}
+
+/// Program bodies lowered into row functions and row batches on this thread.
+#[cfg(test)]
+pub(crate) fn lowered_program_bodies_on_this_thread() -> usize {
+    LOWERED_PROGRAM_BODIES.with(Cell::get)
+}
+
+fn count_lowered_program_body() {
+    #[cfg(test)]
+    LOWERED_PROGRAM_BODIES.with(|count| count.set(count.get() + 1));
+}
 
 const INLINE_FIXED_FOLD_POINT_LIMIT: usize = 8;
 
@@ -788,7 +808,7 @@ fn compile_residual_rows_attached(
     let selectable = selectable && !selected_residual::has_shared_conditional_owner(rows);
     let pending = compile_residual_functions(&mut emitter, rows, &plans, selectable)?;
     let whole_pending = if selectable && rows.len() > 1 {
-        compile_residual_functions(&mut emitter, rows, &plans, false)?
+        call_batch::compile_residual_call_batches(&mut emitter, rows, &pending)?
     } else {
         Vec::new()
     };
@@ -1072,7 +1092,7 @@ fn compile_jacobian_rows_attached(
         let func_id = emitter.compile_row(row, RowKind::JacobianV, &name)?;
         func_ids.push(func_id);
     }
-    let whole_ids = compile_jacobian_whole(&mut emitter, rows)?;
+    let whole_ids = compile_jacobian_whole(&mut emitter, rows, &func_ids)?;
     finalize_jit_module(&mut emitter.module)?;
     let input_requirements = input_requirements_for_plans(&plans);
     let mut compiled_rows = checked_vec_with_capacity(rows.len(), "compiled Jacobian rows")?;
@@ -1134,6 +1154,7 @@ type JacobianWholeGroup = (std::ops::Range<usize>, Option<FuncId>);
 fn compile_jacobian_whole(
     emitter: &mut CraneliftEmitter,
     rows: &[Vec<LinearOp>],
+    row_functions: &[FuncId],
 ) -> Result<Vec<JacobianWholeGroup>, CompileError> {
     let mut groups = Vec::new();
     let mut start = 0usize;
@@ -1150,7 +1171,11 @@ fn compile_jacobian_whole(
         }
         let end = end.max(start + 1);
         let func_id = if end - start > 1 {
-            Some(emitter.compile_row_batch(&rows[start..end], RowKind::JacobianV)?)
+            Some(emitter.compile_call_batch(
+                &rows[start..end],
+                &row_functions[start..end],
+                RowKind::JacobianV,
+            )?)
         } else {
             None
         };
@@ -1855,11 +1880,13 @@ impl CraneliftEmitter {
                 known_constants: HashMap::new(),
             };
 
+            count_lowered_program_body();
             row_lower.lower_row_outputs(row, out_ptr)?;
             status::succeed(&mut fb);
             fb.finalize();
         }
 
+        scratch::elide_unused_frame(&mut context.func);
         self.module.queue_function(func_id, &mut context)?;
         self.module.clear_context(&mut context);
         Ok(func_id)
@@ -1990,6 +2017,7 @@ impl CraneliftEmitter {
                     fold_carried_versions: Vec::new(),
                     known_constants: HashMap::new(),
                 };
+                count_lowered_program_body();
                 row_lower.lower_row_outputs_from(row, out_ptr, output_base)?;
                 conditional_results = std::mem::take(&mut row_lower.conditional_results);
                 output_base += ScalarProgramBlock::program_output_count(row);

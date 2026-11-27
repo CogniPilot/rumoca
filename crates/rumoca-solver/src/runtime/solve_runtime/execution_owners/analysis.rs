@@ -142,6 +142,18 @@ impl<'source> ProgramAnalysis<'source> {
         self.source.parameter_static_y_gradient_params(row)
     }
 
+    /// The program's parameter slots and what each column of its solver-Y
+    /// gradient reads besides them.
+    pub(in crate::runtime::solve_runtime) fn gradient_inputs(
+        &self,
+        row: usize,
+    ) -> Option<(&'source [usize], Vec<rumoca_eval_solve::YGradientColumn>)> {
+        Some((
+            self.source.row_parameter_indices(row)?,
+            self.source.y_gradient_inputs(row)?,
+        ))
+    }
+
     pub(in crate::runtime::solve_runtime) fn reverse_row_y_gradient_supported(
         &self,
         row: usize,

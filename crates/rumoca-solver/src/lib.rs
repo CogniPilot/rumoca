@@ -1,4 +1,5 @@
 //! Backend-neutral simulation contracts and runtime helpers for Rumoca.
+#![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 
 #[cfg(all(not(kani), not(feature = "sparse-linalg")))]
 compile_error!("rumoca-solver production builds require the `sparse-linalg` feature");
@@ -44,7 +45,8 @@ pub use runtime::fallbacks::{
 };
 #[cfg(not(kani))]
 pub use runtime::hotpath_stats::{
-    HotpathStatsSnapshot, note_integrator, reset as reset_step_counts, snapshot as step_counts,
+    AffineLinearizationCounts, HotpathStatsSnapshot, affine_linearization_counts, note_integrator,
+    reset as reset_step_counts, reset_affine_linearization_counts, snapshot as step_counts,
 };
 #[cfg(not(kani))]
 pub use runtime::jacobian::{

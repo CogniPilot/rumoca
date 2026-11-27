@@ -363,7 +363,8 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         call_span: Span,
     ) -> Result<(), LowerError> {
         match statement {
-            dae::FunctionStatementView::RequireAssigned { .. } => Ok(()),
+            dae::FunctionStatementView::RequireAssigned { .. }
+            | dae::FunctionStatementView::CarryAssigned { .. } => Ok(()),
             dae::FunctionStatementView::Conditional { conditional }
                 if !has_conditional_check(conditional) =>
             {
@@ -417,7 +418,8 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         call_span: Span,
     ) -> Result<(), LowerError> {
         match statement {
-            dae::FunctionStatementView::RequireAssigned { .. } => Ok(()),
+            dae::FunctionStatementView::RequireAssigned { .. }
+            | dae::FunctionStatementView::CarryAssigned { .. } => Ok(()),
             dae::FunctionStatementView::Conditional { conditional }
                 if !has_conditional_check(conditional) =>
             {
@@ -1151,7 +1153,8 @@ fn has_check(statements: dae::FunctionStatements<'_>) -> bool {
         dae::FunctionStatementView::Assignment { .. }
         | dae::FunctionStatementView::AssignmentGroup { .. } => false,
         dae::FunctionStatementView::Assertion { .. }
-        | dae::FunctionStatementView::RequireAssigned { .. } => true,
+        | dae::FunctionStatementView::RequireAssigned { .. }
+        | dae::FunctionStatementView::CarryAssigned { .. } => true,
         dae::FunctionStatementView::Conditional { conditional } => {
             has_conditional_check(conditional)
         }

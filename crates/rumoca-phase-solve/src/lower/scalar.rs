@@ -1418,6 +1418,12 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             dae::ExpressionOperation::Literal(value) => {
                 self.literal(value, node.provenance().span())
             }
+            // Refused before lowering (`carried_field_state`).
+            dae::ExpressionOperation::PassAssigned { .. }
+            | dae::ExpressionOperation::AssignedParameter { .. } => Err(LowerError::unsupported(
+                "an assigned state has no scalar row",
+                node.provenance().span(),
+            )),
             dae::ExpressionOperation::Coordinate(coordinate) => {
                 self.coordinate(coordinate, scalar, node.provenance().span())
             }

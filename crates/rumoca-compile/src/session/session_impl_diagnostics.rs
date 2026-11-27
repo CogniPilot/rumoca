@@ -543,7 +543,13 @@ impl Session {
             }
             let model_stage = model_diagnostics_for_tree(
                 tree,
-                structural_selection_warnings(&compiled.structural_selections),
+                structural_selection_warnings(&compiled.structural_selections)
+                    .into_iter()
+                    .chain(package_constant_ambiguity_warnings(
+                        &compiled.package_constant_ambiguities,
+                        model_span,
+                    ))
+                    .collect(),
             );
             return merge_model_diagnostics(warnings, merge_model_diagnostics(body, model_stage));
         }
@@ -704,6 +710,34 @@ fn structural_selection_warnings(
         .collect()
 }
 
+/// One WF001 warning per package constant read by its declaration alone while
+/// packages expose it with different values (MLS 3.7 §7.3): the value used is
+/// the last exposure recorded, which may not be the package the read meant.
+fn package_constant_ambiguity_warnings(
+    ambiguities: &[rumoca_ir_flat::PackageConstantAmbiguity],
+    model_span: Span,
+) -> Vec<CommonDiagnostic> {
+    ambiguities
+        .iter()
+        .map(|ambiguity| {
+            CommonDiagnostic::warning(
+                "WF001",
+                format!(
+                    "the value of `{}` depends on which package it is read through: {} expose \
+                     different values, and no package could be determined for this read, so the \
+                     value of {} is used (MLS 3.7 §7.3)",
+                    ambiguity.constant,
+                    ambiguity.packages.join(", "),
+                    ambiguity.used,
+                ),
+                // A read without a source location is reported at the model.
+                PrimaryLabel::new(ambiguity.span.unwrap_or(model_span))
+                    .with_message("package constant read without its package"),
+            )
+        })
+        .collect()
+}
+
 fn build_model_diagnostics_for_dae_model(
     tree: &ast::ClassTree,
     model_name: &str,
@@ -717,6 +751,10 @@ fn build_model_diagnostics_for_dae_model(
         DaeModelOutcome::Success(artifact) => {
             collected.extend(structural_selection_warnings(
                 &artifact.structural_selections,
+            ));
+            collected.extend(package_constant_ambiguity_warnings(
+                &artifact.flat.package_constant_ambiguities,
+                model_span,
             ));
         }
         DaeModelOutcome::NeedsInner {

@@ -179,6 +179,7 @@ fn native_schedule_table_binding_distinguishes_shared_and_independent_replay_own
         )
         .unwrap(),
     );
+    model.problem.continuous.residual = model.problem.continuous.implicit_rhs.clone();
     model.problem.continuous.implicit_row_targets = vec![Some(crate::scalar_slot_y(0))].into();
     let schedule = super::super::derive_for_model(&model).unwrap();
     assert_eq!(schedule.stages().len(), 1);

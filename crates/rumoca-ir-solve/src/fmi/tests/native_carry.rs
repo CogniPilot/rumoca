@@ -89,6 +89,7 @@ fn stepper() -> (SolveModel, Vec<FmiVariableInput>) {
     model.problem.continuous.implicit_rhs = ComputeBlock {
         nodes: vec![ComputeNode::ScalarPrograms(rows)],
     };
+    model.problem.continuous.residual = model.problem.continuous.implicit_rhs.clone();
     let blocks = ProjectionBlocks::from(vec![AlgebraicProjectionBlock {
         rows: vec![0],
         y_indices: vec![0],

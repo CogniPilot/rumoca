@@ -190,7 +190,11 @@ pub(crate) use construction_checks::{
 /// ordered conditional statements are the only function-branch owners.
 /// 52 retains constructor-checked whole or scalar B.1c target selections.
 /// 53 retains function branch expression boundaries for checked lexical replay.
-pub const DAE_SCHEMA_VERSION: u16 = 53;
+/// 54 lets a field of a returned record carry its executed-path assigned
+/// state to the read (MLS §12.4.4): a function lists the parameters that may
+/// arrive absent, an assignedness action states whether it is carried rather
+/// than checked, and `pass_assigned` forwards a state to a call argument.
+pub const DAE_SCHEMA_VERSION: u16 = 54;
 
 pub use domains::Domains;
 pub(crate) use domains::insert_domain;
@@ -403,6 +407,13 @@ pub(crate) struct FunctionEntry {
     pub(crate) folds: Vec<u32>,
     declaration: DaeProvenance,
     inline: InlineAnnotation,
+    /// Parameter ordinals that may arrive without a value (MLS §12.4.4 read
+    /// at the use): strictly increasing. A read of such a parameter is the
+    /// checked read; only `PassAssigned` forwards its state unchecked.
+    pub(crate) absent_parameters: Vec<u32>,
+    /// Definitions issued by a carried assigned-state action, increasing:
+    /// each holds a value or its absence.
+    pub(crate) carried_definitions: Vec<u32>,
     derivatives: Vec<FunctionDerivativeEntry>,
     definition: Option<FunctionBodyEntry>,
     build: Option<FunctionBuildState>,
@@ -526,16 +537,21 @@ pub(crate) struct FunctionValueEntry {
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct FunctionDefinitionEntry {
     target: u32,
-    rhs: u32,
+    pub(crate) rhs: u32,
     provenance: DaeProvenance,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 enum FunctionStatementWire {
+    /// The executed-path state of a partial value becomes a definition.
+    /// Checked (`carried == false`): the path must have assigned it. Carried:
+    /// the definition holds the value or its absence, for a field of the
+    /// record a function returns (MLS §12.4.4, read at the use).
     RequireAssigned {
         owner: u32,
         target: u32,
         definition: u32,
+        carried: bool,
     },
     Assignment {
         definition: u32,
@@ -859,6 +875,7 @@ pub struct FunctionSignature<'dae> {
     results: Vec<ValueTypeId<'dae>>,
     declaration: DaeProvenance,
     inline: InlineAnnotation,
+    absent_parameters: Vec<u32>,
 }
 
 impl<'dae> FunctionSignature<'dae> {
@@ -874,7 +891,18 @@ impl<'dae> FunctionSignature<'dae> {
             results: results.into_iter().collect(),
             declaration,
             inline: InlineAnnotation::Unstated,
+            absent_parameters: Vec::new(),
         }
+    }
+
+    /// Declare the parameters a call may pass without a value: a field of a
+    /// record result the executed path never wrote, handed on whole (MLS
+    /// §12.4.4, checked where the callee reads it). Ordinals index the
+    /// parameter list and must be strictly increasing.
+    #[must_use]
+    pub fn with_absent_parameters(mut self, ordinals: impl IntoIterator<Item = u32>) -> Self {
+        self.absent_parameters = ordinals.into_iter().collect();
+        self
     }
 
     /// Carry the declaration's MLS §18.3 `Inline`/`LateInline` request.
@@ -1165,6 +1193,7 @@ impl<'dae> Functions<'_, 'dae> {
             results,
             declaration,
             inline,
+            absent_parameters,
         } = signature;
         check_provenance(self.source_map, declaration)?;
         let parameters = parameters
@@ -1177,6 +1206,17 @@ impl<'dae> Functions<'_, 'dae> {
             .collect::<Vec<_>>();
         for &ty in parameters.iter().chain(&results) {
             self.storage.value_type_at(ty, declaration)?;
+        }
+        if !absent_parameters.is_sorted_by(|lhs, rhs| lhs < rhs)
+            || absent_parameters
+                .last()
+                .is_some_and(|&last| last as usize >= parameters.len())
+        {
+            return Err(invalid_arity(
+                parameters.len(),
+                absent_parameters.len(),
+                declaration,
+            ));
         }
         let raw = checked_u32(self.storage.functions.len(), "function arena", declaration)?;
         let construction_start = checked_u32(
@@ -1202,6 +1242,8 @@ impl<'dae> Functions<'_, 'dae> {
             folds: Vec::new(),
             declaration,
             inline,
+            absent_parameters,
+            carried_definitions: Vec::new(),
             definition: None,
             derivatives: Vec::new(),
             build: None,

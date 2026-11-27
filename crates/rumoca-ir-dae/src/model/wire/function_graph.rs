@@ -155,6 +155,7 @@ impl ExpressionChildren {
         match node {
             ExprNodeWire::Unary { operand, .. }
             | ExprNodeWire::Field { base: operand, .. }
+            | ExprNodeWire::PassAssigned { operand }
             | ExprNodeWire::Comprehension { body: operand, .. } => pending.push(*operand),
             ExprNodeWire::Binary { lhs, rhs, .. }
             | ExprNodeWire::RuntimeQuotientOwner { lhs, rhs, .. } => pending.extend([*lhs, *rhs]),
@@ -276,6 +277,7 @@ fn expression_scopes(
             | ExprNodeWire::FunctionValue { function, .. }
             | ExprNodeWire::FunctionFoldParameter { function, .. }
             | ExprNodeWire::FunctionFoldOutput { function, .. }
+            | ExprNodeWire::AssignedParameter { function, .. }
             | ExprNodeWire::FunctionConditionalOutput { function } => Some(*function as usize),
             _ => None,
         };

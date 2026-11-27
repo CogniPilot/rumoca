@@ -8,6 +8,8 @@ use std::{cell::Cell, rc::Rc};
 #[derive(Default)]
 pub(super) struct Calls {
     pub compiles: Cell<usize>,
+    /// Scalar blocks of exactly one program handed to the backend.
+    pub lone_programs: Cell<usize>,
     pub projection_calls: Cell<usize>,
     pub succeeded: Cell<usize>,
     pub failed: Cell<usize>,
@@ -15,6 +17,12 @@ pub(super) struct Calls {
 impl Calls {
     fn prepare(&self) {
         self.compiles.set(self.compiles.get() + 1);
+    }
+    fn prepare_block(&self, block: &solve::ScalarProgramBlock) {
+        self.prepare();
+        if block.row_count() == 1 {
+            self.lone_programs.set(self.lone_programs.get() + 1);
+        }
     }
     fn observe<T>(&self, result: &Result<T, RuntimeSolveError>, executed: bool) {
         if result.is_err() {
@@ -178,7 +186,7 @@ impl SolveExecutionBackend for Backend {
         &self,
         block: &solve::ScalarProgramBlock,
     ) -> Result<Rc<dyn CompiledSolveExpression>, rumoca_solver::CompileRefusal> {
-        self.calls.prepare();
+        self.calls.prepare_block(block);
         self.inner.compile_expression(block)
     }
     fn compile_selectable_expression(
@@ -199,7 +207,7 @@ impl SolveExecutionBackend for Backend {
         &self,
         block: &solve::ScalarProgramBlock,
     ) -> Result<Rc<dyn CompiledSolveJacobianExpression>, rumoca_solver::CompileRefusal> {
-        self.calls.prepare();
+        self.calls.prepare_block(block);
         self.inner
             .compile_jacobian_expression(block)
             .map(|inner| Jacobian::wrap(inner, &self.calls))

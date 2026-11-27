@@ -597,11 +597,12 @@ fn promoted_concatenation_selects_each_operand_scalar_in_result_order() {
     solve
         .validate()
         .expect("constructor-certified concatenation produces valid Solve rows");
-    let rows = rumoca_eval_solve::to_scalar_program_block(&solve.continuous.residual)
-        .expect("compact residual has a scalar view");
-    assert_eq!(rows.row_count(), 4);
+    let [ComputeNode::ScalarPrograms(rows)] = solve.continuous.residual.nodes.as_slice() else {
+        panic!("one scalar residual block expected");
+    };
+    assert_eq!(rows.row_count(), 1);
     assert_eq!(
-        eval_residual_rows(&rows, &[0.0; 4], &[]),
+        eval_residual_rows(rows, &[0.0; 4], &[]),
         [-1.0, -3.0, -2.0, -4.0]
     );
 }

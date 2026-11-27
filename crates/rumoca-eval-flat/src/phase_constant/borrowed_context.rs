@@ -33,7 +33,12 @@ impl<'a> BorrowedContext<'a> {
             parameters: *parameters,
             literals: EvalContext::new(),
             functions,
-            canonicalizer: EnumCanonicalizer::new(parameters.known_enums),
+            canonicalizer: EnumCanonicalizer::new(parameters.known_enums).with_declared(
+                parameters
+                    .declared_enums
+                    .into_iter()
+                    .flat_map(|declared| declared.literals.keys().map(String::as_str)),
+            ),
         }
     }
 
@@ -78,7 +83,17 @@ impl EvalEnvironment for BorrowedContext<'_> {
     }
 
     fn get_enum(&self, name: &str) -> Option<&(String, String)> {
-        self.literals.get_enum(name)
+        self.literals
+            .get_enum(name)
+            .or_else(|| self.parameters.declared_enums?.literals.get(name))
+    }
+
+    fn enumeration_type(&self, declaration: rumoca_core::DefId) -> Option<&str> {
+        self.parameters
+            .declared_enums?
+            .types
+            .get(&declaration)
+            .map(String::as_str)
     }
 
     fn get_function(&self, name: &str) -> Option<&Function> {

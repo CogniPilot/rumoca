@@ -45,8 +45,8 @@ use rumoca_compile::codegen::{
     render_dae_template_with_name, render_flat_template_with_name,
 };
 use rumoca_compile::compile::{
-    Dae, DaeCompilationResult as CompileDaeCompilationResult, FlatModel, SemanticDiagnosticsMode,
-    Session, SessionConfig, SourceRootKind, VariableRole,
+    Dae, DaeCompilationResult as CompileDaeCompilationResult, FlatModel, ParsedSourceRootLoad,
+    SemanticDiagnosticsMode, Session, SessionConfig, SourceRootKind, VariableRole,
 };
 use rumoca_compile::parsing::{StoredDefinition, collect_compile_unit_source_files};
 use rumoca_compile::source_roots::{
@@ -368,14 +368,24 @@ impl Compiler {
 
     /// Load a source-root path into the session.
     ///
-    /// Handles both single files and directories recursively.
+    /// Handles both single files and directories recursively. The session
+    /// records the root as loaded, so a later load plan of the same compile
+    /// skips it and a root already in the session is not loaded again.
     fn load_source_root_into_session(
         &self,
         session: &mut Session,
         path: &str,
     ) -> Result<(), CompilerError> {
+        let path_key = canonical_path_key(path);
+        let expected_epoch = session.source_root_state_epoch();
+        if !session.reserve_source_root_load(&path_key, expected_epoch) {
+            return Ok(());
+        }
+        #[cfg(test)]
+        SOURCE_ROOT_LOADS.with(|loads| loads.set(loads.get() + 1));
         let path_obj = Path::new(path);
         let parsed_source_root = parse_source_root_with_cache(path_obj).map_err(|e| {
+            session.cancel_source_root_load(&path_key, expected_epoch);
             if let Some(package_layout_error) = e.downcast_ref::<PackageLayoutError>() {
                 return CompilerError::SourceDiagnosticsError {
                     summary: package_layout_error.to_string(),
@@ -387,12 +397,26 @@ impl Compiler {
         })?;
 
         let source_root_key = source_root_source_set_key(path);
-        session.replace_parsed_source_set(
+        let applied = session.apply_parsed_source_root_if_current(
             &source_root_key,
-            SourceRootKind::External,
-            parsed_source_root.documents,
-            None,
+            ParsedSourceRootLoad {
+                source_root_kind: SourceRootKind::External,
+                source_root_path: path_obj,
+                cache_status: parsed_source_root.cache_status,
+                path_key: &path_key,
+                current_document_path: None,
+                documents: parsed_source_root.documents,
+                expected_epoch,
+            },
         );
+        // Nothing touches the session between the reservation and here, so the
+        // load always applies; if it ever did not, the library would be missing
+        // and every name in it would fail to resolve far from this cause.
+        if applied.is_none() {
+            return Err(CompilerError::ParseError(format!(
+                "{path}: source root was not loaded because the session changed while it was parsed"
+            )));
+        }
         let cache_dir = resolve_source_root_cache_dir();
         let _ = session.sync_source_root_semantic_summary_cache(
             &source_root_key,
@@ -1922,6 +1946,18 @@ mod tests {
         );
         assert!(msg.contains("shared"), "actual message: {msg}");
     }
+}
+
+// Source roots this test thread has loaded into a session (tests run one per
+// thread), so a test can see how many times a compile loads each root.
+#[cfg(test)]
+thread_local! {
+    static SOURCE_ROOT_LOADS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+fn take_source_root_loads() -> usize {
+    SOURCE_ROOT_LOADS.with(|loads| loads.replace(0))
 }
 
 #[cfg(test)]

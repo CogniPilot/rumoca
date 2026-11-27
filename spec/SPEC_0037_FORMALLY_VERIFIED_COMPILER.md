@@ -82,23 +82,6 @@ composition grants what none of them proved. A checker MUST derive acceptance
 from a positive, exhaustive case analysis of its input, and every case it does
 not handle MUST refuse by name.
 
-### 2a. Source-Bound Backend Retirement
-
-This DRAFT proposes the joint contract below; it grants no migration
-permission. The legacy backend source freeze that once stood in for it was
-removed by owner decision on Nov 25, 2026: backend changes are reviewed like
-any other change.
-
-| Rule | Owner/Where | Brief Justification |
-|---|---|---|
-| Acceptance positively joins the immutable baseline, complete retained source/dependency closure, concrete route, issued API, authorized regions and actual conformance execution | `xtask` joint checker | Separate facts cannot authorize their composition |
-| Bind every consumed product to the same checked owners; hashes, equal copies and deserialized success records confer no authority | checker boundary | Prevent substitution |
-| Build and execute the captured private snapshot with pinned toolchain, features and artifacts; retain custody through execution | gate executor | Check the source actually run |
-| Check the concrete Rust/template AST and same-root issued API use; unrecognized helpers, routes or syntax refuse | source/API checker | Tokens and output parity cannot establish ownership |
-| Conformance accounts for every instruction and nested operator, numeric domain, ABI and first-fault behavior; missing or partial evidence refuses | conformance checker | A passing subset is incomplete |
-| Authorize replacement regions from those checks, prove every complement byte unchanged, and account for new/removed files and tests | migration checker | Coordinates alone grant nothing |
-| Preserve the ledger and unresolved obligations; no baseline refresh, approval flag or skipped gate; report partial and uncovered scope | production entry | Migration is not a count change |
-
 ### 3. The Verification Ladder
 
 A checker climbs one rung at a time. Each rung states its entry criterion, and
@@ -200,7 +183,6 @@ This section is the inventory, and a row moves only with the evidence it names.
 | Liveness alternatives join | L1 over its whole bounded domain, exit sets included; a bounded L3 harness on it did not finish symbolic execution |
 | DAE wire round trip | Property-tested, not proven |
 | Translation validation | SPEC_0039 defines a witness; no phase yet ships a producer and checker pair under it |
-| Backend retirement | Unchanged freeze only; joint contract proposed (§2a), no production authorization |
 | Definitional semantics | Slice 1 implemented and differentially validated, not transcribed |
 | Lean | Not started: no assistant selected, nothing transcribed |
 | Whole-compiler theorem | Non-goal (§4) |

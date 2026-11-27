@@ -131,6 +131,7 @@ fn empty_param_context<'a>(
         array_dims,
         known_values: no_known_values(),
         resources: None,
+        declared_enums: None,
         functions,
         var_context: None,
     }
@@ -190,6 +191,7 @@ fn eval_integer_div_operator_requires_exact_quotient() {
         array_dims: &array_dims,
         known_values: no_known_values(),
         resources: None,
+        declared_enums: None,
         functions: &functions,
         var_context: None,
     };
@@ -451,6 +453,7 @@ fn eval_integer_div_builtin_remains_truncating() {
         array_dims: &array_dims,
         known_values: no_known_values(),
         resources: None,
+        declared_enums: None,
         functions: &functions,
         var_context: None,
     };
@@ -717,7 +720,9 @@ fn eval_boolean_enum_eq_rejects_different_enum_type() {
         &FxHashMap::default(),
         &known_enums,
     );
-    assert_eq!(value, Some(false));
+    // Two enumerations of different types are not comparable (MLS 3.7 10.6.6):
+    // the comparison has no value, so nothing folds on it.
+    assert_eq!(value, None);
 }
 
 #[test]
@@ -766,6 +771,7 @@ fn eval_integer_if_uses_canonicalized_enum_condition() {
         array_dims: &FxHashMap::default(),
         known_values: no_known_values(),
         resources: None,
+        declared_enums: None,
         functions: &FxHashMap::default(),
         var_context: Some("pipe.nFMDistributed"),
     };
@@ -824,6 +830,7 @@ fn eval_integer_if_resolves_unqualified_enum_condition_with_var_context() {
         array_dims: &FxHashMap::default(),
         known_values: no_known_values(),
         resources: None,
+        declared_enums: None,
         functions: &FxHashMap::default(),
         var_context: Some("Bessel.na"),
     };
@@ -846,6 +853,7 @@ fn eval_integer_prefers_scoped_unqualified_name_over_global_name() {
         array_dims: &FxHashMap::default(),
         known_values: no_known_values(),
         resources: None,
+        declared_enums: None,
         functions: &FxHashMap::default(),
         var_context: Some("machine.rotor.converter.orientation"),
     };
@@ -915,6 +923,7 @@ fn eval_integer_if_handles_integer_builtin_with_scoped_enum_conditions() {
         array_dims: &FxHashMap::default(),
         known_values: no_known_values(),
         resources: None,
+        declared_enums: None,
         functions: &FxHashMap::default(),
         var_context: Some("Bessel.na"),
     };
@@ -986,6 +995,7 @@ fn eval_integer_field_access_does_not_recover_an_overqualified_record_path() {
         array_dims: &FxHashMap::default(),
         known_values: no_known_values(),
         resources: None,
+        declared_enums: None,
         functions: &FxHashMap::default(),
         var_context: Some("stack.cell[1,1].cell.cellData.nRC"),
     };
@@ -1012,6 +1022,7 @@ fn eval_integer_if_returns_common_value_when_condition_unknown() {
         array_dims: &FxHashMap::default(),
         known_values: no_known_values(),
         resources: None,
+        declared_enums: None,
         functions: &FxHashMap::default(),
         var_context: None,
     };
@@ -1058,6 +1069,7 @@ fn scoped_lookup_keeps_a_dot_inside_a_subscript_within_one_path_segment() {
         array_dims: &FxHashMap::default(),
         known_values: no_known_values(),
         resources: None,
+        declared_enums: None,
         functions: &FxHashMap::default(),
         var_context: Some("pkg.arr[data.medium].y"),
     };

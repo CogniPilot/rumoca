@@ -34,6 +34,7 @@ fn function_signature<'target>(
         function.declaration(),
     )
     .with_inline(function.inline())
+    .with_absent_parameters(function.absent_parameters().iter().copied())
 }
 
 fn declare_parameters<'target>(
@@ -628,6 +629,16 @@ impl<'source, 'target> FunctionRebuilder<'source, '_, 'target> {
                     ..
                 } => {
                     self.rebuild_assigned_read(
+                        target, function, &mut body, value, definition, provenance,
+                    )?;
+                }
+                dae::FunctionStatementView::CarryAssigned {
+                    value,
+                    definition,
+                    provenance,
+                    ..
+                } => {
+                    self.rebuild_carried_read(
                         target, function, &mut body, value, definition, provenance,
                     )?;
                 }
@@ -1272,6 +1283,7 @@ impl<'source, 'target> FunctionRebuilder<'source, '_, 'target> {
         match operation {
             dae::ExpressionOperation::Literal(_)
             | dae::ExpressionOperation::Coordinate(_)
+            | dae::ExpressionOperation::AssignedParameter { .. }
             | dae::ExpressionOperation::FunctionFoldParameter { .. }
             | dae::ExpressionOperation::FunctionConditionalOutput { .. }
             | dae::ExpressionOperation::FunctionFoldOutput { .. }
@@ -1283,7 +1295,8 @@ impl<'source, 'target> FunctionRebuilder<'source, '_, 'target> {
                 }
                 push(range.start().expression());
             }
-            dae::ExpressionOperation::Unary { operand, .. } => push(operand),
+            dae::ExpressionOperation::Unary { operand, .. }
+            | dae::ExpressionOperation::PassAssigned { operand } => push(operand),
             dae::ExpressionOperation::ClockTransfer { source, .. } => push(source),
             dae::ExpressionOperation::Binary { lhs, rhs, .. } => {
                 push(rhs);

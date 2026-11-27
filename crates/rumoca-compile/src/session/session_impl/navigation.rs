@@ -10,9 +10,26 @@ pub(super) fn source_map_content_for_doc(doc: &Document) -> std::sync::Arc<str> 
     if let Some(source) = &doc.source_root_content {
         return source.clone();
     }
-    std::fs::read_to_string(&doc.uri)
-        .map(std::sync::Arc::<str>::from)
-        .unwrap_or_else(|_| doc.content.clone())
+    doc.disk_text
+        .get_or_init(|| {
+            #[cfg(test)]
+            SOURCE_MAP_DISK_READS.with(|reads| reads.set(reads.get() + 1));
+            std::fs::read_to_string(&doc.uri)
+                .map(std::sync::Arc::<str>::from)
+                .unwrap_or_else(|_| doc.content.clone())
+        })
+        .clone()
+}
+
+// Source-map disk reads on this test thread (tests run one per thread).
+#[cfg(test)]
+thread_local! {
+    static SOURCE_MAP_DISK_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(crate) fn take_source_map_disk_reads() -> usize {
+    SOURCE_MAP_DISK_READS.with(|reads| reads.replace(0))
 }
 
 pub(crate) fn class_name_matches_query_target(

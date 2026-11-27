@@ -1128,13 +1128,14 @@ pub(crate) fn finalize_flat_model(
     substitute_known_constants_in_flat(flat, ctx)?;
     resolve_nested_constructor_field_access_bindings(flat);
     crate::postprocess::freeze_current_discrete_selections(flat);
-    crate::postprocess::fold_invariant_bindings(flat, &ctx.resource_roots);
+    crate::postprocess::fold_invariant_bindings(flat, ctx)?;
     functions::prune_unreachable_functions(flat);
     functions::validate_flat_function_bindings(flat)?;
     ctx.refresh_enum_parameter_lookup(flat);
     enum_literals::canonicalize_flat_enum_literals(flat, tree, &ctx.enum_parameter_values);
     flat.enum_literal_ordinals = collect_enum_literal_ordinals(tree, closure);
     flat.enumeration_declarations = enum_literals::collect_enumeration_declarations(tree, flat);
+    flat.package_constant_ambiguities = ctx.take_package_constant_ambiguities();
     if options.simplify_variable_names {
         name_simplify::simplify_flat_names(flat)?;
     }

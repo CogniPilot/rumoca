@@ -1,6 +1,7 @@
 //! Evaluate a certified affine block independently of its incoming guess.
 
 use super::*;
+use crate::runtime::hotpath_stats;
 
 pub(super) fn project_affine_block<M: ImplicitProjectionModel>(
     model: &M,
@@ -126,6 +127,10 @@ pub(crate) struct AffineLinearization {
     /// What a reuse checks and refreshes, when the Jacobian was formed row by
     /// row from reverse gradients.
     reuse: Option<ReuseKey>,
+    /// The block's key layout, derived at its first formation with a
+    /// Jacobian structure and kept for every later one: it depends on the
+    /// block alone, not on the point.
+    layout: Option<Rc<KeyLayout>>,
     /// Names `jacobian`, `row_scales`, and `variable_scales` together (see
     /// [`ScaledNewtonSystem::revision`]): issued fresh whenever one changes.
     revision: u64,
@@ -140,54 +145,113 @@ struct AffineScratch {
     certificate: CertificateScales,
 }
 
-/// The certified rows' parameter snapshot and the rows a reuse refills.
+/// The certified rows' input snapshot and the rows a reuse refills.
 #[derive(Clone)]
 struct ReuseKey {
+    layout: Rc<KeyLayout>,
+    /// The bit patterns of the keyed parameters, then of the keyed outside
+    /// coordinates, when the linearization was formed.
+    bits: Box<[u64]>,
+}
+
+/// What a block's reuse is keyed on.
+///
+/// A row is certified when the Jacobian entries of the block's own unknowns
+/// are a function of known inputs that the block does not solve: parameters
+/// alone (the SPEC_0043 parameter-static gradient), or parameters and solver
+/// coordinates outside the block (`v = R_actual*i` in a block solving `v`
+/// and `i`, with `R_actual` settled before it). A column that reads a block
+/// unknown or time leaves its row uncertified.
+#[derive(Clone)]
+struct KeyLayout {
     /// The union of the certified rows' parameter slots.
     slots: Box<[usize]>,
-    /// Their bit patterns when the linearization was formed.
-    bits: Box<[u64]>,
+    /// The solver coordinates outside the block the certified rows' columns
+    /// read.
+    outside: Box<[usize]>,
     /// Block-local rows without the certificate.
     uncertified: Box<[usize]>,
 }
 
 impl ReuseKey {
-    /// The block's certified parameter slots and uncertified rows.
+    /// The block's keyed inputs and uncertified rows.
     fn layout<M: ImplicitProjectionModel>(
         model: &M,
         block: &solve::AlgebraicProjectionBlock,
-    ) -> (Box<[usize]>, Box<[usize]>) {
+    ) -> KeyLayout {
         let mut slots = Vec::new();
+        let mut outside = Vec::new();
         let mut uncertified = Vec::new();
         for (local, &row) in block.rows.iter().enumerate() {
-            match model.implicit_row_static_gradient_parameters(row) {
-                Some(parameters) => slots.extend_from_slice(parameters),
-                None => uncertified.push(local),
+            if let Some(parameters) = model.implicit_row_static_gradient_parameters(row) {
+                slots.extend_from_slice(parameters);
+            } else if let Some((parameters, read)) = outside_inputs(model, block, row) {
+                slots.extend_from_slice(parameters);
+                outside.extend(read);
+            } else {
+                uncertified.push(local);
             }
         }
-        slots.sort_unstable();
-        slots.dedup();
-        (slots.into_boxed_slice(), uncertified.into_boxed_slice())
+        for keyed in [&mut slots, &mut outside] {
+            keyed.sort_unstable();
+            keyed.dedup();
+        }
+        KeyLayout {
+            slots: slots.into_boxed_slice(),
+            outside: outside.into_boxed_slice(),
+            uncertified: uncertified.into_boxed_slice(),
+        }
     }
 
-    fn at((slots, uncertified): (Box<[usize]>, Box<[usize]>), p: &[f64]) -> Option<Self> {
-        let bits = slots
-            .iter()
-            .map(|&slot| p.get(slot).map(|value| value.to_bits()))
-            .collect::<Option<Box<[u64]>>>()?;
-        Some(Self {
-            slots,
-            bits,
-            uncertified,
-        })
+    fn at(layout: Rc<KeyLayout>, p: &[f64], candidate: &[f64]) -> Option<Self> {
+        let bits = Self::bits(&layout, p, candidate).collect::<Option<Box<[u64]>>>()?;
+        Some(Self { layout, bits })
     }
 
-    fn matches(&self, p: &[f64]) -> bool {
-        self.slots
-            .iter()
-            .zip(&self.bits)
-            .all(|(&slot, &bits)| p.get(slot).is_some_and(|value| value.to_bits() == bits))
+    fn bits<'a>(
+        layout: &'a KeyLayout,
+        p: &'a [f64],
+        candidate: &'a [f64],
+    ) -> impl Iterator<Item = Option<u64>> + 'a {
+        let parameters = layout.slots.iter().map(|&slot| p.get(slot));
+        let coordinates = layout.outside.iter().map(|&index| candidate.get(index));
+        parameters
+            .chain(coordinates)
+            .map(|value| value.map(|value| value.to_bits()))
     }
+
+    fn matches(&self, p: &[f64], candidate: &[f64]) -> bool {
+        Self::bits(&self.layout, p, candidate)
+            .zip(self.bits.iter())
+            .all(|(now, &formed)| now == Some(formed))
+    }
+}
+
+/// Row `row`'s parameter slots and the outside coordinates the columns of
+/// `block`'s unknowns read, when none of those columns reads a block unknown
+/// or time.
+fn outside_inputs<'a, M: ImplicitProjectionModel>(
+    model: &'a M,
+    block: &solve::AlgebraicProjectionBlock,
+    row: usize,
+) -> Option<(&'a [usize], Vec<usize>)> {
+    let (parameters, columns) = model.implicit_row_gradient_inputs(row)?;
+    let mut read = Vec::new();
+    for column in columns
+        .iter()
+        .filter(|column| block.y_indices.contains(&column.column))
+    {
+        if column.reads_time
+            || column
+                .y_inputs
+                .iter()
+                .any(|input| block.y_indices.contains(input))
+        {
+            return None;
+        }
+        read.extend_from_slice(&column.y_inputs);
+    }
+    Some((parameters, read))
 }
 
 /// The block, its structure, and the point a linearization is formed at.
@@ -212,24 +276,28 @@ impl AffineLinearization {
         retained: Option<Self>,
     ) -> Result<Self, RuntimeSolveError> {
         let Some(mut retained) = retained else {
-            return Self::form(model, point, None);
+            hotpath_stats::note_affine_formed();
+            return Self::form(model, point, None, None);
         };
         if let Some(key) = retained.reuse.take()
-            && key.matches(point.p)
-            && retained.refresh(model, point, &key.uncertified)?
+            && key.matches(point.p, point.candidate)
+            && retained.refresh(model, point, &key.layout.uncertified)?
         {
             retained.reuse = Some(key);
+            hotpath_stats::note_affine_reused();
             #[cfg(debug_assertions)]
             retained.assert_formed_again(model, point)?;
             return Ok(retained);
         }
-        Self::form(model, point, Some(retained.jacobian))
+        hotpath_stats::note_affine_formed();
+        Self::form(model, point, Some(retained.jacobian), retained.layout)
     }
 
     fn form<M: ImplicitProjectionModel>(
         model: &M,
         point: OriginPoint<'_>,
         storage: Option<BlockJacobian>,
+        layout: Option<Rc<KeyLayout>>,
     ) -> Result<Self, RuntimeSolveError> {
         let OriginPoint {
             candidate,
@@ -250,11 +318,13 @@ impl AffineLinearization {
         // stands for the formation only when the formation also filled them
         // that way. With every row certified nothing is refilled, so a
         // Jacobian from the prepared evaluation is reused just the same.
-        let reuse = structure
+        let layout = structure
             .is_some()
-            .then(|| ReuseKey::layout(model, block))
-            .filter(|(_, uncertified)| by_rows || uncertified.is_empty())
-            .and_then(|layout| ReuseKey::at(layout, p));
+            .then(|| layout.unwrap_or_else(|| Rc::new(ReuseKey::layout(model, block))));
+        let reuse = layout
+            .clone()
+            .filter(|layout| by_rows || layout.uncertified.is_empty())
+            .and_then(|layout| ReuseKey::at(layout, p, candidate));
         Ok(Self {
             jacobian,
             row_scales,
@@ -263,6 +333,7 @@ impl AffineLinearization {
             row_derived,
             fallback_targets: fallback_targets(model, owner, block),
             reuse,
+            layout,
             revision: next_revision(),
             scratch: AffineScratch::default(),
         })
@@ -343,7 +414,7 @@ impl AffineLinearization {
         model: &M,
         point: OriginPoint<'_>,
     ) -> Result<(), RuntimeSolveError> {
-        let fresh = Self::form(model, point, None)?;
+        let fresh = Self::form(model, point, None, self.layout.clone())?;
         let bits = |values: &[f64]| {
             values
                 .iter()

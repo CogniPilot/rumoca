@@ -1949,6 +1949,13 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
                 }
                 self.lower_function_value(definition, indices, scalar_type)
             }
+            dae::ExpressionOperation::PassAssigned { .. }
+            | dae::ExpressionOperation::AssignedParameter { .. } => Err(unsupported(
+                "function-assigned-state",
+                "GALEC function projection does not represent an optional executed-path value"
+                    .to_owned(),
+                node.provenance().span(),
+            )),
             dae::ExpressionOperation::Record(_)
             | dae::ExpressionOperation::StringConversion { .. } => Err(unsupported(
                 "expression-form",

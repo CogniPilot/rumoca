@@ -38,6 +38,16 @@ fn eval_param_expr(expr: &rumoca_core::Expression, ctx: &ParamEvalContext<'_>) -
     ParamEvaluator::new(ctx).eval_value(expr, ctx.var_context)
 }
 
+/// The enumerations a translation declares (MLS §4.9.5).
+#[derive(Debug, Default)]
+pub struct DeclaredEnumerationLiterals {
+    /// Each literal by its canonical path (`<type>.<literal>`), as its
+    /// enumeration type and literal name.
+    pub literals: FxHashMap<String, (String, String)>,
+    /// The canonical name of each enumeration type, by its declaration.
+    pub types: FxHashMap<rumoca_core::DefId, String>,
+}
+
 /// Context for compile-time parameter expression evaluation (MLS §4.4).
 #[derive(Clone, Copy)]
 pub struct ParamEvalContext<'a> {
@@ -52,6 +62,9 @@ pub struct ParamEvalContext<'a> {
     /// The resource roots of a translation, which admit the cataloged
     /// foreign file readers (SPEC_0040 FLAT-C06).
     pub resources: Option<&'a ResourceRoots>,
+    /// Every declared enumeration literal of a translation by its canonical
+    /// path, as its enumeration type and literal name (MLS §4.9.5).
+    pub declared_enums: Option<&'a DeclaredEnumerationLiterals>,
     /// Functions available for evaluation.
     pub functions: &'a FxHashMap<String, rumoca_core::Function>,
     /// The fully qualified name of the variable whose binding we're evaluating.
@@ -77,6 +90,7 @@ impl<'a> ParamEvalContext<'a> {
             array_dims,
             known_values: no_known_values(),
             resources: None,
+            declared_enums: None,
             functions,
             var_context,
         }
@@ -88,10 +102,12 @@ impl<'a> ParamEvalContext<'a> {
         self,
         known_values: &'a FxHashMap<String, Value>,
         resources: &'a ResourceRoots,
+        declared_enums: &'a DeclaredEnumerationLiterals,
     ) -> Self {
         Self {
             known_values,
             resources: Some(resources),
+            declared_enums: Some(declared_enums),
             ..self
         }
     }
@@ -248,6 +264,7 @@ pub fn infer_array_dimensions_full_with_conds(
         array_dims,
         known_values: no_known_values(),
         resources: None,
+        declared_enums: None,
         functions: &functions,
         var_context: None,
     };
@@ -381,6 +398,7 @@ fn infer_user_function_call_dimensions(
         array_dims: ctx.array_dims,
         known_values: &locals.values,
         resources: None,
+        declared_enums: None,
         functions: ctx.functions,
         var_context: None,
     };
@@ -841,6 +859,7 @@ pub fn try_eval_flat_expr_enum(
         array_dims: &FxHashMap::default(),
         known_values: no_known_values(),
         resources: None,
+        declared_enums: None,
         functions: &FxHashMap::default(),
         var_context: None,
     };
@@ -881,10 +900,21 @@ fn register_enum_value_candidates(
             && !eval_ctx.contains_parameter(name.as_str())
             && looks_like_enum_literal_path(name.as_str()) =>
         {
-            if let Some(identity) = eval_ctx.canonicalizer.canonicalize(name.as_str()) {
+            // The declaration the reference resolved to names the literal
+            // whatever the spelling of its path (MLS 3.7 §4.9.5): an imported
+            // `MS.c` read in `pipe`'s modifier is `P.Types.MS.c`, not a type
+            // `pipe.MS` recovered from the text.
+            let declared = crate::constant::EvalEnvironment::reference_enum(&*eval_ctx, name);
+            let value = if let Some((type_name, literal)) = declared {
+                Some(Value::Enum(type_name.clone(), literal.clone()))
+            } else {
                 eval_ctx
-                    .literals
-                    .add_parameter(name.to_string(), identity.to_value());
+                    .canonicalizer
+                    .canonicalize(name.as_str())
+                    .map(|identity| identity.to_value())
+            };
+            if let Some(value) = value {
+                eval_ctx.literals.add_parameter(name.to_string(), value);
             }
         }
         _ => {}

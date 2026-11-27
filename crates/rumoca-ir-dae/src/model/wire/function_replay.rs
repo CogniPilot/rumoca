@@ -87,6 +87,7 @@ fn function_output<'storage>(
             })
             .collect(),
         inline: function.inline,
+        absent_parameters: function.absent_parameters.clone(),
         declaration: function.declaration,
     }
 }
@@ -196,9 +197,13 @@ fn project_statements(
         .iter()
         .map(|statement| match statement {
             FunctionStatementWire::RequireAssigned {
-                target, definition, ..
+                target,
+                definition,
+                carried,
+                ..
             } => FunctionStatementInput::RequireAssigned {
                 target: *target,
+                carried: *carried,
                 provenance: function.definitions[*definition as usize].provenance,
             },
             FunctionStatementWire::ScopedConditional { owner } => {
@@ -417,7 +422,8 @@ fn function_signature<'dae>(
         map_function_value_types(&ids.types, &function.outputs)?,
         function.declaration,
     )
-    .with_inline(function.inline))
+    .with_inline(function.inline)
+    .with_absent_parameters(function.absent_parameters.iter().copied()))
 }
 
 fn replay_component<'group, 'dae>(
@@ -518,6 +524,7 @@ enum ReplayCapability<'group, 'dae> {
 enum ReplayOp<'wire> {
     RequireAssigned {
         target: u32,
+        carried: bool,
         provenance: DaeProvenance,
     },
     BeginConditional {
@@ -666,12 +673,15 @@ fn push_statement_operation<'wire>(
     statement: &'wire FunctionStatementInput,
 ) -> Result<(), DaeConstructionError> {
     match statement {
-        FunctionStatementInput::RequireAssigned { target, provenance } => {
-            operations.push(ReplayOp::RequireAssigned {
-                target: *target,
-                provenance: *provenance,
-            })
-        }
+        FunctionStatementInput::RequireAssigned {
+            target,
+            carried,
+            provenance,
+        } => operations.push(ReplayOp::RequireAssigned {
+            target: *target,
+            carried: *carried,
+            provenance: *provenance,
+        }),
         FunctionStatementInput::Assignment { .. } => {
             operations.push(ReplayOp::Assign(assignment(statement)?))
         }
@@ -850,9 +860,10 @@ fn replay_conditional_output<'dae>(
         Some(ReplayOp::EndConditional) => scoped_branches::end_conditional(wire, dae, ids, state)?,
         Some(ReplayOp::RequireAssigned {
             target,
+            carried,
             provenance: action_at,
         }) if action_at == provenance => {
-            scoped_branches::require_assigned(wire, dae, ids, state, target, action_at)?;
+            scoped_branches::require_assigned(wire, dae, ids, state, (target, carried), action_at)?;
         }
         _ => return Err(malformed("expressions.nodes.function_conditional_output")),
     }

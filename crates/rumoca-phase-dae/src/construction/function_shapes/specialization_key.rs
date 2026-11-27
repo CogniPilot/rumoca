@@ -139,6 +139,12 @@ fn model_scope_reads(
 }
 
 impl FunctionShapeAnalysis {
+    /// Which record result fields may be returned unwritten, and which
+    /// inputs may therefore arrive absent.
+    pub(in crate::construction) fn absent_fields(&self) -> &analysis::AbsentFieldStates {
+        &self.absent_fields
+    }
+
     /// The proven argument values that identify one call's specialization.
     ///
     /// A position carries a value only when the callee's declared dimensions,

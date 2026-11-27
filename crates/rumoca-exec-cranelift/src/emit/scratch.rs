@@ -293,3 +293,90 @@ pub(super) fn stack_store(
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+thread_local! {
+    static ELIDED_FRAMES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Frames removed by [`elide_unused_frame`] on this thread (tests run one per thread).
+#[cfg(test)]
+pub(crate) fn elided_frames_on_this_thread() -> usize {
+    ELIDED_FRAMES.with(std::cell::Cell::get)
+}
+
+/// Remove the frame of a finished function whose body never allocates scratch.
+/// Its enter and leave callbacks only move the arena's depth and reset that
+/// frame's buffers, which such a body never touches; a callee it calls that
+/// does allocate enters a frame of its own. Decided from the emitted body
+/// itself: the frame stays when any call allocates, or when the entry does not
+/// have the shape [`enter`] emits. Returns whether the frame was removed.
+pub(super) fn elide_unused_frame(func: &mut cranelift_codegen::ir::Function) -> bool {
+    use cranelift_codegen::ir::{InstructionData, Opcode};
+    let enter_address = enter_native as *const () as usize as i64;
+    let allocate_address = allocate_native as *const () as usize as i64;
+    let leave_address = leave_native as *const () as usize as i64;
+    let insts = func
+        .layout
+        .blocks()
+        .flat_map(|block| func.layout.block_insts(block))
+        .collect::<Vec<_>>();
+    let mut constants = std::collections::HashMap::new();
+    let mut callbacks = Vec::new();
+    for inst in insts {
+        match &func.dfg.insts[inst] {
+            InstructionData::UnaryImm {
+                opcode: Opcode::Iconst,
+                imm,
+            } => {
+                constants.insert(func.dfg.first_result(inst), imm.bits());
+            }
+            InstructionData::CallIndirect { args, .. } => {
+                let callee = args.as_slice(&func.dfg.value_lists)[0];
+                callbacks.extend(constants.get(&callee).map(|address| (inst, *address)));
+            }
+            _ => {}
+        }
+    }
+    if callbacks
+        .iter()
+        .any(|(_, address)| *address == allocate_address)
+    {
+        return false;
+    }
+    let enters = callbacks
+        .iter()
+        .filter(|(_, address)| *address == enter_address)
+        .map(|(inst, _)| *inst)
+        .collect::<Vec<_>>();
+    let [enter_call] = enters[..] else {
+        return false;
+    };
+    let status = func.dfg.first_result(enter_call);
+    let Some(branch) = func.layout.next_inst(enter_call) else {
+        return false;
+    };
+    let InstructionData::Brif { arg, blocks, .. } = func.dfg.insts[branch] else {
+        return false;
+    };
+    if arg != status {
+        return false;
+    }
+    let failed = blocks[0].block(&func.dfg.value_lists);
+    let body = blocks[1].block(&func.dfg.value_lists);
+    for (inst, address) in &callbacks {
+        if *address == leave_address {
+            func.layout.remove_inst(*inst);
+        }
+    }
+    func.dfg.replace(branch).jump(body, &[]);
+    func.layout.remove_inst(enter_call);
+    let failed_insts = func.layout.block_insts(failed).collect::<Vec<_>>();
+    for inst in failed_insts {
+        func.layout.remove_inst(inst);
+    }
+    func.layout.remove_block(failed);
+    #[cfg(test)]
+    ELIDED_FRAMES.with(|count| count.set(count.get() + 1));
+    true
+}

@@ -72,7 +72,11 @@ pub(super) fn inject_referenced_qualified_class_constants(
             crate::path_utils::enclosing_scope(name.as_str()).map(str::to_string)
         }));
 
-        for scope in &scopes {
+        // A fixed order, so that what one pass records never depends on the
+        // hash order of the set the scopes were collected into.
+        let mut ordered_scopes = scopes.iter().collect::<Vec<_>>();
+        ordered_scopes.sort_unstable();
+        for scope in ordered_scopes {
             let resolved = resolve_referenced_scope_class(class_index, scope, model_name);
             let Some((resolved_scope, class_def)) = resolved else {
                 continue;

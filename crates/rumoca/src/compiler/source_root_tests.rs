@@ -87,3 +87,52 @@ fn source_roots_follow_references_of_sibling_files() {
     let dae = compiler.compile_file_dae(&top);
     assert!(dae.is_ok(), "dae: {:?}", dae.err());
 }
+
+/// A compile loads each source root once: planning again after the sibling
+/// files are in the session adds only the roots they newly require.
+#[test]
+fn each_source_root_is_loaded_once_per_compile() {
+    let temp = tempdir().unwrap();
+    let library = temp.path().join("Lib");
+    fs::create_dir_all(&library).unwrap();
+    fs::write(
+        library.join("package.mo"),
+        "package Lib model M Real x(start=1, fixed=true); equation der(x) = -x; end M; end Lib;",
+    )
+    .unwrap();
+    let compiler = Compiler::new()
+        .model("Top")
+        .source_root(&library.to_string_lossy());
+    let source = "model Top Lib.M m; end Top;";
+
+    let stages: [(&str, &dyn Fn() -> Option<String>); 3] = [
+        ("compile_str", &|| {
+            compiler
+                .compile_str(source, "Top.mo")
+                .err()
+                .map(|e| e.to_string())
+        }),
+        ("compile_str_flat", &|| {
+            compiler
+                .compile_str_flat(source, "Top.mo")
+                .err()
+                .map(|e| e.to_string())
+        }),
+        ("compile_str_dae", &|| {
+            compiler
+                .compile_str_dae(source, "Top.mo")
+                .err()
+                .map(|e| e.to_string())
+        }),
+    ];
+    for (stage, compile) in stages {
+        take_source_root_loads();
+        let failure = compile();
+        let loads = take_source_root_loads();
+        assert_eq!(failure, None, "{stage} must compile");
+        assert_eq!(
+            loads, 1,
+            "{stage} must load the library once, loaded it {loads} times"
+        );
+    }
+}

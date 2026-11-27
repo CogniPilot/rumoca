@@ -500,6 +500,17 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
                     .collect::<Result<Vec<_>, _>>()?;
                 self.target.at(provenance).builtin(builtin, arguments)
             }
+            // Differentiation admits no carried field state: a forwarded call
+            // result field and a parameter that may arrive absent are neither
+            // differentiable nor time invariant (`operation_is_differentiable`),
+            // so no admitted expression is instantiated through one. Reaching
+            // one is a broken admission, refused rather than given a value.
+            dae::ExpressionOperation::PassAssigned { .. }
+            | dae::ExpressionOperation::AssignedParameter { .. } => {
+                Err(dae::DaeConstructionError::InvalidAssignedStatePass {
+                    span: provenance.span(),
+                })
+            }
             // A model expression inside a structured family carries the family's
             // binder domain but no function scope; it needs no argument
             // substitution, so every other operation (a model coordinate, a
@@ -560,6 +571,17 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
             dae::ExpressionOperation::Field { base, field } => {
                 let base = self.rebuild(base)?;
                 self.target.at(provenance).field(base, field as usize)?
+            }
+            dae::ExpressionOperation::PassAssigned { operand } => {
+                let operand = self.rebuild(operand)?;
+                self.target.at(provenance).pass_assigned(operand)?
+            }
+            dae::ExpressionOperation::AssignedParameter { parameter, checked } => {
+                let parameter = self.functions[parameter.function().index() as usize].parameters
+                    [parameter.ordinal() as usize];
+                self.target
+                    .at(provenance)
+                    .assigned_parameter(parameter, checked)?
             }
             dae::ExpressionOperation::Range(range) => self.rebuild_range(range, provenance)?,
             dae::ExpressionOperation::Comprehension { domain, body } => {

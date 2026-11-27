@@ -45,6 +45,7 @@ pub(super) fn node_function_facts(
     match node {
         ExprNode::Unary { operand, .. }
         | ExprNode::Field { base: operand, .. }
+        | ExprNode::PassAssigned { operand }
         | ExprNode::Comprehension { body: operand, .. } => {
             fold.merge_expression(storage, *operand, at)?;
         }
@@ -108,7 +109,8 @@ pub(super) fn node_function_facts(
         | ExprNode::FunctionValue { .. }
         | ExprNode::FunctionFoldParameter { .. }
         | ExprNode::FunctionFoldOutput { .. }
-        | ExprNode::FunctionConditionalOutput { .. } => {
+        | ExprNode::FunctionConditionalOutput { .. }
+        | ExprNode::AssignedParameter { .. } => {
             unreachable!("leaf expressions returned above")
         }
     }
@@ -121,7 +123,8 @@ fn leaf_function_facts(
     at: DaeProvenance,
 ) -> Result<Option<FunctionInsertionFacts>, DaeConstructionError> {
     match node {
-        ExprNode::Coordinate(Coordinate::FunctionParameter { function, .. }) => {
+        ExprNode::Coordinate(Coordinate::FunctionParameter { function, .. })
+        | ExprNode::AssignedParameter { function, .. } => {
             checked_u32(storage.expressions.nodes.len(), "expression arena", at)?;
             Ok(Some(FunctionInsertionFacts {
                 scope: Some(*function),
@@ -205,6 +208,7 @@ fn leaf_function_facts(
         | ExprNode::Array { .. }
         | ExprNode::Record { .. }
         | ExprNode::Field { .. }
+        | ExprNode::PassAssigned { .. }
         | ExprNode::Range { .. }
         | ExprNode::Comprehension { .. }
         | ExprNode::Index { .. }

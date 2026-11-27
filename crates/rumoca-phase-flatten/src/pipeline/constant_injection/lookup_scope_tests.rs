@@ -445,7 +445,7 @@ fn const_boolean_enum_eq_accepts_shared_type_literal_tail() {
 }
 
 #[test]
-fn const_boolean_enum_eq_rejects_different_enum_type() {
+fn const_boolean_enum_eq_of_different_enum_types_is_not_decided() {
     let mut ctx = Context::new();
     ctx.enum_parameter_values.insert(
         "mode".to_string(),
@@ -456,8 +456,7 @@ fn const_boolean_enum_eq_rejects_different_enum_type() {
         ast::Expression::ComponentReference(comp_ref("mode")),
         ast::Expression::ComponentReference(comp_ref("Modelica.Blocks.Types.SimpleController.PI")),
     );
-    assert_eq!(
-        try_eval_const_boolean_with_scope(&expr, &ctx, ""),
-        Some(false)
-    );
+    // Values of different enumeration types are a type error, never `false`
+    // (MLS 3.7 §10.6.6).
+    assert_eq!(try_eval_const_boolean_with_scope(&expr, &ctx, ""), None);
 }

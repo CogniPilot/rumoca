@@ -205,13 +205,30 @@ fn log_entries(messages: &str) -> Vec<Vec<&str>> {
 
 /// An info-level `LOG_ASSERT` entry that only reports variables outside their
 /// declared `min`/`max`: it states at least one assertion (`cond --> "text"`),
-/// and every assertion it states is that notice.
+/// and the text of every assertion it states opens with that notice, in any of
+/// OMC's three spellings (`min/max`, or `min` or `max` alone for a one-sided
+/// bound), followed by its colon. A model's own assertion that merely quotes
+/// the phrase is not one.
+/// The openings of OMC's declared-bound notices (`min`, `max` and `min/max`).
+const BOUND_NOTICES: [&str; 3] = [
+    "Variable violating min/max constraint:",
+    "Variable violating min constraint:",
+    "Variable violating max constraint:",
+];
+
 fn min_max_notice(entry: &[&str], level: Option<&str>) -> bool {
-    let mut assertions = entry.iter().filter(|line| line.contains("-->")).peekable();
+    let mut assertions = entry
+        .iter()
+        .filter_map(|line| line.split_once("-->"))
+        .peekable();
     entry[0].starts_with("LOG_ASSERT")
         && level == Some("info")
         && assertions.peek().is_some()
-        && assertions.all(|line| line.contains("Variable violating min/max constraint"))
+        && assertions.all(|(_, text)| {
+            let text =
+                text.trim_start_matches(|c: char| c.is_whitespace() || c == '\\' || c == '"');
+            BOUND_NOTICES.iter().any(|notice| text.starts_with(notice))
+        })
 }
 
 /// OMC explicitly recovered this optional optimization. Every error must belong

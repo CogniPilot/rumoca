@@ -376,6 +376,7 @@ pub fn flatten_ref_in_closure(
         .predefined_member(&rumoca_core::ComponentPath::from_flat_path("String"));
     ctx.predefined_intrinsics = ast_lower::PredefinedIntrinsicIds::from_tree(tree);
     ctx.resource_roots = resource_roots::resource_roots(tree);
+    ctx.declared_enumeration_literals = enum_literals::declared_enumeration_literals(tree);
     ctx.materialize_structured_families = options.materialize_structured_families;
     if !model_name.is_empty() {
         ctx.simulated_root_name = Some(crate::path_utils::leaf_segment(model_name).to_string());
@@ -392,12 +393,21 @@ pub fn flatten_ref_in_closure(
             })
             .collect(),
     );
+    ctx.concrete_package_names = std::sync::Arc::new(
+        ctx.package_def_ids
+            .iter()
+            .filter(|&&def_id| class_index.get(def_id).is_some_and(|class| !class.partial))
+            .filter_map(|&def_id| class_index.qualified_name(def_id).map(str::to_string))
+            .collect(),
+    );
     ctx.target_def_names = tree
         .def_map
         .iter()
         .map(|(id, name)| (*id, name.clone()))
         .collect();
     ctx.seed_component_member_scopes(overlay);
+    ctx.component_type_alias_packages =
+        pipeline::component_type_alias_packages(overlay, tree, &class_index, &ctx.package_def_ids);
     let mut flat = flat::Model::new();
     flat.predefined_string_declaration = tree
         .scope_tree

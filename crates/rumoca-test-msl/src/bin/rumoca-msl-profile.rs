@@ -430,6 +430,8 @@ fn coordinate_variable_index(operation: ExpressionOperation<'_>) -> Option<u32> 
         | ExpressionOperation::Array(_)
         | ExpressionOperation::Record(_)
         | ExpressionOperation::Field { .. }
+        | ExpressionOperation::PassAssigned { .. }
+        | ExpressionOperation::AssignedParameter { .. }
         | ExpressionOperation::ArrayUpdate { .. }
         | ExpressionOperation::Range(_)
         | ExpressionOperation::Comprehension { .. }

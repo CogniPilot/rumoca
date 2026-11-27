@@ -68,3 +68,6 @@ packages/playground/vendor/
 # replays on the next run. Useful locally, but committing one silently pins a
 # seed into the suite; reproduce a failure by quoting the case in a real test.
 crates/*/proptest-regressions/
+
+# rustc internal-compiler-error dumps (written on a crash, never source)
+rustc-ice-*.txt

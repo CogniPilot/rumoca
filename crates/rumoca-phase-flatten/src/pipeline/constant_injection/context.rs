@@ -36,6 +36,11 @@ pub(crate) struct Context {
     /// The directory of each loaded top-level package, against which a
     /// foreign file reader resolves MLS §13.5 URIs (SPEC_0040 FLAT-C06).
     pub(crate) resource_roots: rumoca_eval_flat::translation_reads::ResourceRoots,
+    /// Every enumeration literal the tree declares, by its canonical path
+    /// (MLS §4.9.5), which a translation evaluation resolves a literal
+    /// reference through.
+    pub(crate) declared_enumeration_literals:
+        rumoca_eval_flat::phase_constant::DeclaredEnumerationLiterals,
     /// General constant expression values (scalars/arrays) extracted from
     /// class/package constants and redeclare/extends modifications.
     pub constant_values: rustc_hash::FxHashMap<String, rumoca_core::Expression>,
@@ -52,6 +57,15 @@ pub(crate) struct Context {
     /// or `None` when two packages give it different values.
     pub(crate) constant_values_by_declaration:
         rustc_hash::FxHashMap<rumoca_core::DefId, Option<rumoca_core::Expression>>,
+    /// The packages that expose each constant declaration, the keys of its
+    /// entries in `constant_values_by_scope`.
+    pub(crate) constant_exposing_scopes: rustc_hash::FxHashMap<rumoca_core::DefId, Vec<String>>,
+    /// Declaration-only reads answered while packages disagree on the value
+    /// (see `Context::declaration_constant_value`), one per declaration,
+    /// reported as warnings on the flat model.
+    pub(crate) package_constant_ambiguities: std::cell::RefCell<
+        indexmap::IndexMap<rumoca_core::DefId, rumoca_ir_flat::PackageConstantAmbiguity>,
+    >,
     /// Component-local overrides keyed by exact instantiated occurrence and
     /// exact Resolve declaration identity.
     pub(crate) constant_values_by_occurrence:
@@ -72,6 +86,13 @@ pub(crate) struct Context {
         rumoca_core::InstanceId,
         (rumoca_core::DefId, Option<rumoca_core::InstanceId>),
     >,
+    /// The package each component occurrence's type is spelled through when
+    /// Resolve resolved the type outright and no slot is recorded
+    /// (`package Medium = Moist` with `Medium.BaseProperties medium` gives
+    /// `Moist`): the package whose constants the component's class reads
+    /// (MLS §5.3, §7.3). See `pipeline::component_type_alias_packages`.
+    pub(crate) component_type_alias_packages:
+        rustc_hash::FxHashMap<rumoca_core::InstanceId, rumoca_core::DefId>,
     /// Instance path of each instantiated component occurrence, as the exact
     /// reference Instantiate proved for it (one part per enclosing component,
     /// each carrying its Resolve declaration identity).
@@ -151,6 +172,10 @@ pub(crate) struct Context {
     /// constant reference spelled through one of them names the package that
     /// exposes the constant (MLS §7.1).
     pub package_def_ids: std::sync::Arc<rustc_hash::FxHashSet<rumoca_core::DefId>>,
+    /// Qualified names of the packages that are not partial: the scopes whose
+    /// exposure of a package constant is a value a model can mean. A partial
+    /// interface exposes its placeholder default (MLS 3.7 section 4.7).
+    pub concrete_package_names: std::sync::Arc<rustc_hash::FxHashSet<String>>,
     /// Canonical class scope path for the class instance currently being flattened.
     /// Derived from `def_map` via the owning class DefId.
     pub current_class_scope_path: Option<String>,

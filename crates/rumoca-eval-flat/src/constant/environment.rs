@@ -31,8 +31,33 @@ pub trait EvalEnvironment {
     }
     /// Look up an explicitly registered enumeration literal.
     fn get_enum(&self, name: &str) -> Option<&(String, String)>;
+    /// The canonical name of the enumeration type a declaration declares,
+    /// when the evaluation knows the translation's enumerations.
+    fn enumeration_type(&self, _declaration: rumoca_core::DefId) -> Option<&str> {
+        None
+    }
+    /// The enumeration literal `reference` names: by the declaration of its
+    /// enumeration type when the evaluation knows it (MLS §4.9.5), whatever
+    /// the spelling of the path, and otherwise by its exact name.
+    fn reference_enum(&self, reference: &rumoca_core::Reference) -> Option<&(String, String)> {
+        if let [.., literal] = reference.parts()
+            && let Some(type_name) = self.enumeration_type(literal.def_id)
+            && let Some(identity) = self.get_enum(&format!("{type_name}.{}", literal.ident))
+        {
+            return Some(identity);
+        }
+        self.get_enum(reference.as_str())
+    }
     /// Find a function definition under a registered call name.
     fn get_function(&self, name: &str) -> Option<&Function>;
+    /// The function a call names as instantiation resolved it (MLS 3.7 §5.3),
+    /// by its function instance, whatever its spelling: a package function
+    /// named like a built-in is that function, never the built-in.
+    fn resolved_function(&self, call: &rumoca_core::Reference) -> Option<&Function> {
+        let instance = call.resolved_function()?.instance_id;
+        self.get_function(call.as_str())
+            .filter(|function| function.instance_id == Some(instance))
+    }
     /// Read shape metadata without constructing array elements.
     fn get_array_dimensions(&self, name: &str) -> Option<&[i64]>;
     /// Identify declared parameters whose values await initialization.

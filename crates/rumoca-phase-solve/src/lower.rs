@@ -12,6 +12,7 @@ use crate::layout::{LoweredLayout, StorageClass, lower_layout};
 
 mod algebraic_family;
 pub(crate) mod algorithm_block;
+mod carried_field_state;
 mod matched_projection;
 mod matching_rows;
 use matched_projection::{MatchedBlockView, MatchedProjection};
@@ -34,6 +35,8 @@ mod initial_projection;
 mod initialization;
 #[cfg(test)]
 mod program_compaction_tests;
+mod residual_rows;
+use residual_rows::ContinuousResidualRows;
 mod scalar;
 pub(crate) mod typed_functions;
 use scalar::{
@@ -65,6 +68,7 @@ pub(crate) fn lower_solve_problem(
             "the model has no variables or equations to simulate",
         ));
     }
+    carried_field_state::refuse_carried_field_states(view)?;
     let mut lowered = lower_layout(view)?;
     lowered.refresh_profile = profile;
     lowered.assertion_roots = crate::layout::AssertionRoots::of_product(
@@ -350,70 +354,6 @@ struct ContinuousOutput {
     derivative: DerivativeRows,
 }
 
-/// Continuous residual rows in source order. Structured algebraic families
-/// retain a tensor node when their scalar programs have one proven affine
-/// shape; scalar rows on either side are flushed without changing row
-/// ordinals.
-#[derive(Default)]
-struct ContinuousResidualRows {
-    nodes: Vec<solve::ComputeNode>,
-    scalars: ScalarRows,
-}
-
-impl ContinuousResidualRows {
-    fn push_component(
-        &mut self,
-        program: Vec<solve::LinearOp>,
-        span: Span,
-        occurrence: Option<rumoca_core::ComponentOccurrence>,
-        output: usize,
-    ) {
-        self.scalars
-            .push_component(program, span, occurrence, output);
-    }
-
-    fn push_outputs(
-        &mut self,
-        program: Vec<solve::LinearOp>,
-        span: Span,
-        outputs: impl IntoIterator<Item = usize>,
-    ) {
-        self.scalars.push_outputs(program, span, outputs);
-    }
-
-    fn push_output_range(
-        &mut self,
-        program: Vec<solve::LinearOp>,
-        span: Span,
-        outputs: std::ops::Range<usize>,
-    ) {
-        self.scalars.push_output_range(program, span, outputs);
-    }
-
-    fn tag_last(&mut self, occurrence: Option<rumoca_core::ComponentOccurrence>) {
-        self.scalars.tag_last(occurrence);
-    }
-
-    fn push_tensor(&mut self, node: solve::ComputeNode) -> Result<(), LowerError> {
-        self.flush()?;
-        self.nodes.push(node);
-        Ok(())
-    }
-
-    fn flush(&mut self) -> Result<(), LowerError> {
-        let scalars = std::mem::take(&mut self.scalars);
-        if scalars.len() > 0 {
-            self.nodes.extend(scalars.into_compute_block()?.nodes);
-        }
-        Ok(())
-    }
-
-    fn into_compute_block(mut self) -> Result<solve::ComputeBlock, LowerError> {
-        self.flush()?;
-        Ok(solve::ComputeBlock { nodes: self.nodes })
-    }
-}
-
 /// Give an existing compact tensor derivative owner precedence over the
 /// scalar affine-block fallback. This preserves the source matrix/vector ABI
 /// instead of rediscovering the same system through per-scalar basis probes.
@@ -658,23 +598,30 @@ fn lower_continuous<'dae>(
                     ));
                 }
                 let end = owner_rows.end;
-                let compact = algebraic_family::lower_algebraic_family_map(
+                // A family kept as one tensor node is lowered again as
+                // scalar rows, into the refresh source alone.
+                let mapped = algebraic_family::lower_algebraic_family_map(
                     context,
                     &mut output,
                     row,
                     family,
-                )? || algebraic_family::lower_algebraic_family_call(
+                )?;
+                let called = algebraic_family::lower_algebraic_family_call(
                     context,
                     &mut output,
                     row,
                     id,
                     family,
                 )?;
-                row = if compact {
+                let family_end = if called {
                     end
                 } else {
                     lower_continuous_family(context, &mut output, row, family)?
                 };
+                output
+                    .residual
+                    .end_source_node(family.provenance().span())?;
+                row = if mapped { end } else { family_end };
             }
         }
         owner_index += 1;
@@ -683,12 +630,12 @@ fn lower_continuous<'dae>(
         residual,
         derivative,
     } = output;
-    let residual = residual.into_compute_block()?;
+    let (residual, implicit_rhs) = residual.into_compute_blocks()?;
     let (implicit_row_targets, algebraic_projection_plan) =
-        lower_algebraic_projection(view, layout, structural, &residual)?;
+        lower_algebraic_projection(view, layout, structural, &implicit_rhs)?;
     let (manifold_residual, manifold_projection_plan) = lower_manifold(view, layout, manifold)?;
     Ok(solve::ContinuousSolveSystem {
-        implicit_rhs: residual.clone(),
+        implicit_rhs,
         implicit_row_targets,
         algebraic_projection_plan,
         residual,
@@ -2125,7 +2072,7 @@ fn scaled_derivative_factor<'dae>(
     Ok(Some(factor))
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(super) struct ScalarRows {
     programs: Vec<Vec<solve::LinearOp>>,
     spans: Vec<Span>,

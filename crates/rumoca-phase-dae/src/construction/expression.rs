@@ -1510,7 +1510,29 @@ pub(super) fn lower_call_operands<'dae>(
                     argument,
                 );
             }
-            shared_calls.lower_argument(construction, symbols, binders, argument)
+            // A parameter that may arrive absent takes the state of a field
+            // handed on whole, unchecked; the callee's read is the check.
+            let forwards = call.prefix.is_empty()
+                && symbols
+                    .functions
+                    .shapes
+                    .absent_fields()
+                    .accepts_absence(name.var_name(), ordinal);
+            if forwards
+                && let Some(forward) =
+                    forward_absent_parameter(construction, symbols, argument, provenance)?
+            {
+                return Ok(forward);
+            }
+            let lowered = shared_calls.lower_argument(construction, symbols, binders, argument)?;
+            if forwards && analysis::result_field_path(argument).is_some() {
+                return forward_or_keep(
+                    lowered,
+                    |expressions| expressions.at(provenance).pass_assigned(lowered),
+                    construction,
+                );
+            }
+            Ok(lowered)
         })
         .collect::<Result<Vec<_>, _>>()?;
     let vectorization = if call.prefix.is_empty() {
@@ -1529,6 +1551,56 @@ pub(super) fn lower_call_operands<'dae>(
         arguments,
         vectorization,
     })
+}
+
+/// An argument that is exactly an input of the enclosing function which may
+/// itself arrive absent: its value or absence, forwarded.
+fn forward_absent_parameter<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    symbols: LoweringSymbols<'_, 'dae>,
+    argument: &Expression,
+    provenance: dae::DaeProvenance,
+) -> Result<Option<dae::ExprId<'dae>>, dae::DaeConstructionError> {
+    let Expression::VarRef {
+        name, subscripts, ..
+    } = argument
+    else {
+        return Ok(None);
+    };
+    let Some(Coordinate::FunctionParameter(parameter)) =
+        symbols.coordinates.get(name.var_name()).copied()
+    else {
+        return Ok(None);
+    };
+    if !subscripts.is_empty() {
+        return Ok(None);
+    }
+    match construction.expressions(|expressions| {
+        expressions
+            .at(provenance)
+            .assigned_parameter(parameter, false)
+    }) {
+        Ok(forward) => Ok(Some(forward)),
+        // The enclosing function's input always has a value: a plain read.
+        Err(dae::DaeConstructionError::InvalidAssignedStatePass { .. }) => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
+/// Forward a state when the constructor admits the source, else keep the
+/// checked value: a refused forward has added nothing.
+fn forward_or_keep<'dae>(
+    lowered: dae::ExprId<'dae>,
+    forward: impl FnOnce(
+        &mut dae::Expressions<'_, 'dae>,
+    ) -> Result<dae::ExprId<'dae>, dae::DaeConstructionError>,
+    construction: &mut dae::DaeConstruction<'dae>,
+) -> Result<dae::ExprId<'dae>, dae::DaeConstructionError> {
+    match construction.expressions(forward) {
+        Ok(forward) => Ok(forward),
+        Err(dae::DaeConstructionError::InvalidAssignedStatePass { .. }) => Ok(lowered),
+        Err(error) => Err(error),
+    }
 }
 
 /// Project the active issued binders into the same shape scope call discovery

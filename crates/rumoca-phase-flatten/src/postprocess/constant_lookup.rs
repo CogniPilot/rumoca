@@ -307,8 +307,25 @@ pub(super) fn resolve_source_constant<'a>(
             value,
         ));
     }
-    ctx.constant_values_by_def_id
-        .get(&declaration)
+    // A bare name read in a component whose type was spelled through a
+    // package alias that Resolve resolved outright (`package Medium = Moist`,
+    // `Medium.BaseProperties medium`) has no slot: the alias's package
+    // exposes it.
+    if let Some(owner) = occurrence.map(|occurrence| occurrence.owner())
+        && name
+            .component_ref()
+            .is_some_and(|reference| reference.parts().len() == 1)
+        && let Some((package, value)) = ctx.alias_package_constant(owner, declaration)
+    {
+        return Some((
+            SemanticConstantId::Exposure {
+                package,
+                declaration,
+            },
+            value,
+        ));
+    }
+    ctx.declaration_constant_value(name, declaration)
         .map(|value| (SemanticConstantId::Declaration(declaration), value))
 }
 
@@ -606,7 +623,7 @@ pub(super) fn project_record_constant<'a>(
             }
             value = name
                 .target_def_id()
-                .and_then(|declaration| ctx.constant_values_by_def_id.get(&declaration))
+                .and_then(|declaration| ctx.declaration_constant_value(name, declaration))
                 .or_else(|| resolve_constant_value_expr(name.as_str(), ctx))?;
         }
         let rumoca_core::Expression::FunctionCall {

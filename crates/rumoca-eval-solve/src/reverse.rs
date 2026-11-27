@@ -389,7 +389,7 @@ fn forward_row_tape(
     Ok(())
 }
 
-// SPEC_0021: Keep the scalar instruction rules together in opcode order.
+// SPEC_0021: Exception - the scalar instruction rules stay together in opcode order.
 #[allow(clippy::too_many_lines)]
 fn forward_instruction(
     i: usize,
@@ -522,7 +522,7 @@ fn forward_instruction(
 /// assignment — so it does not silently depend on the lowering staying SSA. For
 /// today's SSA programs (the bump-allocated register stream) the zero is a no-op
 /// observationally, since a written register is not touched again going backward.
-// SPEC_0021: Keep the scalar instruction rules together in opcode order.
+// SPEC_0021: Exception - the scalar instruction rules stay together in opcode order.
 #[allow(clippy::too_many_lines)]
 fn reverse_row_adjoints(
     row: &[LinearOp],

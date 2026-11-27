@@ -52,6 +52,7 @@ pub(super) fn before_top_level_statement(
     later_uses: &PathPartialAdmission,
     definitions: &mut FunctionDefinitions,
     definedness: &mut FunctionDefinednessPlan,
+    carries: &dyn Fn(&VarName) -> bool,
 ) {
     match &plans[index] {
         FunctionStatementPlan::If { .. } => {
@@ -63,8 +64,17 @@ pub(super) fn before_top_level_statement(
             };
             let reads = flat_group_reads(&statements[index..index + count]);
             let admitted = definitions.admit_asserted_reads(&reads);
-            if !admitted.is_empty() {
-                definedness.asserted_reads.insert(index, admitted);
+            // The assembly of the record result does not use its field
+            // locals: it hands each one on, with its state, to whoever reads
+            // the field (MLS §12.4.4).
+            let (carried, asserted): (Vec<_>, Vec<_>) = admitted.into_iter().partition(|name| {
+                matches!(plan, FunctionStatementPlan::RecordAssembly(_)) && carries(name)
+            });
+            if !asserted.is_empty() {
+                definedness.asserted_reads.insert(index, asserted);
+            }
+            if !carried.is_empty() {
+                definedness.carried_reads.insert(index, carried);
             }
         }
     }

@@ -47,6 +47,9 @@ impl<'dae> ExpressionAt<'_, 'dae> {
         self,
         coordinate: CoordinateInput<'dae>,
     ) -> Result<ExprId<'dae>, DaeConstructionError> {
+        if let CoordinateInput::FunctionParameter(parameter) = coordinate {
+            return self.function_parameter(parameter);
+        }
         let (ty, variability) = self.storage.coordinate_facts(coordinate, self.provenance)?;
         self.insert(
             ExprNode::Coordinate(coordinate.erase()),
@@ -108,6 +111,15 @@ impl<'dae> ExpressionAt<'_, 'dae> {
         self,
         parameter: FunctionParameterId<'dae>,
     ) -> Result<ExprId<'dae>, DaeConstructionError> {
+        // A read of a parameter that may arrive absent is the checked read
+        // (MLS §12.4.4): such a parameter has no plain coordinate.
+        if super::assigned_carry::accepts_absence(
+            self.storage,
+            parameter.function().index(),
+            parameter.ordinal(),
+        ) {
+            return self.assigned_parameter(parameter, true);
+        }
         let (ty, variability) = self
             .storage
             .function_parameter_facts(parameter, self.provenance)?;

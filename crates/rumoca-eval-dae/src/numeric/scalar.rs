@@ -11,6 +11,9 @@ pub enum Scalar {
     Enumeration(i64),
     Boolean(bool),
     Invalid,
+    /// No value: a field of a returned record the executed path never wrote
+    /// (MLS §12.4.4). Only a carrier holds it; a read of it fails.
+    Absent,
 }
 
 impl std::fmt::Display for Scalar {
@@ -33,7 +36,7 @@ impl Scalar {
             Self::Real(value) => value,
             Self::Integer(value) | Self::Enumeration(value) => value as f64,
             Self::Boolean(value) => f64::from(u8::from(value)),
-            Self::Invalid => f64::NAN,
+            Self::Invalid | Self::Absent => f64::NAN,
         }
     }
     pub(super) fn integer(self) -> Option<i64> {
@@ -43,7 +46,7 @@ impl Scalar {
         }
     }
     pub(super) fn is_finite(self) -> bool {
-        !matches!(self, Self::Invalid) && self.real().is_finite()
+        !matches!(self, Self::Invalid | Self::Absent) && self.real().is_finite()
     }
     fn checked(self, rhs: Self, op: Op, real: impl FnOnce(f64, f64) -> f64) -> Self {
         match (self.integer(), rhs.integer()) {

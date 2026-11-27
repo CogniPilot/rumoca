@@ -105,8 +105,10 @@ fn collect_assertion_conditions<'dae>(
             dae::FunctionStatementView::Conditional { conditional } => {
                 collect_conditional_assertions(view, conditional, assertions, loops, conditionals)?;
             }
+            // A carried state is not checked here, so it declares no assertion.
             dae::FunctionStatementView::Assignment { .. }
-            | dae::FunctionStatementView::AssignmentGroup { .. } => {}
+            | dae::FunctionStatementView::AssignmentGroup { .. }
+            | dae::FunctionStatementView::CarryAssigned { .. } => {}
             dae::FunctionStatementView::Assertion {
                 condition,
                 message,
@@ -314,6 +316,9 @@ fn collect_statement_roots<'dae>(
     for statement in statements {
         match statement {
             dae::FunctionStatementView::RequireAssigned {
+                conditional, value, ..
+            }
+            | dae::FunctionStatementView::CarryAssigned {
                 conditional, value, ..
             } => {
                 // Every available exact predecessor state crosses the checked

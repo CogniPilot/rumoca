@@ -744,3 +744,39 @@ fn external_and_durable_external_roots_share_lookup_completion_and_compile_behav
         "compile diagnostics should not depend on external-root durability"
     );
 }
+
+/// A source-root document loaded from the parsed-artifact cache carries no
+/// text, so the session reads it from disk for its source map. It reads it
+/// once per session, not once per map: a compile builds several maps, and
+/// reading every library file for each one made a warm MSL compile re-read the
+/// whole library three times.
+#[test]
+fn source_map_reads_a_cache_loaded_source_root_file_once() {
+    const SOURCE: &str =
+        "package Lib\n  model M\n    Real x;\n  equation\n    x = 1;\n  end M;\nend Lib;\n";
+    let temp = tempfile::tempdir().expect("tempdir");
+    let path = temp.path().join("package.mo");
+    std::fs::write(&path, SOURCE).expect("write library");
+    let uri = path.to_string_lossy().to_string();
+    let definition = crate::parse::parse_source_to_ast(SOURCE, &uri).expect("parse library");
+
+    let mut session = Session::default();
+    session.replace_parsed_source_set(
+        "library",
+        SourceRootKind::External,
+        vec![(uri.clone(), definition)],
+        None,
+    );
+    crate::session::session_impl::take_source_map_disk_reads();
+
+    for _ in 0..2 {
+        let map = session.session_source_map();
+        let id = SourceId::from_source_name(&uri);
+        assert_eq!(map.get_source(id).map(|(_, text)| text), Some(SOURCE));
+    }
+    assert_eq!(
+        crate::session::session_impl::take_source_map_disk_reads(),
+        1,
+        "two source maps of one session must read the library file once"
+    );
+}

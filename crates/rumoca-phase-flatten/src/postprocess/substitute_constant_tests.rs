@@ -1746,3 +1746,71 @@ fn folds_class_constant_field_but_not_instantiated_member() {
     ));
     assert_eq!(model.equations[1].residual, field("medium.state", "X"));
 }
+
+/// A read of `n` with no package to go through, after the given packages
+/// recorded their values for the one declaration of `n`. Returns the value
+/// answered and the ambiguities flatten reports for it.
+fn read_package_constant_without_package(
+    exposures: &[(&str, i64)],
+    concrete_packages: &[&str],
+) -> (
+    Option<rumoca_core::Expression>,
+    Vec<rumoca_ir_flat::PackageConstantAmbiguity>,
+) {
+    let declaration = fixture_def_id("P.Base.n");
+    let mut ctx = Context::new();
+    ctx.concrete_package_names = std::sync::Arc::new(
+        concrete_packages
+            .iter()
+            .map(|package| (*package).to_string())
+            .collect(),
+    );
+    for (package, value) in exposures {
+        ctx.record_constant_value(&format!("{package}.n"), declaration, int_literal(*value));
+    }
+    let read = rumoca_core::Reference::with_component_reference(
+        "n",
+        component_ref_with_target("n", declaration),
+    );
+    let value = super::constant_lookup::resolve_source_constant(&read, &ctx)
+        .map(|(_, value)| value.clone());
+    // A second read of the same declaration is not a second warning.
+    let _ = super::constant_lookup::resolve_source_constant(&read, &ctx);
+    (value, ctx.take_package_constant_ambiguities())
+}
+
+#[test]
+fn a_package_constant_read_without_its_package_while_packages_disagree_is_reported() {
+    let (value, ambiguities) =
+        read_package_constant_without_package(&[("P.A", 1), ("P.B", 2)], &["P.A", "P.B"]);
+    assert!(
+        value.is_some_and(|value| value.semantically_eq_ignoring_spans(&int_literal(2))),
+        "the read is still answered with the last exposure recorded"
+    );
+    let [ambiguity] = ambiguities.as_slice() else {
+        panic!("expected one ambiguity, got {ambiguities:?}");
+    };
+    assert_eq!(ambiguity.constant, "n");
+    assert_eq!(ambiguity.packages, ["P.A", "P.B"]);
+    assert_eq!(ambiguity.used, "P.B");
+    assert_eq!(ambiguity.span, Some(test_span()));
+}
+
+#[test]
+fn a_read_without_its_package_takes_the_value_every_concrete_package_agrees_on() {
+    // `P.Base` is partial: its placeholder default is overridden by design,
+    // so even recorded last it is not the answer (`PartialMedium.nS` = 1
+    // against MoistAir's 2).
+    let (value, ambiguities) = read_package_constant_without_package(
+        &[("P.A", 1), ("P.Alias", 1), ("P.Base", 0)],
+        &["P.A", "P.Alias"],
+    );
+    assert!(
+        value.is_some_and(|value| value.semantically_eq_ignoring_spans(&int_literal(1))),
+        "the concrete packages' value answers, not the partial placeholder"
+    );
+    assert!(ambiguities.is_empty(), "{ambiguities:?}");
+    let (_, ambiguities) =
+        read_package_constant_without_package(&[("P.A", 1), ("P.Alias", 1)], &["P.A", "P.Alias"]);
+    assert!(ambiguities.is_empty(), "{ambiguities:?}");
+}

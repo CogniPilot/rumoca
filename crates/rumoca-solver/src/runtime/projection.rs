@@ -1,5 +1,6 @@
 mod affine;
 mod block_jacobian;
+mod block_step;
 mod branch_continuity;
 mod homotopy;
 mod initial;
@@ -24,6 +25,10 @@ use rumoca_ir_solve as solve;
 use super::fallbacks::ProjectionFallback;
 use super::solve_ops::RuntimeSolveError;
 pub(crate) use block_jacobian::BlockJacobian;
+use block_step::{
+    algebraic_step_at_resolution, block_values, block_values_changed, next_scaled_backtrack,
+    restore_block_values,
+};
 use initial_diagnostics::initial_projection_error;
 use scaling::{
     CertificateScales, OriginRowScales, algebraic_block_scales, algebraic_plan_row_scales,
@@ -341,6 +346,19 @@ pub(crate) trait ImplicitProjectionModel {
     /// `None` when the gradient is not certified invariant under solver-Y and
     /// time.
     fn implicit_row_static_gradient_parameters(&self, _row_idx: usize) -> Option<&[usize]> {
+        None
+    }
+
+    /// Implicit residual `row_idx`'s parameter slots and what each nonzero
+    /// column of its solver-Y gradient reads besides them, or `None` when the
+    /// row is not plain scalar arithmetic. A block whose unknowns' columns
+    /// read no block unknown and no time keys the row on those parameters
+    /// and on the outside coordinates the columns read. The columns are
+    /// derived at the call: an affine block asks once, for its key layout.
+    fn implicit_row_gradient_inputs(
+        &self,
+        _row_idx: usize,
+    ) -> Option<(&[usize], Vec<rumoca_eval_solve::YGradientColumn>)> {
         None
     }
 
@@ -1472,34 +1490,6 @@ struct AlgebraicBlockDeltaContext<'a, M> {
     step_limit: StepLimit,
 }
 
-/// The values of `indices` in `y`; an index outside `y` holds NaN and is never
-/// restored.
-fn block_values(y: &[f64], indices: &[usize]) -> Vec<f64> {
-    indices
-        .iter()
-        .map(|&index| y.get(index).copied().unwrap_or(f64::NAN))
-        .collect()
-}
-
-/// Restore the values [`block_values`] saved.
-fn restore_block_values(y: &mut [f64], indices: &[usize], values: &[f64]) {
-    for (&index, &value) in indices.iter().zip(values) {
-        if let Some(slot) = y.get_mut(index) {
-            *slot = value;
-        }
-    }
-}
-
-/// Whether `y` differs from the values [`block_values`] saved.
-fn block_values_changed(y: &[f64], indices: &[usize], values: &[f64]) -> bool {
-    for (&index, &value) in indices.iter().zip(values) {
-        if y.get(index) != Some(&value) {
-            return true;
-        }
-    }
-    false
-}
-
 fn accept_algebraic_block_delta<M: ImplicitProjectionModel>(
     context: AlgebraicBlockDeltaContext<'_, M>,
     y: &mut [f64],
@@ -1598,37 +1588,6 @@ fn accept_algebraic_block_delta<M: ImplicitProjectionModel>(
         changed: false,
         settled: false,
     })
-}
-
-fn algebraic_step_at_resolution(current: f64, candidate: f64) -> bool {
-    candidate == current || candidate == current.next_up() || candidate == current.next_down()
-}
-
-/// Return the next halved step while at least one correction remains larger
-/// than its variable's declared solver accuracy.
-///
-/// Once every correction is within its scaled tolerance, every later halving is
-/// smaller still. The block cannot make a solution-significant state update on
-/// this direction, so the caller returns it unsettled to the existing retry or
-/// typed failure path instead of searching down to floating-point underflow.
-fn next_scaled_backtrack(
-    current_alpha: f64,
-    delta: &[f64],
-    variable_scales: &[f64],
-    tolerance: f64,
-) -> Option<f64> {
-    let next_alpha = current_alpha * 0.5;
-    if !(next_alpha > 0.0 && next_alpha < current_alpha) || delta.len() != variable_scales.len() {
-        return None;
-    }
-    delta
-        .iter()
-        .copied()
-        .zip(variable_scales.iter().copied())
-        .any(|(correction, scale)| {
-            (next_alpha * correction).abs() > scaled_tolerance(tolerance, scale)
-        })
-        .then_some(next_alpha)
 }
 
 fn algebraic_selected_residual_norm<M: ImplicitProjectionModel>(

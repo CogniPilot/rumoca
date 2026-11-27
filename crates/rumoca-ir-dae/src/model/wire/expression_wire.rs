@@ -268,6 +268,8 @@ const FUNCTION_FOLD_PARAMETER_VARIANT: u32 = 16;
 const FUNCTION_FOLD_OUTPUT_VARIANT: u32 = 17;
 const FUNCTION_CONDITIONAL_OUTPUT_VARIANT: u32 = 20;
 const RUNTIME_QUOTIENT_OWNER_VARIANT: u32 = 19;
+const PASS_ASSIGNED_VARIANT: u32 = 21;
+const ASSIGNED_PARAMETER_VARIANT: u32 = 22;
 
 /// One arena node projected onto the operation that built it.
 ///
@@ -352,6 +354,32 @@ impl Serialize for ExpressionNodeOutput<'_> {
                     1,
                 )?;
                 state.serialize_field("function", function)?;
+                state.end()
+            }
+            ExprNode::PassAssigned { operand } => {
+                let mut state = serializer.serialize_struct_variant(
+                    "ExprNode",
+                    PASS_ASSIGNED_VARIANT,
+                    "pass_assigned",
+                    1,
+                )?;
+                state.serialize_field("operand", operand)?;
+                state.end()
+            }
+            ExprNode::AssignedParameter {
+                function,
+                ordinal,
+                checked,
+            } => {
+                let mut state = serializer.serialize_struct_variant(
+                    "ExprNode",
+                    ASSIGNED_PARAMETER_VARIANT,
+                    "assigned_parameter",
+                    3,
+                )?;
+                state.serialize_field("function", function)?;
+                state.serialize_field("ordinal", ordinal)?;
+                state.serialize_field("checked", checked)?;
                 state.end()
             }
             node => node.serialize(serializer),
@@ -465,6 +493,14 @@ pub(super) enum ExprNodeWire {
     },
     FunctionConditionalOutput {
         function: u32,
+    },
+    PassAssigned {
+        operand: u32,
+    },
+    AssignedParameter {
+        function: u32,
+        ordinal: u32,
+        checked: bool,
     },
 }
 

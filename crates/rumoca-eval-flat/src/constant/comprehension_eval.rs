@@ -51,6 +51,10 @@ impl EvalEnvironment for BinderScope<'_> {
         self.outer.get_function(name)
     }
 
+    fn resolved_function(&self, call: &rumoca_core::Reference) -> Option<&Function> {
+        self.outer.resolved_function(call)
+    }
+
     fn get_array_dimensions(&self, name: &str) -> Option<&[i64]> {
         self.outer.get_array_dimensions(name)
     }
@@ -61,6 +65,10 @@ impl EvalEnvironment for BinderScope<'_> {
 
     fn translation_resources(&self) -> Option<&ResourceRoots> {
         self.outer.translation_resources()
+    }
+
+    fn enumeration_type(&self, declaration: rumoca_core::DefId) -> Option<&str> {
+        self.outer.enumeration_type(declaration)
     }
 
     fn predefined_types(&self) -> Option<rumoca_ir_flat::PredefinedTypeIds> {
@@ -93,6 +101,10 @@ impl EvalEnvironment for IteratorDeclarations<'_> {
     fn get_function(&self, name: &str) -> Option<&Function> {
         self.outer.get_function(name)
     }
+
+    fn resolved_function(&self, call: &rumoca_core::Reference) -> Option<&Function> {
+        self.outer.resolved_function(call)
+    }
     fn get_array_dimensions(&self, name: &str) -> Option<&[i64]> {
         self.outer.get_array_dimensions(name)
     }
@@ -101,6 +113,10 @@ impl EvalEnvironment for IteratorDeclarations<'_> {
     }
     fn translation_resources(&self) -> Option<&ResourceRoots> {
         self.outer.translation_resources()
+    }
+
+    fn enumeration_type(&self, declaration: rumoca_core::DefId) -> Option<&str> {
+        self.outer.enumeration_type(declaration)
     }
 
     fn predefined_types(&self) -> Option<rumoca_ir_flat::PredefinedTypeIds> {

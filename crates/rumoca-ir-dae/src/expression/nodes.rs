@@ -336,6 +336,21 @@ pub(crate) enum ExprNode {
         value: u32,
         definition_ordinal: u32,
     },
+    /// The operand's value or its absence, forwarded without the presence
+    /// check a plain read of the operand performs. Appended: `bincode` tags a
+    /// variant by position.
+    PassAssigned {
+        operand: u32,
+    },
+    /// A parameter that may arrive absent. `checked` is the read of its
+    /// value, which fails when it is absent; otherwise its value or absence
+    /// is forwarded to a call argument. Such a parameter has no plain
+    /// coordinate, so no consumer can read it without meeting this node.
+    AssignedParameter {
+        function: u32,
+        ordinal: u32,
+        checked: bool,
+    },
 }
 
 impl ExprNode {
@@ -350,9 +365,11 @@ impl ExprNode {
             | Self::FunctionValue { .. }
             | Self::FunctionFoldParameter { .. }
             | Self::FunctionFoldOutput { .. }
-            | Self::FunctionConditionalOutput { .. } => {}
+            | Self::FunctionConditionalOutput { .. }
+            | Self::AssignedParameter { .. } => {}
             Self::Unary { operand, .. }
             | Self::Field { base: operand, .. }
+            | Self::PassAssigned { operand }
             | Self::Comprehension { body: operand, .. }
             | Self::ClockTransfer {
                 source: operand, ..
