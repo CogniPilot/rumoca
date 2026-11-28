@@ -151,11 +151,11 @@ impl RefreshProjectionModel<'_> {
         for program in selection.programs() {
             self.eval_residual_entry(program, point, &mut reference)?;
         }
-        let bits = |values: &[f64]| values.iter().map(|v| v.to_bits()).collect::<Vec<_>>();
-        assert_eq!(
-            bits(out),
-            bits(&reference),
-            "a fused or swept residual pass places its programs' residuals bit for bit"
+
+        crate::runtime::projection::assert_same_bits(
+            out,
+            &reference,
+            "a fused or swept residual pass places its programs' residuals bit for bit",
         );
         Ok(())
     }

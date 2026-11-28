@@ -28,6 +28,8 @@ use crate::runtime::fallbacks::{self, ProjectionFallback, ProjectionSite};
 pub(super) struct PreparedTornSweepEntry {
     sweep: PreparedTornSweep,
     compiled: Option<CompiledTornSweep>,
+    #[cfg(debug_assertions)]
+    reference_y: RefCell<Vec<f64>>,
 }
 
 /// Compiled composite of one torn sweep: the causal chain as one assignment
@@ -967,7 +969,11 @@ impl ImplicitProjectionModel for RefreshProjectionModel<'_> {
             return per_row_torn_block_sweep(self, tearing, y, p, t, residual_out);
         }
         #[cfg(debug_assertions)]
-        let entry_y = y.to_vec();
+        let mut reference_y = {
+            let mut state = entry.reference_y.take();
+            copy_runtime_values_into(&mut state, y, "torn reference state")?;
+            state
+        };
         let mut raw = Vec::with_capacity(tearing.residual_rows.len());
         let compiled_status = entry
             .compiled
@@ -1001,7 +1007,18 @@ impl ImplicitProjectionModel for RefreshProjectionModel<'_> {
             }
         }
         #[cfg(debug_assertions)]
-        self.debug_assert_torn_sweep_agrees(tearing, &entry_y, p, t, completed, y, residual_out)?;
+        {
+            self.debug_assert_torn_sweep_agrees(
+                tearing,
+                &mut reference_y,
+                p,
+                t,
+                completed,
+                y,
+                residual_out,
+            )?;
+            entry.reference_y.replace(reference_y);
+        }
         Ok(completed)
     }
 
@@ -1125,42 +1142,30 @@ impl RefreshProjectionModel<'_> {
     fn debug_assert_torn_sweep_agrees(
         &self,
         tearing: &solve::BlockTearing,
-        entry_y: &[f64],
+        reference_y: &mut [f64],
         p: &[f64],
         t: f64,
         batched_completed: bool,
         batched_y: &[f64],
         batched_residual: &[f64],
     ) -> Result<(), RuntimeSolveError> {
-        let mut reference_y = entry_y.to_vec();
         let mut reference_residual = Vec::new();
-        let reference_completed = per_row_torn_block_sweep(
-            self,
-            tearing,
-            &mut reference_y,
-            p,
-            t,
-            &mut reference_residual,
-        )?;
+        let reference_completed =
+            per_row_torn_block_sweep(self, tearing, reference_y, p, t, &mut reference_residual)?;
         debug_assert_eq!(
             reference_completed, batched_completed,
             "batched torn sweep disagrees with the per-row sweep on declining"
         );
         if reference_completed && batched_completed {
-            let bits_equal = |reference: &[f64], batched: &[f64]| {
-                reference.len() == batched.len()
-                    && reference
-                        .iter()
-                        .zip(batched)
-                        .all(|(a, b)| a.to_bits() == b.to_bits())
-            };
-            debug_assert!(
-                bits_equal(&reference_y, batched_y),
-                "batched torn sweep diverged from the per-row sweep in solver values"
+            crate::runtime::projection::assert_same_bits(
+                reference_y,
+                batched_y,
+                "batched torn sweep solver values",
             );
-            debug_assert!(
-                bits_equal(&reference_residual, batched_residual),
-                "batched torn sweep diverged from the per-row sweep in residual values"
+            crate::runtime::projection::assert_same_bits(
+                &reference_residual,
+                batched_residual,
+                "batched torn sweep residuals",
             );
         }
         Ok(())

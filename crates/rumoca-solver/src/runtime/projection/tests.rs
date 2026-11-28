@@ -22,6 +22,20 @@ use std::cell::Cell;
 
 use super::*;
 
+#[cfg(debug_assertions)]
+#[test]
+fn projection_agreement_checks_every_binary64_bit() {
+    let nan = f64::from_bits(0x7ff8_0000_0000_0001);
+    let other_nan = f64::from_bits(nan.to_bits() + 1);
+    let values = [nan, -0.0, -0.0];
+    assert_same_bits(&values, &values, "matching NaNs");
+    for different in [&[other_nan, -0.0, -0.0][..], &[nan, 0.0, 0.0], &[nan, -0.0]] {
+        assert!(
+            std::panic::catch_unwind(|| assert_same_bits(&values, different, "mismatch")).is_err()
+        );
+    }
+}
+
 fn project_initial_y_plan<M: AlgebraicProjectionModel>(
     model: &M,
     y: &mut [f64],

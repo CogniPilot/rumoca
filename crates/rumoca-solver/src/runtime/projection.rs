@@ -1928,6 +1928,22 @@ fn unlocalizable_fold(
         })
 }
 
+/// Compare independent numerical paths including signed zeros and NaN payloads.
+#[cfg(debug_assertions)]
+pub(super) fn assert_same_bits(left: &[f64], right: &[f64], context: &str) {
+    assert_eq!(left.len(), right.len(), "{context}: scalar count");
+    // A reduction compares the entire state in vector lanes on the successful path.
+    let difference = left
+        .iter()
+        .zip(right)
+        .fold(0_u64, |diff, (a, b)| diff | (a.to_bits() ^ b.to_bits()));
+    if difference != 0 {
+        for (index, (a, b)) in left.iter().zip(right).enumerate() {
+            assert_eq!(a.to_bits(), b.to_bits(), "{context}: scalar {index}");
+        }
+    }
+}
+
 /// Block `block_index`'s rows' directional derivatives along `v`, in
 /// block row order: the fused block entry when the model has one, else the
 /// per-row evaluation.
@@ -1943,11 +1959,11 @@ pub(super) fn block_jacobian_v_rows(
         #[cfg(debug_assertions)]
         {
             let rows = implicit_selected_jacobian_v_rows(model, y, p, t, v, &block.rows, context)?;
-            let bits = |values: &[f64]| values.iter().map(|v| v.to_bits()).collect::<Vec<_>>();
-            assert_eq!(
-                bits(&fused),
-                bits(&rows),
-                "a fused block directional derivative is its rows' bit for bit"
+
+            assert_same_bits(
+                &fused,
+                &rows,
+                "a fused block directional derivative is its rows' bit for bit",
             );
         }
         return Ok(fused);

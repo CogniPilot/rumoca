@@ -415,20 +415,22 @@ impl AffineLinearization {
         point: OriginPoint<'_>,
     ) -> Result<(), RuntimeSolveError> {
         let fresh = Self::form(model, point, None, self.layout.clone())?;
-        let bits = |values: &[f64]| {
-            values
-                .iter()
-                .map(|value| value.to_bits())
-                .collect::<Vec<_>>()
-        };
-        assert_eq!(
-            bits(fresh.jacobian.as_dense().as_slice()),
-            bits(self.jacobian.as_dense().as_slice()),
-            "a reused affine Jacobian is the one formed at its parameter snapshot"
+        super::assert_same_bits(
+            fresh.jacobian.as_dense().as_slice(),
+            self.jacobian.as_dense().as_slice(),
+            "reused affine Jacobian",
         );
-        assert_eq!(bits(&fresh.row_scales), bits(&self.row_scales));
-        assert_eq!(bits(&fresh.variable_scales), bits(&self.variable_scales));
-        assert_eq!(bits(&fresh.row_magnitudes), bits(&self.row_magnitudes));
+        super::assert_same_bits(&fresh.row_scales, &self.row_scales, "affine row scales");
+        super::assert_same_bits(
+            &fresh.variable_scales,
+            &self.variable_scales,
+            "affine variable scales",
+        );
+        super::assert_same_bits(
+            &fresh.row_magnitudes,
+            &self.row_magnitudes,
+            "affine row magnitudes",
+        );
         assert_eq!(fresh.row_derived, self.row_derived);
         Ok(())
     }
@@ -529,11 +531,11 @@ impl<M: ImplicitProjectionModel> AffineBlockSystem<'_, M> {
             #[cfg(debug_assertions)]
             {
                 let rows = self.residual_by_rows(y)?;
-                let bits = |values: &[f64]| values.iter().map(|v| v.to_bits()).collect::<Vec<_>>();
-                assert_eq!(
-                    bits(out),
-                    bits(&rows),
-                    "a fused block residual is its rows' residuals bit for bit"
+
+                super::assert_same_bits(
+                    out,
+                    &rows,
+                    "a fused block residual is its rows' residuals bit for bit",
                 );
             }
             return Ok(());
