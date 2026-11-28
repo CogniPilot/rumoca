@@ -492,29 +492,29 @@ impl PreparedScalarProgramBlock {
     fn assignment_shapes(&self, row_idx: usize) -> Option<&[PreparedAssignmentShape]> {
         let program = self.block.program(row_idx)?;
         let shapes = self.row_assignment_shapes.get(row_idx)?;
-        Some(shapes.get_or_init(|| {
-            match self.facts {
-                construction::RowFacts::Full => {
-                    target_assignment_shapes_with_output_offsets(program)
-                        .into_iter()
-                        .map(|(output, shape)| {
-                            let exact = self.is_causal_row(row_idx)
-                                && self.execution_independent_of_target(
-                                    row_idx,
-                                    &shape,
-                                    shape.target_y_index(),
-                                );
-                            PreparedAssignmentShape {
-                                output,
-                                shape,
-                                exact,
-                            }
-                        })
-                        .collect()
+        Some(shapes.get_or_init(|| self.prepare_assignment_shapes(row_idx, program)))
+    }
+
+    fn prepare_assignment_shapes(&self, row_idx: usize, program: &[LinearOp]) -> AssignmentShapes {
+        if matches!(self.facts, construction::RowFacts::Evaluation) {
+            return AssignmentShapes::default();
+        }
+        target_assignment_shapes_with_output_offsets(program)
+            .into_iter()
+            .map(|(output, shape)| {
+                let exact = self.is_causal_row(row_idx)
+                    && self.execution_independent_of_target(
+                        row_idx,
+                        &shape,
+                        shape.target_y_index(),
+                    );
+                PreparedAssignmentShape {
+                    output,
+                    shape,
+                    exact,
                 }
-                construction::RowFacts::Evaluation => AssignmentShapes::default(),
-            }
-        }))
+            })
+            .collect()
     }
 
     pub fn row_output_count(&self, row_idx: usize) -> Option<usize> {
