@@ -6,7 +6,9 @@ mod reuse_tests;
 
 /// A source-bound colored Jacobian with exclusively leased numeric storage.
 pub struct CompiledProjectionJacobian {
+    #[cfg(test)]
     jit: Rc<CompiledJacobianRows>,
+    inputs: InputRequirements,
     batch: super::projection_batch::ProjectionBatch,
     application: ProjectionJacobianApplication,
     required_y_len: usize,
@@ -26,34 +28,65 @@ impl CompiledProjectionJacobian {
     /// Prepare every application into the shared projection module, which is
     /// finalized once for all of them.
     pub(crate) fn new_all(
-        prepared: Vec<(Rc<CompiledJacobianRows>, ProjectionJacobianApplication)>,
+        applications: Vec<ProjectionJacobianApplication>,
+        source: &ScalarProgramBlock,
+        jit: &Rc<CompiledJacobianRows>,
         shared: &super::SharedProjectionModule,
     ) -> Result<Vec<Self>, CompileError> {
-        let pure_calls = prepared
-            .first()
-            .and_then(|(jit, _)| jit._pure_calls.clone());
-        let applications = prepared
-            .iter()
-            .map(|(_, application)| application)
-            .collect::<Vec<_>>();
+        let mut prepared = Vec::with_capacity(applications.len());
+        for application in &applications {
+            let same_source = source.shares_program_owner(application.source());
+            let inputs = if same_source {
+                jit.input_requirements
+            } else {
+                let rows = application.source().programs();
+                for row in rows {
+                    validate_row_supported_by_jit(row, RowKind::JacobianV)?;
+                }
+                input_requirements_for_plans(&plan_rows(rows)?)
+            };
+            prepared.push((inputs, program_output_capacity(application)?));
+        }
+        let refs = applications.iter().collect::<Vec<_>>();
         let batches = super::projection_batch::ProjectionBatch::compile_all(
-            &applications,
-            pure_calls.as_ref(),
+            &refs,
+            jit._pure_calls.as_ref(),
             shared,
         )?;
-        prepared
+        applications
             .into_iter()
             .zip(batches)
-            .map(|((jit, application), batch)| Self::with_batch(jit, application, batch))
+            .zip(prepared)
+            .map(|((application, batch), (inputs, capacity))| {
+                #[cfg(test)]
+                let reference = if source.shares_program_owner(application.source()) {
+                    jit.clone()
+                } else {
+                    Rc::new(compile_jacobian_rows_attached(
+                        application.source().programs(),
+                        jit._pure_calls.clone(),
+                        Some(application.block_index()),
+                    )?)
+                };
+                Self::with_batch(
+                    application,
+                    batch,
+                    inputs,
+                    capacity,
+                    #[cfg(test)]
+                    reference,
+                )
+            })
             .collect()
     }
 
     fn with_batch(
-        jit: Rc<CompiledJacobianRows>,
         application: ProjectionJacobianApplication,
         batch: super::projection_batch::ProjectionBatch,
+        inputs: InputRequirements,
+        _output_count: usize,
+        #[cfg(test)] jit: Rc<CompiledJacobianRows>,
     ) -> Result<Self, CompileError> {
-        let _output_count = program_output_capacity(&jit, &application)?;
         let required_y_len = application
             .y_indices()
             .iter()
@@ -61,7 +94,7 @@ impl CompiledProjectionJacobian {
             .max()
             .map_or(Some(0), |index| index.checked_add(1))
             .ok_or_else(|| CompileError::Input("projection seed extent overflows".into()))?;
-        let seed_len = required_y_len.max(jit.input_requirements.seed_len);
+        let seed_len = required_y_len.max(inputs.seed_len);
         #[cfg(test)]
         let validate = application.colors().iter().any(|color| {
             color.outputs().programs().iter().any(|program| {
@@ -76,6 +109,8 @@ impl CompiledProjectionJacobian {
             matrix: vec![0.0; application.compact_layout().len()],
         });
         Ok(Self {
+            inputs,
+            #[cfg(test)]
             jit,
             batch,
             application,
@@ -104,7 +139,7 @@ impl CompiledProjectionJacobian {
         let mut scratch = self.scratch.try_borrow_mut().map_err(|_| {
             CompileError::Input("projection Jacobian workspace is already in use".into())
         })?;
-        validate_input_requirements(self.jit.input_requirements, y, p, Some(&scratch.seed))?;
+        validate_input_requirements(self.inputs, y, p, Some(&scratch.seed))?;
         #[cfg(test)]
         let mut registers = self.jit.regs_scratch.try_borrow_mut().map_err(|_| {
             CompileError::Input("Jacobian register workspace is already in use".into())
@@ -114,6 +149,7 @@ impl CompiledProjectionJacobian {
         let called = with_active_external_tables(external_tables, || {
             let ProjectionScratch { seed, matrix, .. } = &mut *scratch;
             self.batch.call(y, p, t, seed, matrix)?;
+            #[cfg(test)]
             self.jit.record_jit_call();
             #[cfg(test)]
             if self.validate {
@@ -204,16 +240,18 @@ fn validate_matrix(actual: &[f64], expected: &[f64]) -> Result<(), CompileError>
 }
 
 fn program_output_capacity(
-    jit: &CompiledJacobianRows,
     application: &ProjectionJacobianApplication,
 ) -> Result<usize, CompileError> {
     let mut count = 0;
     for color in application.colors() {
         for program in color.outputs().programs() {
-            let row = jit.rows.get(program.program()).ok_or_else(|| {
-                CompileError::Input("projection program is outside compiled rows".into())
-            })?;
-            if row.plan.output_count() != program.output_count() {
+            let row = application
+                .source()
+                .program(program.program())
+                .ok_or_else(|| {
+                    CompileError::Input("projection program is outside compiled rows".into())
+                })?;
+            if ScalarProgramBlock::program_output_count(row) != program.output_count() {
                 return Err(CompileError::Input(
                     "projection program output extent mismatch".into(),
                 ));
@@ -222,14 +260,4 @@ fn program_output_capacity(
         }
     }
     Ok(count)
-}
-
-impl CompiledJacobianRows {
-    pub(crate) fn compile_projection_rows(
-        &self,
-        rows: &[Vec<LinearOp>],
-        block: usize,
-    ) -> Result<Self, CompileError> {
-        compile_jacobian_rows_attached(rows, self._pure_calls.clone(), Some(block))
-    }
 }
