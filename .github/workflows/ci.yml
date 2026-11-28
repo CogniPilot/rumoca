@@ -1602,12 +1602,23 @@ jobs:
             const helper = await import(pathToFileURL(process.cwd() + '/.github/scripts/msl-main-baseline.mjs'));
             const parents = execFileSync('git', ['rev-list', '--parents', '-n', '1', 'HEAD'], { encoding: 'utf8' });
             const sha = helper.testedMainSha(process.env.CI_SOURCE_SHA, parents);
-            const binding = await helper.findMainArtifact({ github, repo: context.repo, sha, log: core.info });
-            core.setOutput('run-id', binding.runId);
-            core.setOutput('artifact-id', binding.artifactId);
+            // A main whose CI completed without a usable snapshot is not this
+            // shard's failure: candidates then come from the promoted asset
+            // alone, and the reason is recorded. The merge job's PR-vs-main
+            // step still judges that main. Anything else still fails here.
+            const found = await helper.resolveMainArtifact({ github, repo: context.repo, sha, log: core.info });
+            if (found.unavailable) {
+              core.warning(found.unavailable);
+              core.setOutput('available', 'false');
+              core.setOutput('reason', found.unavailable);
+            } else {
+              core.setOutput('available', 'true');
+              core.setOutput('run-id', found.artifact.runId);
+              core.setOutput('artifact-id', found.artifact.artifactId);
+            }
 
       - name: Download tested main results for re-measurement
-        if: ${{ github.event_name == 'pull_request' }}
+        if: ${{ github.event_name == 'pull_request' && steps.remeasure-main.outputs.available == 'true' }}
         uses: actions/download-artifact@v8
         with:
           artifact-ids: ${{ steps.remeasure-main.outputs.artifact-id }}
@@ -1616,12 +1627,21 @@ jobs:
           github-token: ${{ github.token }}
 
       - name: Re-measure watchdog kills on this runner
+        env:
+          TESTED_MAIN_AVAILABLE: ${{ steps.remeasure-main.outputs.available }}
+          TESTED_MAIN_UNAVAILABLE_REASON: ${{ steps.remeasure-main.outputs.reason }}
         run: |
           set -euo pipefail
           tested_main=()
           if [[ "${{ github.event_name }}" == "pull_request" ]]; then
-            test -s target/msl/remeasure-main/msl_results.json
-            tested_main=(--tested-main-results target/msl/remeasure-main/msl_results.json)
+            if [[ "$TESTED_MAIN_AVAILABLE" == "true" ]]; then
+              test -s target/msl/remeasure-main/msl_results.json
+              tested_main=(--tested-main-results target/msl/remeasure-main/msl_results.json)
+            else
+              test "$TESTED_MAIN_AVAILABLE" == "false"
+              test -n "$TESTED_MAIN_UNAVAILABLE_REASON"
+              tested_main=(--tested-main-unavailable "$TESTED_MAIN_UNAVAILABLE_REASON")
+            fi
           fi
           cargo xtask verify msl-remeasure --results-dir target/msl/results "${tested_main[@]}" -- \
             --prebuilt-test-binary "$PWD/result-msl-artifacts/bin/msl_tests" \
@@ -1647,6 +1667,7 @@ jobs:
           fi
 
       - name: Upload shard results
+        if: ${{ always() }}
         uses: actions/upload-artifact@v6
         with:
           name: shard-${{ matrix.shard }}

@@ -20,7 +20,18 @@ export function testedMainSha(sourceSha, parentLine) {
 
 // Artifacts are measured history, not the separately promoted quality floor.
 // A complete MSL job is usable even if another job in main's CI run failed.
-export async function findMainArtifact({ github, repo, sha, timeoutMs = 600000,
+// The PR-vs-main comparison needs the artifact, so a main without one fails.
+export async function findMainArtifact(options) {
+  const found = await resolveMainArtifact(options);
+  if (found.unavailable) throw new Error(found.unavailable);
+  return found.artifact;
+}
+
+// Tested main's artifact, or why main has none. Exactly one state is a value
+// rather than an error: main's CI completed and left no usable MSL snapshot
+// (none recorded, or expired). A main still pending past the bounded wait, an
+// API failure or an artifact from another source throws.
+export async function resolveMainArtifact({ github, repo, sha, timeoutMs = 600000,
   pollMs = 15000, now = Date.now, sleep = ms => new Promise(r => setTimeout(r, ms)),
   log = () => {} }) {
   assert.match(sha, SHA, 'invalid main SHA');
@@ -32,11 +43,11 @@ export async function findMainArtifact({ github, repo, sha, timeoutMs = 600000,
     const exact = runs.filter(run => run.head_sha === sha && run.head_branch === 'main'
       && run.event === 'push' && run.head_repository?.full_name === repo.owner + '/' + repo.repo);
     const found = await artifactInRuns(github, repo, sha, exact);
-    if (found.artifact) return found.artifact;
+    if (found.artifact) return { artifact: found.artifact };
     const pending = exact.some(run => run.status !== 'completed');
     if (exact.length && !pending) {
-      throw new Error('main baseline unavailable for ' + sha + ': '
-        + (found.expired ? 'artifact expired; rebase onto main' : 'main CI produced no MSL snapshot; rebase onto main'));
+      return { unavailable: 'main baseline unavailable for ' + sha + ': '
+        + (found.expired ? 'artifact expired; rebase onto main' : 'main CI produced no MSL snapshot; rebase onto main') };
     }
     if (now() >= deadline) throw new Error('main baseline pending for ' + sha + ': bounded wait expired');
     log('Waiting for the MSL snapshot of main at ' + sha);

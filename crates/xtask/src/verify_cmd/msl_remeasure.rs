@@ -39,8 +39,13 @@ pub(crate) struct VerifyMslRemeasureArgs {
     baseline: Option<PathBuf>,
     /// The tested-main run's msl_results.json the PR-vs-main check compares
     /// with: a stage it completed is a candidate too
-    #[arg(long)]
+    #[arg(long, conflicts_with = "tested_main_unavailable")]
     tested_main_results: Option<PathBuf>,
+    /// Why tested main has no results (its CI completed without a usable
+    /// snapshot): candidates then come from the promoted baseline alone, and
+    /// the reason is recorded
+    #[arg(long)]
+    tested_main_unavailable: Option<String>,
     /// Re-measure at most this many models; the rest stay inconclusive
     #[arg(long, default_value_t = 4)]
     max_models: usize,
@@ -253,6 +258,29 @@ fn remeasure_one(
     Ok(Some(row))
 }
 
+/// Which old sides the candidates came from: the promoted baseline always,
+/// tested main when its results were given, and why not when it had none.
+fn tested_main_source(args: &VerifyMslRemeasureArgs) -> Value {
+    match (&args.tested_main_results, &args.tested_main_unavailable) {
+        (Some(_), _) => json!({ "state": "results" }),
+        (None, Some(reason)) => json!({ "state": "unavailable", "reason": reason }),
+        (None, None) => json!({ "state": "not_given" }),
+    }
+}
+
+fn remeasured_record(
+    remeasured: &Map<String, Value>,
+    skipped: &[String],
+    args: &VerifyMslRemeasureArgs,
+) -> Value {
+    json!({
+        "schema_version": 1,
+        "models": remeasured,
+        "not_remeasured": skipped,
+        "tested_main": tested_main_source(args),
+    })
+}
+
 pub(crate) fn run(root: &Path, args: &VerifyMslRemeasureArgs) -> Result<()> {
     let baseline_path = match &args.baseline {
         Some(path) => path.clone(),
@@ -325,7 +353,7 @@ pub(crate) fn run(root: &Path, args: &VerifyMslRemeasureArgs) -> Result<()> {
         fs::write(&results_path, serde_json::to_vec_pretty(&results)?)
             .with_context(|| format!("write {}", results_path.display()))?;
     }
-    let record = json!({ "schema_version": 1, "models": remeasured, "not_remeasured": skipped });
+    let record = remeasured_record(&remeasured, &skipped, args);
     fs::write(
         args.results_dir.join(REMEASURED_FILE),
         serde_json::to_vec_pretty(&record)?,
@@ -481,5 +509,50 @@ mod tests {
         .unwrap();
         assert_eq!(results["model_results"][0]["sim_status"], "sim_ok");
         assert!(replace_row(&mut results, "Absent", json!({})).is_err());
+    }
+
+    #[derive(clap::Parser)]
+    struct Cli {
+        #[command(flatten)]
+        args: VerifyMslRemeasureArgs,
+    }
+
+    fn parse(extra: &[&str]) -> std::result::Result<VerifyMslRemeasureArgs, clap::Error> {
+        use clap::Parser;
+        let argv = ["remeasure", "--results-dir", "r"].iter().chain(extra);
+        Cli::try_parse_from(argv).map(|cli| cli.args)
+    }
+
+    #[test]
+    fn a_tested_main_without_a_snapshot_is_recorded_with_its_reason() {
+        let reason = "main baseline unavailable for abc: main CI produced no MSL snapshot";
+        let args = parse(&["--tested-main-unavailable", reason]).unwrap();
+        let record = remeasured_record(&Map::new(), &[], &args);
+        assert_eq!(
+            record["tested_main"],
+            json!({ "state": "unavailable", "reason": reason })
+        );
+        let args = parse(&["--tested-main-results", "main.json"]).unwrap();
+        assert_eq!(
+            remeasured_record(&Map::new(), &[], &args)["tested_main"],
+            json!({ "state": "results" })
+        );
+        let args = parse(&[]).unwrap();
+        assert_eq!(
+            remeasured_record(&Map::new(), &[], &args)["tested_main"],
+            json!({ "state": "not_given" })
+        );
+    }
+
+    #[test]
+    fn tested_main_results_and_unavailable_are_mutually_exclusive() {
+        let error = parse(&[
+            "--tested-main-results",
+            "main.json",
+            "--tested-main-unavailable",
+            "none",
+        ])
+        .expect_err("both old-side inputs refuse");
+        assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
     }
 }
