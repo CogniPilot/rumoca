@@ -240,7 +240,7 @@
           cargoDeps = pkgs.rustPlatform.importCargoLock {
             lockFile = ./Cargo.lock;
             outputHashes = {
-              "diffsol-0.13.2" = "sha256-XWK/wwmryo2aZaJdKqoU6PXoEpuM1Yie51q/022un3k=";
+              "diffsol-0.13.2" = "sha256-xiFACa0cvzzNgDO1K7glUSszJBXQfZ2WxBEtrHUkzus=";
             };
           };
           nativeBuildInputs = [

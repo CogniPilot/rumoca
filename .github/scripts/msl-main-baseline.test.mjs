@@ -4,9 +4,9 @@ import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
 import { spawnSync } from 'node:child_process';
-import { ARTIFACT_NAME, testedMainSha, findMainArtifact, readFullSnapshot,
+import { ARTIFACT_NAME, testedMainSha, findMainArtifact, resolveMainArtifact, readFullSnapshot,
   recordMainSnapshot, readMainBaseline, compareModels, compareAndAnnotate,
-  writeBaselineFailure } from './msl-main-baseline.mjs';
+  writeBaselineFailure, resolveTestedMainBaseline } from './msl-main-baseline.mjs';
 
 const MAIN = '1'.repeat(40), MERGE = '2'.repeat(40), HEAD = '3'.repeat(40);
 const repo = { owner: 'owner', repo: 'project' };
@@ -90,6 +90,84 @@ test('completed missing, expired, pending timeout and API failure stay distinct'
     sha: MAIN, now: () => time, sleep: async ms => { time += ms; }, pollMs: 5, timeoutMs: 10 }), /pending.*bounded wait/);
   assert.equal(time, 10);
   await assert.rejects(findMainArtifact({ github: api(() => { throw Error('403'); }, () => []), repo, sha: MAIN }), /403/);
+});
+
+test('only a completed main without a usable snapshot resolves to unavailable; every other failure throws', async () => {
+  assert.deepEqual(await resolveMainArtifact({ github: api(() => [run()], () => [artifact()]), repo, sha: MAIN }),
+    { artifact: binding });
+  assert.deepEqual(await resolveMainArtifact({ github: api(() => [run()], () => []), repo, sha: MAIN }),
+    { unavailable: 'main baseline unavailable for ' + MAIN + ': main CI produced no MSL snapshot; rebase onto main' });
+  assert.match((await resolveMainArtifact({ github: api(() => [run()], () => [artifact({ expired: true })]), repo,
+    sha: MAIN })).unavailable, /expired; rebase/);
+  let time = 0;
+  await assert.rejects(resolveMainArtifact({ github: api(() => [run({ status: 'queued' })], () => []), repo,
+    sha: MAIN, now: () => time, sleep: async ms => { time += ms; }, pollMs: 5, timeoutMs: 10 }), /pending.*bounded wait/);
+  await assert.rejects(resolveMainArtifact({ github: api(() => { throw Error('403'); }, () => []), repo, sha: MAIN }), /403/);
+  await assert.rejects(resolveMainArtifact({ github: api(() => [run()], () => [artifact({ workflow_run: { head_sha: HEAD } })]),
+    repo, sha: MAIN }), /artifact workflow source differs/);
+  await assert.rejects(resolveMainArtifact({ github: api(() => [], () => []), repo, sha: MAIN, timeoutMs: 0 }), /baseline pending/);
+});
+
+test('re-measurement on a PR resolves tested main without failing on a main that has no snapshot', () => {
+  const ci = fs.readFileSync(new URL('../workflows/ci.yml', import.meta.url), 'utf8');
+  const step = ci.slice(ci.indexOf('- name: Resolve tested main for re-measurement'),
+    ci.indexOf('- name: Download tested main results for re-measurement'));
+  assert.match(step, /helper\.resolveMainArtifact\(/);
+  assert.doesNotMatch(step, /findMainArtifact|continue-on-error/);
+  assert.match(step, /core\.setOutput\('available', 'false'\)/);
+  const download = ci.slice(ci.indexOf('- name: Download tested main results for re-measurement'),
+    ci.indexOf('- name: Re-measure watchdog kills on this runner'));
+  assert.match(download, /steps\.remeasure-main\.outputs\.available == 'true'/);
+  const remeasure = ci.slice(ci.indexOf('- name: Re-measure watchdog kills on this runner'),
+    ci.indexOf('- name: Upload shard results'));
+  assert.match(remeasure, /--tested-main-unavailable/);
+  assert.match(remeasure, /--tested-main-sha "\$TESTED_MAIN_SHA" --tested-main-run-id "\$TESTED_MAIN_RUN_ID"/);
+  assert.match(remeasure, /TESTED_MAIN_SHA: \$\{\{ steps\.remeasure-main\.outputs\.sha \}\}/);
+  assert.match(step, /core\.setOutput\('sha', found\.artifact\.sha\)/);
+  const upload = ci.slice(ci.indexOf('- name: Upload shard results'), ci.indexOf('  msl-merge:'));
+  assert.match(upload, /if: \$\{\{ always\(\) \}\}/);
+});
+
+test('the PR-vs-main step reports a main without a snapshot as not compared, and fails on anything else', () => {
+  const ci = fs.readFileSync(new URL('../workflows/ci.yml', import.meta.url), 'utf8');
+  const merge = ci.slice(ci.indexOf('- name: Resolve tested main baseline'),
+    ci.indexOf('- name: Download tested main MSL snapshot'));
+  assert.match(merge, /helper\.resolveTestedMainBaseline\(/);
+  assert.doesNotMatch(merge, /findMainArtifact|continue-on-error/);
+  assert.match(merge, /core\.setOutput\('available', 'false'\)/);
+  assert.match(merge, /helper\.writeBaselineFailure\(/);
+  assert.match(merge, /core\.setFailed\(error\.message\)/);
+  const download = ci.slice(ci.indexOf('- name: Download tested main MSL snapshot'),
+    ci.indexOf('- name: Validate tested main MSL snapshot'));
+  const validate = ci.slice(ci.indexOf('- name: Validate tested main MSL snapshot'),
+    ci.indexOf('- name: Generate MSL PR summary comment'));
+  for (const step of [download, validate]) {
+    assert.match(step, /steps\.main-baseline\.outputs\.available == 'true'/);
+  }
+});
+
+test('tested main without a snapshot resolves to not compared with a note; other failures write nothing', async t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'msl-main-not-compared-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const comment = path.join(dir, 'msl_pr_comment.md');
+  const missing = await resolveTestedMainBaseline({ github: api(() => [run()], () => []), repo, sha: MAIN, resultsDir: dir });
+  assert.equal(missing.available, false);
+  assert.match(missing.reason, /no MSL snapshot/);
+  const note = fs.readFileSync(comment, 'utf8');
+  assert.ok(note.startsWith(marker), note);
+  assert.match(note, /not compared/);
+  assert.match(note, new RegExp(MAIN));
+  assert.doesNotMatch(note, /🔴/);
+  fs.rmSync(comment);
+  assert.deepEqual(await resolveTestedMainBaseline({ github: api(() => [run()], () => [artifact()]), repo, sha: MAIN,
+    resultsDir: dir }), { available: true, binding });
+  await assert.rejects(resolveTestedMainBaseline({ github: api(() => [run({ status: 'queued' })], () => []), repo,
+    sha: MAIN, timeoutMs: 0, resultsDir: dir }), /baseline pending/);
+  await assert.rejects(resolveTestedMainBaseline({ github: api(() => { throw Error('403'); }, () => []), repo,
+    sha: MAIN, resultsDir: dir }), /403/);
+  await assert.rejects(resolveTestedMainBaseline({ github: api(() => [run()],
+    () => [artifact({ workflow_run: { head_sha: HEAD } })]), repo, sha: MAIN, resultsDir: dir }), /differs/);
+  assert.equal(fs.existsSync(comment), false, 'a failure must not write a not-compared note');
 });
 
 test('rerun artifact lookup does not confuse an expired attempt with the available exact run', async () => {
@@ -239,8 +317,6 @@ test('executed Actions comparison step fails red on loss and passes equal result
     const helper = path.join(root, '.github/scripts/msl-main-baseline.mjs');
     fs.mkdirSync(path.dirname(helper), { recursive: true });
     fs.copyFileSync(new URL('./msl-main-baseline.mjs', import.meta.url), helper);
-    fs.copyFileSync(new URL('./msl-timeout-confirmation.mjs', import.meta.url),
-      path.join(root, '.github/scripts/msl-timeout-confirmation.mjs'));
     const runner = path.join(root, 'runner.cjs');
     fs.writeFileSync(runner, 'const core={setFailed(m){console.error(m);process.exitCode=1}};'
       + '(async()=>{const F=Object.getPrototypeOf(async function(){}).constructor;'
@@ -271,7 +347,7 @@ test('CI removes checked-in report fallback, preserves main runs and failure com
 test('executed summary step never selects v14, even when that file exists and main is missing', t => {
   const workflow = fs.readFileSync(new URL('../workflows/ci.yml', import.meta.url), 'utf8');
   const script = workflow.split('      - name: Generate MSL PR summary comment')[1]
-    .split('      - name: Plan timeout-loss confirmations')[0].split('        run: |\n')[1]
+    .split('      - name: Check PR model losses against tested main')[0].split('        run: |\n')[1]
     .split('\n').map(line => line.slice(10)).join('\n');
   const root = directory(t, snapshot());
   const current = path.join(root, 'target/msl/results/msl_quality_current.json');

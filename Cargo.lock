@@ -1216,7 +1216,7 @@ checksum = "6184e33543162437515c2e2b48714794e37845ec9851711914eec9d308f6ebe8"
 [[package]]
 name = "diffsol"
 version = "0.13.2"
-source = "git+https://github.com/CogniPilot/diffsol?rev=4a8aebb83e088cc454d1716c81768eb36386292f#4a8aebb83e088cc454d1716c81768eb36386292f"
+source = "git+https://github.com/CogniPilot/diffsol?rev=80ffcb582680128916e8e2deedb3ac8eacfe5e61#80ffcb582680128916e8e2deedb3ac8eacfe5e61"
 dependencies = [
  "faer",
  "faer-traits",
@@ -4698,6 +4698,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "rumoca-msl-quality"
+version = "0.11.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
 name = "rumoca-opt"
 version = "0.11.0"
 dependencies = [
@@ -5044,6 +5053,7 @@ dependencies = [
  "rumoca-ir-dae",
  "rumoca-ir-flat",
  "rumoca-ir-solve",
+ "rumoca-msl-quality",
  "rumoca-phase-dae",
  "rumoca-phase-flatten",
  "rumoca-phase-parse",
@@ -7723,6 +7733,7 @@ dependencies = [
  "clap_complete",
  "lsp-types",
  "num_cpus",
+ "rumoca-msl-quality",
  "rustc-demangle",
  "serde",
  "serde_json",

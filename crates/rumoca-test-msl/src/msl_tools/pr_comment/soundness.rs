@@ -175,7 +175,8 @@ fn render_rows<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::msl_tools::band_table::{BandLabel, ExitReason};
+    use crate::msl_tools::band_table::ExitReason;
+    use rumoca_msl_quality::BandLabel;
 
     fn row(model_name: &str, band: BandLabel, exit_reason: Option<ExitReason>) -> BandRow {
         let mut row: BandRow = serde_json::from_value(serde_json::json!({
@@ -229,7 +230,7 @@ mod tests {
     }
 
     fn outcomes(verified: usize, unclassified: usize) -> SimulationOutcomes {
-        use crate::msl_tools::common::TraceExceptionKind;
+        use rumoca_msl_quality::TraceExceptionKind;
         SimulationOutcomes {
             verified,
             excepted: [

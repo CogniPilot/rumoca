@@ -1167,8 +1167,46 @@
         "solver": "rk-like"
       },
       "expect": {
-        "outcome": "refused",
-        "diagnostic": "EL005"
+        "outcome": "succeeds",
+        "observations": [
+          {
+            "variable": "idealTransformer.i1[1]",
+            "time": 0.0,
+            "value": 0.0,
+            "tolerance": 1e-9
+          },
+          {
+            "variable": "idealTransformer.i1[1]",
+            "time": 0.02,
+            "value": 0.4867920717347506,
+            "tolerance": 5.867920717347506e-6
+          },
+          {
+            "variable": "idealTransformer.i2[2]",
+            "time": 0.0,
+            "value": 0.0,
+            "tolerance": 1e-9
+          },
+          {
+            "variable": "idealTransformer.i2[2]",
+            "time": 0.02,
+            "value": 0.5471836589993815,
+            "tolerance": 6.471836589993815e-6
+          },
+          {
+            "variable": "idealTransformer.v2[1]",
+            "time": 0.0,
+            "value": 0.0,
+            "tolerance": 1e-9
+          },
+          {
+            "variable": "idealTransformer.v2[1]",
+            "time": 0.02,
+            "value": 1.0180739209102543,
+            "tolerance": 1.1180739209102543e-5
+          }
+        ],
+        "artifacts": []
       }
     },
     {

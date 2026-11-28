@@ -103,6 +103,9 @@
 //! discrete level difference of one is a full disagreement by construction, and
 //! they neither contribute to nor consume an array group floor.
 
+use super::excursion::{
+    ExcursionClass, ReferenceExcursion, SupportedRun, dominant_run, excursion_scale,
+};
 use super::{RANGE_HIGH_QUANTILE, RANGE_LOW_QUANTILE};
 
 /// Fraction of a channel's own magnitude treated as a meaningful deviation.
@@ -146,9 +149,34 @@ pub(super) struct ReferenceScale {
     /// sibling has one. Only consulted for information-free channels; see the
     /// module docs.
     pub array_group_floor: Option<f64>,
+    /// The supported run an information-free channel's reference has outside
+    /// its robust band, if any, with its class; see the `excursion` module.
+    pub excursion: Option<ReferenceExcursion>,
 }
 
 impl ReferenceScale {
+    /// This scale with its excursion classified against the reference simulated
+    /// at a tighter tolerance, and the normalization scale that implies: `run`
+    /// is the run the scale comes from (the largest event for an event, the
+    /// largest run for noise), and becomes the reported excursion. A scale
+    /// without an excursion is returned unchanged.
+    pub(super) fn classified(self, class: ExcursionClass, run: SupportedRun) -> Self {
+        if self.excursion.is_none() {
+            return self;
+        }
+        Self {
+            normalization_scale: excursion_scale(class, run.amplitude, self.normalization_scale),
+            excursion: Some(ReferenceExcursion { run, class }),
+            ..self
+        }
+    }
+
+    /// True when the channel is scaled by its reference's events.
+    pub(super) fn is_event_scaled(&self) -> bool {
+        self.excursion
+            .is_some_and(|excursion| excursion.class == ExcursionClass::Event)
+    }
+
     /// True when the reference channel carries no usable signal at all: a flat
     /// line, at zero or at any other level. Used by shape classification to flag
     /// a probable channel mapping error rather than a numeric deviation.
@@ -159,8 +187,11 @@ impl ReferenceScale {
     /// zero one — which is where the pre-normalization implementation put it
     /// (it tested `normalization_scale <= 1e-11`, and the unfloored scale of a
     /// flat channel was its `1e-12` floor regardless of level).
+    ///
+    /// A channel scaled by an event is not flat: its reference carries a real
+    /// event outside the robust band.
     pub(super) fn reference_is_degenerate(&self) -> bool {
-        range_is_degenerate(self.range)
+        range_is_degenerate(self.range) && !self.is_event_scaled()
     }
 }
 
@@ -173,10 +204,17 @@ pub(super) fn range_is_degenerate(range: f64) -> bool {
 
 /// Build the normalization scale for one channel from its reference samples.
 ///
-/// `array_group_floor` is the sibling-derived scale of the array this channel
-/// belongs to, if any; see [`ReferenceScale::array_group_floor`].
+/// `ref_samples` are the reference values the error integral was built from;
+/// their percentiles are the robust band, exactly as before. `ordered_reference`
+/// is the same reference in time order, one value per compared grid point, and
+/// is only read to find an information-free channel's excursion, which starts
+/// out unclassified and leaves the scale unchanged until
+/// [`ReferenceScale::classified`]. `array_group_floor` is the sibling-derived
+/// scale of the array this channel belongs to, if any; see
+/// [`ReferenceScale::array_group_floor`].
 pub(super) fn reference_scale(
     ref_samples: &[f64],
+    ordered_reference: &[f64],
     use_step_hold: bool,
     array_group_floor: Option<f64>,
 ) -> ReferenceScale {
@@ -188,6 +226,13 @@ pub(super) fn reference_scale(
     } else {
         continuous_scale(range, magnitude, array_group_floor)
     };
+    let excursion = (!use_step_hold && reference_is_information_free(range, magnitude))
+        .then(|| dominant_run(ordered_reference, p05, p95))
+        .flatten()
+        .map(|run| ReferenceExcursion {
+            run,
+            class: ExcursionClass::Unclassified,
+        });
     ReferenceScale {
         p05,
         p95,
@@ -196,13 +241,14 @@ pub(super) fn reference_scale(
         normalization_scale,
         use_step_hold,
         array_group_floor,
+        excursion,
     }
 }
 
 /// True when neither the reference range nor the reference level says anything
 /// about the channel's scale, so the scale would otherwise be the bare
 /// unit-free [`CONTINUOUS_ABSOLUTE_SCALE_FLOOR`].
-fn reference_is_information_free(range: f64, magnitude: f64) -> bool {
+pub(super) fn reference_is_information_free(range: f64, magnitude: f64) -> bool {
     range_is_degenerate(range)
         && MAGNITUDE_SCALE_FRACTION * magnitude <= CONTINUOUS_ABSOLUTE_SCALE_FLOOR
 }

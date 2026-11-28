@@ -8,6 +8,7 @@ mod kani;
 mod msl_cargo_setup_timing;
 mod msl_local_run;
 mod msl_quality_baseline;
+mod msl_remeasure;
 mod msl_results_cleanup;
 mod parity_budgets;
 mod parity_comparator;
@@ -138,6 +139,40 @@ pub(crate) enum TemplateRuntimeBackend {
     Wasm,
 }
 
+/// Arguments of `verify msl-ratchet`.
+#[derive(Debug, Args, Clone, PartialEq, Eq)]
+pub(crate) struct VerifyMslRatchetArgs {
+    /// The full CI quality snapshot offered for promotion
+    #[arg(long)]
+    source: PathBuf,
+    /// The published baseline, overwritten with the source when it improves
+    #[arg(long)]
+    baseline: PathBuf,
+    /// The reviewed checked-in baseline of this commit (default: the tracked one)
+    #[arg(long)]
+    checked_in: Option<PathBuf>,
+    /// The generated accuracy statement (default: the tracked one)
+    #[arg(long)]
+    accuracy_changes: Option<PathBuf>,
+}
+
+/// Arguments of `verify msl-accuracy-changes`.
+#[derive(Debug, Args, Clone, PartialEq, Eq)]
+pub(crate) struct VerifyMslAccuracyChangesArgs {
+    /// The MSL quality snapshot of this change's run
+    #[arg(long)]
+    source: PathBuf,
+    /// The baseline the run is judged against
+    #[arg(long)]
+    baseline: PathBuf,
+    /// The reviewed checked-in baseline of this commit (default: the tracked one)
+    #[arg(long)]
+    checked_in: Option<PathBuf>,
+    /// Where to write the statement (default: the tracked one)
+    #[arg(long)]
+    out: Option<PathBuf>,
+}
+
 #[derive(Debug, Args, Clone, PartialEq, Eq, Default)]
 #[command(args_conflicts_with_subcommands = true)]
 pub(crate) struct VerifyMslParityArgs {
@@ -212,6 +247,15 @@ pub(crate) struct VerifyMslParityArgs {
     /// Used by the sharded MSL CI after all `--shard` jobs finish.
     #[arg(long, value_name = "DIR", conflicts_with = "shard")]
     merge_shards: Option<PathBuf>,
+    /// Re-measure with one stage's budget multiplied (`PHASE=FACTOR`, the
+    /// worker's phase name and 1..3, e.g. `Sim=2.46`); every other stage keeps
+    /// its own. Used by `verify msl-remeasure` on a killed stage.
+    #[arg(long, value_name = "PHASE=FACTOR", value_parser = msl_remeasure::parse_raised_stage)]
+    raise_stage: Option<String>,
+    /// Re-run a shard's comparator tail over results `verify msl-remeasure`
+    /// patched, so every file the merge reads agrees with them.
+    #[arg(long, conflicts_with = "merge_shards")]
+    refresh_parity: bool,
     /// Run a prebuilt `msl_tests` libtest binary (built once by Nix/crane and
     /// shared through CI) instead of recompiling the workspace. The gate does its
     /// normal config/baseline setup, then executes this binary directly — no
@@ -323,6 +367,19 @@ impl VerifyMslParityArgs {
                 dir.to_string_lossy().into_owned().into(),
             );
         }
+        if self.refresh_parity {
+            config.insert("refresh_parity".into(), true.into());
+        }
+        if let Some((phase, factor)) = self
+            .raise_stage
+            .as_deref()
+            .and_then(|raw| msl_remeasure::raised_stage_parts(raw).ok())
+        {
+            config.insert(
+                "raised_stage".into(),
+                serde_json::json!({ "phase": phase, "factor": factor }),
+            );
+        }
         serde_json::Value::Object(config)
     }
 
@@ -417,6 +474,21 @@ impl ParityConfigLock {
     }
 }
 
+/// A shard writes the quality snapshot whose rule-B frame reads the promoted
+/// asset, but enforces no baseline gate, so the baseline resolution above
+/// never runs for it: give it the raw promoted asset here. Offline
+/// (`--no-remote-quality-baseline`) nothing is passed and the harness falls
+/// back to the checked-in baseline; in CI a failed download fails the shard.
+fn shard_promoted_baseline(
+    args: &VerifyMslParityArgs,
+    download: impl FnOnce() -> Result<Option<PathBuf>>,
+) -> Result<Option<PathBuf>> {
+    if args.shard.is_none() || args.no_remote_quality_baseline {
+        return Ok(None);
+    }
+    download()
+}
+
 /// Write the parity config to the fixed path before the libtest gate runs. The
 /// file is rewritten every invocation so a previous run's config never leaks.
 fn write_parity_config(root: &Path, args: &VerifyMslParityArgs) -> Result<()> {
@@ -426,10 +498,24 @@ fn write_parity_config(root: &Path, args: &VerifyMslParityArgs) -> Result<()> {
             .with_context(|| format!("failed to create {}", parent.display()))?;
     }
     let mut config = args.clone();
-    if args.quality_baseline.is_some() || args.uses_baseline_relative_quality_gate() {
-        config.quality_baseline = Some(resolve_msl_quality_baseline(root, args)?);
+    let promoted = if args.quality_baseline.is_some() || args.uses_baseline_relative_quality_gate()
+    {
+        let resolved = resolve_msl_quality_baseline(root, args)?;
+        config.quality_baseline = Some(resolved.selected);
+        resolved.promoted_raw
+    } else {
+        shard_promoted_baseline(args, || msl_quality_baseline::download_promoted_asset(root))?
+    };
+    let mut json = config.to_parity_config_json();
+    // The per-model rule judges against the raw promoted asset, the baseline
+    // promotion judges against, so both key the accuracy statement alike.
+    if let (Some(promoted), Some(object)) = (promoted, json.as_object_mut()) {
+        object.insert(
+            "promoted_baseline_file".into(),
+            promoted.to_string_lossy().into_owned().into(),
+        );
     }
-    let json = serde_json::to_string_pretty(&config.to_parity_config_json())?;
+    let json = serde_json::to_string_pretty(&json)?;
     fs::write(&path, json).with_context(|| format!("failed to write {}", path.display()))?;
     Ok(())
 }
@@ -468,6 +554,15 @@ pub(crate) enum VerifyCommand {
     Docs,
     /// Full MSL/OMC parity gate harness
     MslParity(Box<VerifyMslParityArgs>),
+    /// Promote an MSL quality snapshot over the published baseline when it
+    /// improves some ratchet metric and regresses none
+    MslRatchet(VerifyMslRatchetArgs),
+    /// Generate the statement of every model whose mean channel error rose
+    /// against the baseline (or delete it when none rose)
+    MslAccuracyChanges(VerifyMslAccuracyChangesArgs),
+    /// Re-measure a shard's watchdog-killed stages on the same runner, with
+    /// only that stage's budget raised by the runner's speed
+    MslRemeasure(msl_remeasure::VerifyMslRemeasureArgs),
     /// Pre-landing gate: CI's blocking steps over a committed snapshot
     Gate(gate::VerifyGateArgs),
     /// Generate real flamegraph SVGs for the hottest compile and sim models from the latest MSL run
@@ -664,12 +759,53 @@ pub(crate) fn run(args: VerifyArgs, root: &Path) -> Result<()> {
         VerifyCommand::Binaries => test_cmd::run_workspace_binary_build(root),
         VerifyCommand::Docs => test_cmd::run_workspace_docs(root),
         VerifyCommand::MslParity(args) => parity_sweep::run(root, &args, &mut run_msl_quality_gate),
+        VerifyCommand::MslRatchet(args) => run_msl_ratchet(root, &args),
+        VerifyCommand::MslAccuracyChanges(args) => run_msl_accuracy_changes(root, &args),
+        VerifyCommand::MslRemeasure(args) => msl_remeasure::run(root, &args),
         VerifyCommand::Gate(args) => gate::run(root, &args),
         VerifyCommand::MslHotspots => run_msl_hotspot_flamegraphs(root),
         VerifyCommand::Fuzz(args) => fuzz::run(&args, root),
         VerifyCommand::CorpusPin(args) => corpus_pin::run(root, &args),
         VerifyCommand::Embedded(args) => embedded::run(root, &args),
     }
+}
+
+fn run_msl_ratchet(root: &Path, args: &VerifyMslRatchetArgs) -> Result<()> {
+    let checked_in = args
+        .checked_in
+        .clone()
+        .unwrap_or_else(|| root.join(msl_quality_baseline::MSL_QUALITY_BASELINE_FALLBACK_REL));
+    let accuracy_changes = args
+        .accuracy_changes
+        .clone()
+        .unwrap_or_else(|| root.join(rumoca_msl_quality::ACCURACY_STATEMENT_FILE));
+    msl_quality_baseline::ratchet::promote_baseline_if_improved(
+        &args.source,
+        &args.baseline,
+        &checked_in,
+        &accuracy_changes,
+        &mut |line| println!("{line}"),
+    )
+    .map(|_| ())
+}
+
+fn run_msl_accuracy_changes(root: &Path, args: &VerifyMslAccuracyChangesArgs) -> Result<()> {
+    let checked_in = args
+        .checked_in
+        .clone()
+        .unwrap_or_else(|| root.join(msl_quality_baseline::MSL_QUALITY_BASELINE_FALLBACK_REL));
+    let out = args
+        .out
+        .clone()
+        .unwrap_or_else(|| root.join(rumoca_msl_quality::ACCURACY_STATEMENT_FILE));
+    let done = msl_quality_baseline::ratchet::write_accuracy_statement(
+        &args.source,
+        &args.baseline,
+        &checked_in,
+        &out,
+    )?;
+    println!("{done}");
+    Ok(())
 }
 
 fn run_examples_smoke(root: &Path) -> Result<()> {
@@ -1377,6 +1513,8 @@ fn run_msl_quality_gate(root: &Path, args: &VerifyMslParityArgs) -> Result<()> {
     }
     let test_target = if merge_only {
         "balance_pipeline::balance_pipeline_merge::test_msl_merge_and_gate"
+    } else if args.refresh_parity {
+        "balance_pipeline::balance_pipeline_merge::test_msl_refresh_shard_parity"
     } else {
         "balance_pipeline::balance_pipeline_core::test_msl_all"
     };

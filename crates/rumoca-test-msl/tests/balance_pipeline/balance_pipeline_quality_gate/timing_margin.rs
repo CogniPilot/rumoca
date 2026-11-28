@@ -21,6 +21,12 @@ pub(super) const CERTIFICATION_TIMING_MARGIN: f64 = 0.5;
 pub(super) struct TimingMarginEntry {
     pub(super) phase: String,
     pub(super) budget_share: f64,
+    /// The shard speed the share is normalized by (rule B).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) speed: Option<f64>,
+    /// Why the speed gauge was not trusted; the share is then absolute.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) inconclusive: Option<String>,
 }
 
 /// The phase budgets of the evidence run: every worker phase has the model
@@ -99,6 +105,38 @@ impl PhaseBudgets {
 
     /// The phase of `result` that used the largest share of its budget.
     pub(super) fn worst_share(self, result: &MslModelResult) -> Option<TimingMarginEntry> {
+        self.worst_share_at(result, 1.0)
+    }
+
+    /// A stage's own time in `result` and its configured budget, by the
+    /// worker's name for the stage.
+    pub(super) fn stage_time_and_budget(
+        self,
+        result: &MslModelResult,
+        stage: &str,
+    ) -> Option<(f64, f64)> {
+        let attempt = self.model_attempt_seconds;
+        let (seconds, budget) = match stage {
+            "Instantiate" => (result.instantiate_seconds, attempt),
+            "Typecheck" => (result.typecheck_seconds, attempt),
+            "Flatten" => (result.flatten_seconds, attempt),
+            "ToDae" => (result.dae_seconds, attempt),
+            "Solve" => (result.ir_solve_seconds, attempt),
+            "SimBuild" => (result.sim_backend_build_seconds, attempt),
+            "IC" => (result.ic_seconds, attempt),
+            "Sim" => (result.sim_run_seconds, self.simulation_seconds),
+            _ => return None,
+        };
+        Some((seconds?, budget))
+    }
+
+    /// [`Self::worst_share`] with every phase time divided by the runner's
+    /// `speed` (rule B), so the share is the one in the reference frame.
+    pub(super) fn worst_share_at(
+        self,
+        result: &MslModelResult,
+        speed: f64,
+    ) -> Option<TimingMarginEntry> {
         let attempt = self.model_attempt_seconds;
         [
             ("Instantiate", result.instantiate_seconds, attempt),
@@ -114,7 +152,9 @@ impl PhaseBudgets {
         .filter_map(|(phase, seconds, budget)| {
             Some(TimingMarginEntry {
                 phase: phase.to_string(),
-                budget_share: seconds? / budget,
+                budget_share: seconds? / speed / budget,
+                speed: None,
+                inconclusive: None,
             })
         })
         .max_by(|lhs, rhs| lhs.budget_share.total_cmp(&rhs.budget_share))

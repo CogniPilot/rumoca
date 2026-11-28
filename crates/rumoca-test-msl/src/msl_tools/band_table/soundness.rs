@@ -5,7 +5,8 @@
 use std::collections::BTreeMap;
 
 use super::{BandLabel, BandRow, BandTable, ExitReason};
-use crate::msl_tools::common::{TraceExceptionKind, typed_exception_kind};
+use crate::msl_tools::common::typed_exception_kind;
+use rumoca_msl_quality::TraceExceptionKind;
 
 /// How the band table classifies the run's completed simulations: verified
 /// (strict-high), excepted (a typed trace exception, by kind), or

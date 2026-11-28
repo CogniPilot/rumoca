@@ -1,6 +1,8 @@
 mod budget_metadata;
 mod cohort;
-mod reference_boundary;
+pub(super) mod per_model_migration;
+pub(super) mod ratchet;
+pub(super) mod reference_boundary;
 #[cfg(test)]
 mod tests;
 
@@ -13,10 +15,11 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use super::VerifyMslParityArgs;
+use per_model_migration::{ensure_initialization_not_lost, with_old_side_states};
 use reference_boundary::{ReferenceBoundaryMigration, validate_reference_boundary_migration};
 
 const MSL_QUALITY_BASELINE_ASSET_URL: &str = "https://github.com/CogniPilot/rumoca/releases/download/msl-quality-baseline/msl_quality_baseline.json";
-const MSL_QUALITY_BASELINE_FALLBACK_REL: &str =
+pub(super) const MSL_QUALITY_BASELINE_FALLBACK_REL: &str =
     "crates/rumoca-test-msl/tests/msl_tests/msl_quality_baseline.json";
 const MSL_QUALITY_GATE_VERSION: u64 = 15;
 /// The reviewed boundary just behind the checked-in one.
@@ -105,6 +108,11 @@ struct MslQualityBaselineHeader {
     trace_accuracy_stats: TraceAccuracyStats,
     #[serde(flatten)]
     cohort: cohort::CohortEvidence,
+    /// Each model's stage, when the baseline records them. For a promoted
+    /// asset that predates them, [`with_old_side_states`] fills them from the
+    /// crossing's pinned evidence.
+    #[serde(default)]
+    model_states: Option<rumoca_msl_quality::ModelStates>,
 }
 
 impl MslQualityBaselineHeader {
@@ -271,10 +279,22 @@ enum BaselineChoice {
     CheckedInMigration,
 }
 
+/// The baseline the gate reads, and the raw promoted asset when one was
+/// downloaded (the per-model rule's baseline).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct ResolvedBaseline {
+    pub(super) selected: PathBuf,
+    pub(super) promoted_raw: Option<PathBuf>,
+}
+
 pub(super) fn resolve_msl_quality_baseline(
     root: &Path,
     args: &VerifyMslParityArgs,
-) -> Result<PathBuf> {
+) -> Result<ResolvedBaseline> {
+    let only = |selected| ResolvedBaseline {
+        selected,
+        promoted_raw: None,
+    };
     if let Some(path) = args.quality_baseline.as_ref() {
         let resolved = resolve_workspace_path(root, path);
         ensure!(
@@ -287,7 +307,7 @@ pub(super) fn resolve_msl_quality_baseline(
             "MSL quality baseline: using explicit {}",
             resolved.display()
         );
-        return Ok(resolved);
+        return Ok(only(resolved));
     }
 
     let checked_in = checked_in_msl_quality_baseline_path(root);
@@ -300,23 +320,30 @@ pub(super) fn resolve_msl_quality_baseline(
     if !args.no_remote_quality_baseline
         && let Some(promoted) = download_msl_quality_baseline_asset(root)?
     {
-        let promoted_header = load_promoted_baseline_header(&promoted)?;
-        match choose_baseline(&promoted_header, &checked_in_header)? {
-            BaselineChoice::Promoted => {
-                return budget_metadata::selected_promoted_baseline(
-                    root,
-                    promoted,
-                    checked_in_header.budget_metadata_correction.as_ref(),
-                );
-            }
+        let promoted_header = with_old_side_states(
+            root,
+            &promoted,
+            load_promoted_baseline_header(&promoted)?,
+            &checked_in,
+        )?;
+        let selected = match choose_baseline(&promoted_header, &checked_in_header)? {
+            BaselineChoice::Promoted => budget_metadata::selected_promoted_baseline(
+                root,
+                promoted.clone(),
+                checked_in_header.budget_metadata_correction.as_ref(),
+            )?,
             BaselineChoice::CheckedInMigration => {
                 println!(
                     "MSL quality baseline: checked-in baseline declares a context/schema migration; using {}",
                     checked_in.display()
                 );
-                return Ok(checked_in);
+                checked_in
             }
-        }
+        };
+        return Ok(ResolvedBaseline {
+            selected,
+            promoted_raw: Some(promoted),
+        });
     }
 
     if args.no_remote_quality_baseline {
@@ -330,7 +357,7 @@ pub(super) fn resolve_msl_quality_baseline(
             checked_in.display()
         );
     }
-    Ok(checked_in)
+    Ok(only(checked_in))
 }
 
 fn choose_baseline(
@@ -691,14 +718,10 @@ fn validate_migration_metric_integrity(
             promoted.initial_unbalanced_models,
             checked_in.initial_unbalanced_models,
         ),
-        (
-            "initial-condition solver failures",
-            promoted.ic_solver_fail,
-            checked_in.ic_solver_fail,
-        ),
     ] {
         ensure_not_raised(label, promoted_value, checked_in_value)?;
     }
+    ensure_initialization_not_lost(promoted, checked_in)?;
 
     if !omc_context_changed && !trace_is_migrated {
         validate_omc_dependent_metric_integrity(promoted, checked_in)?;
@@ -789,7 +812,7 @@ fn validate_omc_dependent_metric_integrity(
             .models_compared
             .saturating_sub(checked_trace.models_with_severe_channel),
     )?;
-    validate_omc_error_metric_integrity(promoted_trace, checked_trace)?;
+    per_model_migration::ensure_trace_error_not_raised(promoted, checked_in)?;
     validate_cohort_metric_integrity(promoted, checked_in)
 }
 
@@ -948,8 +971,61 @@ fn resolve_workspace_path(root: &Path, path: &Path) -> PathBuf {
     }
 }
 
+/// The raw promoted asset, downloaded, or `None` offline (refused in CI).
+pub(super) fn download_promoted_asset(root: &Path) -> Result<Option<PathBuf>> {
+    download_msl_quality_baseline_asset(root)
+}
+
+/// The baseline a re-measurement judges against: the raw promoted asset, or,
+/// offline only, the checked-in baseline (said out loud).
+pub(super) fn promoted_baseline_or_offline_fallback(root: &Path) -> Result<PathBuf> {
+    Ok(download_msl_quality_baseline_asset(root)?
+        .unwrap_or_else(|| checked_in_msl_quality_baseline_path(root)))
+}
+
+/// Under GitHub Actions a promoted asset that cannot be read fails the run:
+/// falling back would judge the PR against another baseline than promotion
+/// does. Elsewhere the checked-in baseline is the local/offline fallback.
 fn download_msl_quality_baseline_asset(root: &Path) -> Result<Option<PathBuf>> {
+    let in_ci = std::env::var_os("GITHUB_ACTIONS").is_some();
+    require_promoted_asset(
+        in_ci,
+        fetch_msl_quality_baseline_asset(root)?,
+        &mut |line| println!("{line}"),
+    )
+}
+
+/// The download result, refused in CI when there is none; offline, a missing
+/// asset is allowed and said out loud.
+pub(super) fn require_promoted_asset(
+    in_ci: bool,
+    downloaded: Option<PathBuf>,
+    log: &mut dyn FnMut(&str),
+) -> Result<Option<PathBuf>> {
+    if downloaded.is_none() {
+        ensure!(
+            !in_ci,
+            "MSL quality baseline: the promoted asset could not be downloaded; CI never falls \
+             back to the checked-in baseline"
+        );
+        log(
+            "MSL quality baseline: no promoted asset; the checked-in fallback is for \
+             local/offline runs only",
+        );
+    }
+    Ok(downloaded)
+}
+
+fn fetch_msl_quality_baseline_asset(root: &Path) -> Result<Option<PathBuf>> {
     let output_path = downloaded_msl_quality_baseline_path(root);
+    // A copy left by an earlier run is never this run's asset.
+    match fs::remove_file(&output_path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(error).with_context(|| format!("remove {}", output_path.display()));
+        }
+    }
     println!(
         "MSL quality baseline: downloading latest promoted asset from {}",
         MSL_QUALITY_BASELINE_ASSET_URL
@@ -958,7 +1034,7 @@ fn download_msl_quality_baseline_asset(root: &Path) -> Result<Option<PathBuf>> {
         Ok(response) => response,
         Err(error) => {
             eprintln!(
-                "MSL quality baseline: failed to download latest promoted asset ({error}); falling back to checked-in baseline."
+                "MSL quality baseline: failed to download latest promoted asset ({error}); falling back to the checked-in baseline (local/offline only)."
             );
             return Ok(None);
         }
@@ -971,7 +1047,7 @@ fn download_msl_quality_baseline_asset(root: &Path) -> Result<Option<PathBuf>> {
     let mut data = Vec::with_capacity(content_len);
     if let Err(error) = response.into_reader().read_to_end(&mut data) {
         eprintln!(
-            "MSL quality baseline: failed to read latest promoted asset ({error}); falling back to checked-in baseline."
+            "MSL quality baseline: failed to read latest promoted asset ({error}); falling back to the checked-in baseline (local/offline only)."
         );
         return Ok(None);
     }

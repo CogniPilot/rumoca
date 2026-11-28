@@ -172,6 +172,7 @@ fn select_models_preserves_generated_target_file_order() {
         target_models_file: None,
         trace_exclusions_file: None,
         rumoca_sim_ok_only: false,
+        calibration_pass: false,
     };
     let paths = MslPaths {
         repo_root: repo_root.clone(),
@@ -240,6 +241,7 @@ fn merge_cached_results_for_resume_hydrates_missing_omc_timing() {
             result_file: None,
             trace_file: None,
             trace_error: None,
+            tight_reference: None,
             rumoca_status: None,
             rumoca_ic_status: None,
             rumoca_ic_error: None,
@@ -310,6 +312,7 @@ fn ensure_omc_trace_artifacts_regenerates_missing_json_from_cached_csv() {
             result_file: Some(format!("{model_name}_res.csv")),
             trace_file: Some(format!("sim_traces/omc/{model_name}.json")),
             trace_error: None,
+            tight_reference: None,
             rumoca_status: Some("sim_ok".to_string()),
             rumoca_ic_status: Some("ic_ok".to_string()),
             rumoca_ic_error: None,
@@ -380,6 +383,7 @@ fn ensure_omc_trace_artifacts_rejects_error_result_with_stale_csv() {
             result_file: Some(format!("{model_name}_res.csv")),
             trace_file: Some(format!("sim_traces/omc/{model_name}.json")),
             trace_error: None,
+            tight_reference: None,
             rumoca_status: Some("sim_ok".to_string()),
             rumoca_ic_status: Some("ic_ok".to_string()),
             rumoca_ic_error: None,
@@ -443,6 +447,7 @@ fn cached_success_without_materialized_trace_source_is_not_reusable() {
         result_file: Some(format!("{model_name}_res.csv")),
         trace_file: Some(format!("sim_traces/omc/{model_name}.json")),
         trace_error: None,
+        tight_reference: None,
         rumoca_status: Some("sim_ok".to_string()),
         rumoca_ic_status: Some("ic_ok".to_string()),
         rumoca_ic_error: None,
@@ -556,6 +561,7 @@ fn quantify_trace_differences_skips_excluded_model_before_trace_loading() {
             result_file: None,
             trace_file: None,
             trace_error: None,
+            tight_reference: None,
             rumoca_status: Some("sim_ok".to_string()),
             rumoca_ic_status: Some("ic_ok".to_string()),
             rumoca_ic_error: None,
@@ -641,6 +647,7 @@ fn quantify_trace_differences_rejects_error_status_model_with_stale_traces() {
             result_file: Some(format!("{model_name}_res.csv")),
             trace_file: Some(format!("sim_traces/omc/{model_name}.json")),
             trace_error: None,
+            tight_reference: None,
             rumoca_status: Some("sim_ok".to_string()),
             rumoca_ic_status: Some("ic_ok".to_string()),
             rumoca_ic_error: None,
@@ -719,6 +726,7 @@ fn quantify_trace_differences_rejects_undeclared_omc_trace_file() {
             result_file: None,
             trace_file: None,
             trace_error: None,
+            tight_reference: None,
             rumoca_status: Some("sim_ok".to_string()),
             rumoca_ic_status: Some("ic_ok".to_string()),
             rumoca_ic_error: None,
@@ -771,7 +779,7 @@ fn trace_output_summary_rolls_up_initial_condition_stats() {
         variable_meta: None,
         certification_profile: None,
     };
-    let metric = compare_model_traces("M", &rumoca, &omc).expect("compare traces");
+    let metric = compare_model_traces("M", &rumoca, &omc, None).expect("compare traces");
     let mut report = TraceQuantification::default();
     report.models.insert(
         "M".to_string(),
@@ -806,8 +814,8 @@ fn trace_output_summary_does_not_call_missing_initial_evidence_accurate() {
         variable_meta: None,
         certification_profile: None,
     };
-    let metric =
-        compare_model_traces("M", &trace(f64::from_bits(1)), &trace(0.0)).expect("compare traces");
+    let metric = compare_model_traces("M", &trace(f64::from_bits(1)), &trace(0.0), None)
+        .expect("compare traces");
     assert_eq!(metric.initial_condition.channels_compared, 0);
     let mut report = TraceQuantification::default();
     report.models.insert(
@@ -891,6 +899,7 @@ fn load_trace_exclusions_reads_each_entrys_own_reason() {
         target_models_file: None,
         trace_exclusions_file: Some(exclusions_file),
         rumoca_sim_ok_only: false,
+        calibration_pass: false,
     };
     let paths = MslPaths::current();
     let exclusions = load_trace_exclusions(&args, &paths).expect("load exclusions");
@@ -1024,6 +1033,7 @@ fn ensure_target_placeholders_preserves_full_target_denominator() {
             result_file: None,
             trace_file: None,
             trace_error: None,
+            tight_reference: None,
             rumoca_status: Some("sim_ok".to_string()),
             rumoca_ic_status: Some("ic_ok".to_string()),
             rumoca_ic_error: None,
@@ -1231,4 +1241,29 @@ fn fixture_paths(root: &std::path::Path) -> MslPaths {
         omc_trace_dir: root.join("sim_traces").join("omc"),
         rumoca_trace_dir: root.join("sim_traces").join("rumoca"),
     }
+}
+
+#[test]
+fn a_timing_carries_its_run_and_runner_in_ci_and_none_locally() {
+    let ci = |name: &str| {
+        match name {
+            "GITHUB_RUN_ID" => Some("46055840822"),
+            "GITHUB_RUN_ATTEMPT" => Some("2"),
+            "RUNNER_NAME" => Some("GitHub Actions 1000"),
+            _ => None,
+        }
+        .map(str::to_string)
+    };
+    assert_eq!(
+        output::run_provenance_from(ci),
+        serde_json::json!({
+            "run_id": "46055840822",
+            "run_attempt": "2",
+            "runner": "GitHub Actions 1000",
+        })
+    );
+    assert_eq!(
+        output::run_provenance_from(|_| None),
+        serde_json::Value::Null
+    );
 }

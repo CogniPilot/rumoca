@@ -17,6 +17,17 @@
 use super::*;
 use crate::{MODEL_MESSAGE_CODE, SimDiagnostic, WARNING_ASSERTION_CODE};
 
+/// Which unclocked error-level assertions one observation checks.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum AssertionScope {
+    /// None: a warning-only observation.
+    None,
+    /// Every one: a recorded output point.
+    OutputPoint,
+    /// Those whose condition may change between events: an accepted step.
+    AcceptedStep,
+}
+
 /// The warning sites reported so far and their diagnostics, in order.
 #[derive(Clone, Default)]
 pub(super) struct WarningLog {
@@ -115,7 +126,7 @@ impl ScalarExecutionView<'_> {
     /// Only sites not yet reported are evaluated. Clock-owned warnings are
     /// observed at their clock ticks, which are events.
     pub fn observe_warnings(&self, y: &[f64], p: &[f64], t: f64) -> Result<(), RuntimeSolveError> {
-        self.observe_unclocked_actions(y, p, t, true, false)
+        self.observe_unclocked_actions(y, p, t, true, AssertionScope::None)
             .map(|_| ())
     }
 
@@ -136,22 +147,27 @@ impl ScalarExecutionView<'_> {
         p: &[f64],
         t: f64,
     ) -> Result<EventActionOutcome, RuntimeSolveError> {
-        self.observe_unclocked_actions(y, p, t, true, true)
+        self.observe_unclocked_actions(y, p, t, true, AssertionScope::OutputPoint)
     }
 
-    /// Check the unclocked error-level assertions at one accepted integrator
-    /// step, without reporting warnings, which stay with the output points.
+    /// Check, at one accepted integrator step, the unclocked error-level
+    /// assertions whose condition may change between events, without
+    /// reporting warnings, which stay with the output points.
+    ///
+    /// A condition that reads only parameters and constants cannot change
+    /// between events (`accepted_step_assertions`), so the accepted step
+    /// cannot find a violation the output points and events do not.
     pub fn check_error_assertions(
         &self,
         y: &[f64],
         p: &[f64],
         t: f64,
     ) -> Result<EventActionOutcome, RuntimeSolveError> {
-        self.observe_unclocked_actions(y, p, t, false, true)
+        self.observe_unclocked_actions(y, p, t, false, AssertionScope::AcceptedStep)
     }
 
-    /// Whether any unclocked error-level assertion is checked between events,
-    /// so a step can skip observing its coordinate when none is.
+    /// Whether an accepted step has an unclocked error-level assertion to
+    /// check, so a step can skip observing its coordinate when none is.
     pub fn has_unclocked_error_assertions(&self) -> bool {
         self.model
             .problem
@@ -159,9 +175,17 @@ impl ScalarExecutionView<'_> {
             .actions
             .iter()
             .enumerate()
-            .any(|(row, action)| {
-                self.unclocked_action(row, action, solve::SolveEventActionKind::Assert)
-            })
+            .any(|(row, action)| self.accepted_step_assertion(row, action))
+    }
+
+    fn accepted_step_assertion(&self, row: usize, action: &solve::SolveEventAction) -> bool {
+        self.unclocked_action(row, action, solve::SolveEventActionKind::Assert)
+            && self
+                .scalar
+                .accepted_step_assertions
+                .get(row)
+                .copied()
+                .unwrap_or(true)
     }
 
     fn unclocked_action(
@@ -175,13 +199,28 @@ impl ScalarExecutionView<'_> {
             && !self.scalar.event_transaction_coverage.event_actions[row]
     }
 
+    fn observed_assertion(
+        &self,
+        row: usize,
+        action: &solve::SolveEventAction,
+        scope: AssertionScope,
+    ) -> bool {
+        match scope {
+            AssertionScope::None => false,
+            AssertionScope::OutputPoint => {
+                self.unclocked_action(row, action, solve::SolveEventActionKind::Assert)
+            }
+            AssertionScope::AcceptedStep => self.accepted_step_assertion(row, action),
+        }
+    }
+
     fn observe_unclocked_actions(
         &self,
         y: &[f64],
         p: &[f64],
         t: f64,
         warnings: bool,
-        errors: bool,
+        errors: AssertionScope,
     ) -> Result<EventActionOutcome, RuntimeSolveError> {
         let events = &self.model.problem.events;
         let rows = {
@@ -198,12 +237,7 @@ impl ScalarExecutionView<'_> {
                             solve::SolveEventActionKind::Warning,
                         )
                         && !log.reported.contains(row))
-                        || (errors
-                            && self.unclocked_action(
-                                *row,
-                                action,
-                                solve::SolveEventActionKind::Assert,
-                            ))
+                        || self.observed_assertion(*row, action, errors)
                 })
                 .map(|(row, _)| row)
                 .collect::<Vec<_>>()

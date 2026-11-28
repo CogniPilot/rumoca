@@ -3,8 +3,12 @@ mod cache;
 mod certified_cohort;
 mod cohort_evidence;
 mod compiler_contract_migration;
+mod model_states;
 mod parity_measurement;
+mod per_model_gate;
+mod reference_boundary_types;
 mod reference_stage;
+mod rule_b;
 mod runtime_cohort;
 mod schema_migrations;
 mod soundness_roster;
@@ -25,9 +29,14 @@ use certified_cohort::*;
 use cohort_evidence::*;
 use compiler_contract_migration::*;
 use indexmap::{IndexMap, IndexSet};
+use model_states::*;
 pub(super) use parity_measurement::*;
+use per_model_gate::*;
+pub(super) use reference_boundary_types::{
+    MslMetricSchemaMigration, MslReferenceBoundaryMigration, MslRosterAddition,
+};
 pub(super) use reference_stage::*;
-use rumoca_test_msl::msl_tools::band_table::BandLabel;
+use rule_b::*;
 use runtime_cohort::*;
 use schema_migrations::*;
 use soundness_roster::*;
@@ -234,46 +243,6 @@ pub(super) struct MslTensorPreservationBaseline {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub(super) struct MslMetricSchemaMigration {
-    from_quality_gate_version: u32,
-    to_quality_gate_version: u32,
-    change: String,
-    strict_high_before: usize,
-    strict_high_after: usize,
-    policy_excluded_after: usize,
-    excluded_strict_high_before: usize,
-    excluded_non_high_before: usize,
-    exclusions_file: String,
-    exclusions_sha256: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub(super) struct MslReferenceBoundaryMigration {
-    #[serde(flatten)]
-    metric: MslMetricSchemaMigration,
-    evidence_git_commit: String,
-    evidence_run: String,
-    policy_excluded_before: usize,
-    /// Models this boundary adds to the unexcepted non-high roster, each
-    /// naming its open defect (SPEC_0050).
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    roster_additions: Vec<MslRosterAddition>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    previous: Option<Box<MslReferenceBoundaryMigration>>,
-}
-
-/// A reviewed roster addition: a completion that is neither strict-high nor
-/// covered by a typed exception because of an open Rumoca defect, which the
-/// roster names instead of an exception row hiding it.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub(super) struct MslRosterAddition {
-    model_name: String,
-    cause: String,
-    facts: Vec<String>,
-    owner: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub(super) struct MslPartialClassificationMigration {
     from_quality_gate_version: u32,
     to_quality_gate_version: u32,
@@ -421,22 +390,6 @@ pub(super) struct MslQualityGateInput<'a> {
     tensor_report_errors: usize,
 }
 
-/// Compile phases in pipeline order, with `Success` ranking after all of them.
-///
-/// `MslModelResult::phase_reached` names the phase that *failed* (or `Success`),
-/// so this is the only honest way to answer "did this model get past phase P?".
-/// Keep it in step with the dispatch in `summarize_msl_results`.
-const COMPILE_PHASE_ORDER: &[&str] = &[
-    "Parse",
-    "Resolve",
-    "NeedsInner",
-    "Instantiate",
-    "Typecheck",
-    "Flatten",
-    "ToDae",
-    "Success",
-];
-
 /// True when `phase_reached` shows the model got *past* `phase`.
 ///
 /// The stage floors (`flatten_models`, `dae_models`) are cumulative pass counts,
@@ -451,7 +404,7 @@ const COMPILE_PHASE_ORDER: &[&str] = &[
 /// attribution reads as a compiler regression. An unknown phase string ranks
 /// before everything and therefore never counts towards a floor.
 fn completed_compile_phase(phase_reached: &str, phase: &str) -> bool {
-    let rank = |name: &str| COMPILE_PHASE_ORDER.iter().position(|entry| *entry == name);
+    let rank = rumoca_msl_quality::compile_phase_rank;
     match (rank(phase_reached), rank(phase)) {
         (Some(reached), Some(target)) => reached > target,
         _ => false,
@@ -1193,34 +1146,21 @@ pub(super) fn write_current_msl_quality_snapshot(
             );
         }
         if let Some(cohort) = measurement.cohort() {
-            let strict_high = cohort
-                .table
-                .rows
-                .iter()
-                .filter(|row| row.band == BandLabel::High)
-                .map(|row| row.model_name.as_str());
-            let timing_margin = timing_margin_models(summary, strict_high.clone(), phase_budgets);
-            let certified = strict_high
-                .filter(|model| !timing_margin.contains_key(*model))
-                .map(str::to_string)
-                .collect::<IndexSet<_>>();
-            root.insert(
-                "timing_margin_models".to_string(),
-                serde_json::to_value(timing_margin).map_err(|error| {
-                    io::Error::other(format!("failed to serialize timing-margin roster: {error}"))
-                })?,
-            );
-            root.insert(
-                "certified_strict_high_models".to_string(),
-                serde_json::to_value(certified).map_err(|error| {
-                    io::Error::other(format!(
-                        "failed to serialize certified strict-high roster: {error}"
-                    ))
-                })?,
-            );
-            insert_soundness_roster(root, &cohort.table)?;
+            let trace = load_trace_comparison()?;
+            let certified =
+                insert_certified_rosters(root, summary, &cohort.table.rows, phase_budgets)?;
+            let roster = insert_soundness_roster(root, &cohort.table)?;
+            let masses = trace_violation_masses(&trace)?;
+            insert_model_states(
+                root,
+                summary,
+                &cohort.table.rows,
+                (&certified, &roster),
+                &masses,
+            )?;
+            insert_normalized_certification(root, summary, phase_budgets)?;
             if let Some(parity) = measurement.gate_input() {
-                insert_cohort_evidence(root, parity, &cohort.table)?;
+                insert_cohort_evidence(root, parity, &cohort.table, &trace)?;
             }
         }
     }
@@ -1829,7 +1769,13 @@ pub(super) fn enforce_msl_quality_gate(
     let baseline_path = msl_quality_baseline_path();
     let baseline = load_msl_quality_baseline(&baseline_path)?;
     let parity_input = measurement.gate_input();
-    let mut gate_failure = msl_quality_gate_failure_message(gate_input, &baseline, &measurement);
+    let per_model = per_model_verdict(&baseline_path)?;
+    let mut gate_failure = match &per_model {
+        Some(verdict) => {
+            per_model_gate_failure_message(gate_input, &baseline, &measurement, verdict)
+        }
+        None => msl_quality_gate_failure_message(gate_input, &baseline, &measurement),
+    };
     if let Some(floor) = strict_high_hard_floor_reason(summary, &measurement) {
         gate_failure = Some(match gate_failure {
             Some(existing) => format!("{existing}; {floor}"),
@@ -1851,7 +1797,13 @@ pub(super) fn enforce_msl_quality_gate(
             None => reason,
         });
     }
-    for reason in certified_cohort_regression_reasons(&baseline, &measurement) {
+    // Per-model transitions judge certification model by model.
+    let certified_reasons = if per_model.is_some() {
+        Vec::new()
+    } else {
+        certified_cohort_regression_reasons(&baseline, &measurement)
+    };
+    for reason in certified_reasons {
         gate_failure = Some(match gate_failure {
             Some(existing) => format!("{existing}; {reason}"),
             None => reason,

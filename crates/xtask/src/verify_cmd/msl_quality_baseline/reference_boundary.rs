@@ -11,231 +11,78 @@ pub(super) struct ReferenceBoundaryMigration {
     previous: Option<Box<ReferenceBoundaryMigration>>,
 }
 
+/// The reviewed chain, newest link first: the same checked-in file the MSL
+/// quality gate loads, so the chain is declared once (xtask reads it as data
+/// and depends on no rumoca crate).
+const REVIEWED_REFERENCE_BOUNDARIES: &str =
+    include_str!("../../../../rumoca-test-msl/tests/msl_tests/msl_reference_boundaries.json");
+const REFERENCE_BOUNDARY_CHAIN_SCHEMA_VERSION: u64 = 1;
+
+#[derive(Deserialize)]
+struct ReferenceBoundaryChainFile {
+    schema_version: u64,
+    chain: ReferenceBoundaryMigration,
+}
+
+/// The reviewed chain as data, with the quality gate version it reaches: what
+/// a run of this commit crosses from an older baseline.
+pub(crate) fn reviewed_chain_snapshot() -> Result<serde_json::Value> {
+    let file: serde_json::Value = serde_json::from_str(REVIEWED_REFERENCE_BOUNDARIES)
+        .context("parse the reference boundary chain")?;
+    ensure!(
+        file.get("schema_version")
+            .and_then(serde_json::Value::as_u64)
+            == Some(REFERENCE_BOUNDARY_CHAIN_SCHEMA_VERSION),
+        "reference boundary chain schema is not the supported {REFERENCE_BOUNDARY_CHAIN_SCHEMA_VERSION}"
+    );
+    let chain = file
+        .get("chain")
+        .cloned()
+        .context("the boundary file has no chain")?;
+    let version = chain
+        .get("to_quality_gate_version")
+        .cloned()
+        .context("the chain head has no to_quality_gate_version")?;
+    Ok(serde_json::json!({
+        "quality_gate_version": version,
+        "reference_boundary_migration": chain,
+    }))
+}
+
+/// Parse a reference boundary chain file, refusing one of another schema.
+fn parse_reference_boundary_chain(text: &str) -> Result<ReferenceBoundaryMigration> {
+    let file: ReferenceBoundaryChainFile =
+        serde_json::from_str(text).context("parse the reference boundary chain")?;
+    ensure!(
+        file.schema_version == REFERENCE_BOUNDARY_CHAIN_SCHEMA_VERSION,
+        "reference boundary chain schema {} is not the supported {}",
+        file.schema_version,
+        REFERENCE_BOUNDARY_CHAIN_SCHEMA_VERSION
+    );
+    Ok(file.chain)
+}
+
 fn reviewed_migration() -> ReferenceBoundaryMigration {
-    let mut migration = v14_migration();
-    migration.previous = Some(Box::new(migration.clone()));
-    migration.metric.from_quality_gate_version = 14;
-    migration.metric.to_quality_gate_version = 15;
-    migration.metric.change = "typed-trace-exceptions-v7".to_string();
-    migration.metric.strict_high_before = 304;
-    migration.metric.strict_high_after = 304;
-    migration.metric.policy_excluded_after = 54;
-    migration.metric.excluded_strict_high_before = 0;
-    migration.metric.excluded_non_high_before = 1;
-    migration.metric.exclusions_sha256 =
-        "dbd79465290de942e805cbb369bb805e9eba0b42effeef3237a0f0d093e2c11f".to_string();
-    migration.evidence_git_commit = "128f70a6ea97334cef5a18ae8546a57abaf50168".to_string();
-    migration.evidence_run = "roomco2withcontrols-focused".to_string();
-    migration.policy_excluded_before = 53;
-    migration
-}
-
-fn v14_migration() -> ReferenceBoundaryMigration {
-    let mut migration = v13_migration();
-    migration.previous = Some(Box::new(migration.clone()));
-    migration.metric.from_quality_gate_version = 13;
-    migration.metric.to_quality_gate_version = 14;
-    migration.metric.change = "phasor-angle-comparison-v1".to_string();
-    migration.metric.strict_high_before = 298;
-    migration.metric.strict_high_after = 304;
-    migration.metric.policy_excluded_after = 53;
-    migration.metric.excluded_strict_high_before = 0;
-    migration.metric.excluded_non_high_before = 0;
-    migration.metric.exclusions_sha256 =
-        "19d0bef167c5120f371e59de5f3c4ed785779b16115f4689ebd8976be55a1a14".to_string();
-    migration.evidence_git_commit = "f45f742de6ca9d824e3b707d1e91b31edd33ac7f".to_string();
-    migration.evidence_run = "ang-compare-quasistatic-focused".to_string();
-    migration.policy_excluded_before = 59;
-    migration
-}
-
-fn v13_migration() -> ReferenceBoundaryMigration {
-    let mut migration = v12_migration();
-    migration.previous = Some(Box::new(migration.clone()));
-    migration.metric.from_quality_gate_version = 12;
-    migration.metric.to_quality_gate_version = 13;
-    migration.metric.change = "typed-trace-exceptions-v6".to_string();
-    migration.metric.strict_high_before = 298;
-    migration.metric.strict_high_after = 298;
-    migration.metric.policy_excluded_after = 59;
-    migration.metric.excluded_strict_high_before = 0;
-    migration.metric.excluded_non_high_before = 8;
-    migration.metric.exclusions_sha256 =
-        "088949f877eab0b276dc056cb54e1bc2c62b25e1813d29cd1f5c616b6909d5ed".to_string();
-    migration.evidence_git_commit = "20face9056ff23ca23b71d111151d174c3755a05".to_string();
-    migration.evidence_run = "ci-37253114196".to_string();
-    migration.policy_excluded_before = 51;
-    migration
-}
-
-fn v12_migration() -> ReferenceBoundaryMigration {
-    let mut migration = v11_migration();
-    migration.previous = Some(Box::new(migration.clone()));
-    migration.metric.from_quality_gate_version = 11;
-    migration.metric.to_quality_gate_version = 12;
-    migration.metric.change = "typed-trace-exceptions-v5".to_string();
-    migration.metric.strict_high_before = 290;
-    migration.metric.strict_high_after = 290;
-    migration.metric.policy_excluded_after = 51;
-    migration.metric.excluded_strict_high_before = 0;
-    migration.metric.excluded_non_high_before = 0;
-    migration.metric.exclusions_sha256 =
-        "e4d219fec8391057e3e446b7e5cf83c115937e72d640eb92770bb6ddaf564bbb".to_string();
-    migration.evidence_git_commit = "a6ab80615c5f5efcd174c33979ddd3b35db1cfdb".to_string();
-    migration.evidence_run = "package-coverage-integration-full".to_string();
-    migration.policy_excluded_before = 38;
-    migration
-}
-
-fn v11_migration() -> ReferenceBoundaryMigration {
-    let mut migration = v10_migration();
-    migration.previous = Some(Box::new(migration.clone()));
-    migration.metric.from_quality_gate_version = 10;
-    migration.metric.to_quality_gate_version = 11;
-    migration.metric.change = "typed-trace-exceptions-v4".to_string();
-    migration.metric.strict_high_before = 231;
-    migration.metric.strict_high_after = 231;
-    migration.metric.policy_excluded_after = 38;
-    migration.metric.excluded_strict_high_before = 0;
-    migration.metric.excluded_non_high_before = 0;
-    migration.metric.exclusions_sha256 =
-        "d7069c55495f78ed4f67e1833762a924dcbd719d14a36faf1f1300cda701a4e4".to_string();
-    migration.evidence_git_commit = "8183e58220d930d1d2b5737a381b267881133d8a".to_string();
-    migration.evidence_run = "two-tanks-near-zero-channel-full".to_string();
-    migration.policy_excluded_before = 37;
-    migration
-}
-
-fn v10_migration() -> ReferenceBoundaryMigration {
-    let mut migration = v9_migration();
-    migration.previous = Some(Box::new(migration.clone()));
-    migration.metric.from_quality_gate_version = 9;
-    migration.metric.to_quality_gate_version = 10;
-    migration.metric.change = "typed-trace-exceptions-v3".to_string();
-    migration.metric.strict_high_before = 231;
-    migration.metric.strict_high_after = 231;
-    migration.metric.policy_excluded_after = 37;
-    migration.metric.excluded_strict_high_before = 0;
-    migration.metric.excluded_non_high_before = 0;
-    migration.metric.exclusions_sha256 =
-        "170408125e23ad781591e7fd5cb1f242595cbb617179df50a65705a4f709bcd2".to_string();
-    migration.evidence_git_commit = "d0aa5a1e376feb893ed4eb275420c99cd7562560".to_string();
-    migration.evidence_run = "controlled-tanks-reference-failure-ci-37070758328".to_string();
-    migration.policy_excluded_before = 36;
-    migration
-}
-
-fn v9_migration() -> ReferenceBoundaryMigration {
-    let mut migration = v8_migration();
-    migration.previous = Some(Box::new(migration.clone()));
-    migration.metric.from_quality_gate_version = 8;
-    migration.metric.to_quality_gate_version = 9;
-    migration.metric.change = "typed-trace-exceptions-v2".to_string();
-    migration.metric.strict_high_before = 231;
-    migration.metric.strict_high_after = 231;
-    migration.metric.policy_excluded_after = 36;
-    migration.metric.excluded_strict_high_before = 0;
-    migration.metric.excluded_non_high_before = 0;
-    migration.metric.exclusions_sha256 =
-        "69d6b7259debe61e12fb9a8d3b0003115c496d4ec0f4a84ae8de5a8f9f7dcc49".to_string();
-    migration.evidence_git_commit = "b4c670b55cc228fc1db13307b7252e8ba15c80f2".to_string();
-    migration.evidence_run = "reviewed-reference-failure-rows-full".to_string();
-    migration.policy_excluded_before = 33;
-    migration
-}
-
-fn v8_migration() -> ReferenceBoundaryMigration {
-    let mut migration = v7_migration();
-    migration.previous = Some(Box::new(migration.clone()));
-    migration.metric.from_quality_gate_version = 7;
-    migration.metric.to_quality_gate_version = 8;
-    migration.metric.change = "typed-trace-exceptions-v1".to_string();
-    migration.metric.strict_high_before = 231;
-    migration.metric.strict_high_after = 231;
-    migration.metric.policy_excluded_after = 33;
-    migration.metric.excluded_strict_high_before = 0;
-    migration.metric.excluded_non_high_before = 0;
-    migration.metric.exclusions_sha256 =
-        "d8ddb25c1169b72c35c89f77eed12e0b5ae9de8ef4ace0ec998ecdbcb0ec9da0".to_string();
-    migration.evidence_git_commit = "70fa6612a34b7e6b454672e448a747d6e4bdd440".to_string();
-    migration.evidence_run = "typed-trace-exceptions-full".to_string();
-    migration.policy_excluded_before = 23;
-    migration
-}
-
-fn v7_migration() -> ReferenceBoundaryMigration {
-    let mut migration = v6_migration();
-    migration.previous = Some(Box::new(migration.clone()));
-    migration.metric.from_quality_gate_version = 6;
-    migration.metric.to_quality_gate_version = 7;
-    migration.metric.change =
-        "reviewed-non-identifiable-discrete-and-internal-node-boundary-v1".to_string();
-    migration.metric.strict_high_before = 166;
-    migration.metric.strict_high_after = 166;
-    migration.metric.policy_excluded_after = 23;
-    migration.metric.excluded_strict_high_before = 0;
-    migration.metric.excluded_non_high_before = 2;
-    migration.metric.exclusions_sha256 =
-        "2f4742677e95825bc98f392ef063fdeb2b910b5de1b80c9e94e407a0de6f31dd".to_string();
-    migration.evidence_git_commit = "9e5b5c7d52e6dde1edc6164727a5620d5e0867bc".to_string();
-    migration.evidence_run = "msl-quality-0.10.0-reviewed-exclusions".to_string();
-    migration.policy_excluded_before = 21;
-    migration
-}
-
-fn v6_migration() -> ReferenceBoundaryMigration {
-    let mut migration = base_reference_boundary_migration();
-    migration.previous = Some(Box::new(migration.clone()));
-    migration.metric.from_quality_gate_version = 5;
-    migration.metric.to_quality_gate_version = 6;
-    migration.metric.change = "reviewed-conditioned-observable-reference-boundary-v1".to_string();
-    migration.metric.strict_high_before = 166;
-    migration.metric.strict_high_after = 166;
-    migration.metric.policy_excluded_after = 21;
-    migration.metric.exclusions_sha256 =
-        "1da770784678228aff3c0d574bb48adce7138c5c54d252ce79883dd456d135b9".to_string();
-    migration.evidence_git_commit = "0de3f29c0ae9440061bef21c7eb9eb4650407015".to_string();
-    migration.evidence_run = "multibody-automatic-basis-full".to_string();
-    migration.policy_excluded_before = 20;
-    migration
-}
-
-fn base_reference_boundary_migration() -> ReferenceBoundaryMigration {
-    ReferenceBoundaryMigration {
-        metric: MetricSchemaMigration {
-            from_quality_gate_version: 4,
-            to_quality_gate_version: 5,
-            change: "reviewed-reference-convergence-boundary-v1".to_string(),
-            strict_high_before: 160,
-            strict_high_after: 160,
-            policy_excluded_after: 20,
-            excluded_strict_high_before: 0,
-            excluded_non_high_before: 1,
-            exclusions_file: V3_EXCLUSIONS_FILE.to_string(),
-            exclusions_sha256: "30f7c38e58307d6af4f69b844512679ec860f367f88670481edad5318d7d29f8"
-                .to_string(),
-        },
-        evidence_git_commit: "3d76411c1a41a1b27e6a0ecbf1cf3e204f0b47a4".to_string(),
-        evidence_run: "multibody-guarded-affine-full-11".to_string(),
-        policy_excluded_before: 19,
-        previous: None,
-    }
+    // Invariant: the checked-in chain parses under its schema; the tests
+    // load it on every run.
+    parse_reference_boundary_chain(REVIEWED_REFERENCE_BOUNDARIES)
+        .expect("the checked-in reference boundary chain parses under its schema")
 }
 
 /// The reviewed boundary migration a baseline of `version` must carry, or `None`
 /// for a version that is not a reviewed reference boundary.
 fn reviewed_boundary_migration(version: u64) -> Option<ReferenceBoundaryMigration> {
-    match version {
-        MSL_QUALITY_GATE_VERSION => Some(reviewed_migration()),
-        PREVIOUS_REFERENCE_BOUNDARY_VERSION => Some(v14_migration()),
-        13 => Some(v13_migration()),
-        12 => Some(v12_migration()),
-        11 => Some(v11_migration()),
-        10 => Some(v10_migration()),
-        9 => Some(v9_migration()),
-        PROMOTED_REFERENCE_BOUNDARY_VERSION => Some(v8_migration()),
-        _ => None,
+    if !(PROMOTED_REFERENCE_BOUNDARY_VERSION..=MSL_QUALITY_GATE_VERSION).contains(&version) {
+        return None;
     }
+    let mut link = Some(reviewed_migration());
+    while let Some(boundary) = link {
+        if boundary.metric.to_quality_gate_version == version {
+            return Some(boundary);
+        }
+        link = boundary.previous.map(|previous| *previous);
+    }
+    None
 }
 
 pub(super) fn validate_reference_boundary_migration(
@@ -374,6 +221,18 @@ mod tests {
             .to_quality_gate_version = 15;
         assert!(!schema_target_reaches_current(4, &baseline));
         assert!(validate_reference_boundary_migration(&baseline).is_err());
+    }
+
+    #[test]
+    fn a_chain_file_of_another_schema_is_refused() {
+        let mut file: serde_json::Value =
+            serde_json::from_str(REVIEWED_REFERENCE_BOUNDARIES).unwrap();
+        file["schema_version"] = serde_json::json!(REFERENCE_BOUNDARY_CHAIN_SCHEMA_VERSION + 1);
+        let error = parse_reference_boundary_chain(&file.to_string()).unwrap_err();
+        assert!(
+            error.to_string().contains("is not the supported"),
+            "{error}"
+        );
     }
 
     #[test]

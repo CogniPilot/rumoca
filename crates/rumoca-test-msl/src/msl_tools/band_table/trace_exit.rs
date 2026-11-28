@@ -31,6 +31,9 @@ pub enum TraceExitKind {
     RumocaTraceMissing,
     /// The OMC reference trace is missing or unusable.
     OmcTraceMissing,
+    /// The OMC reference has an excursion channel but no usable tight
+    /// reference, which the excursion rule needs to score it.
+    TightReferenceMissing,
 }
 
 impl TraceExitKind {
@@ -41,7 +44,7 @@ impl TraceExitKind {
             Self::NoComparableSamples => ExitReason::NoComparableSamples,
             Self::TraceNonidentifiable => ExitReason::TraceNonidentifiable,
             Self::RumocaTraceMissing => ExitReason::RumocaTraceMissing,
-            Self::OmcTraceMissing => ExitReason::ReferenceMissing,
+            Self::OmcTraceMissing | Self::TightReferenceMissing => ExitReason::ReferenceMissing,
         }
     }
 }
@@ -75,5 +78,19 @@ impl TraceExitRecord {
             ),
             certification_profile: Some(profile),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_missing_tight_reference_records_the_omc_side_reason() {
+        assert_eq!(
+            TraceExitKind::TightReferenceMissing.exit_reason(),
+            ExitReason::ReferenceMissing
+        );
+        assert_eq!(ExitReason::ReferenceMissing.as_str(), "reference_missing");
     }
 }

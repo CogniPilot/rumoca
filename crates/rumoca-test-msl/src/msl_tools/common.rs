@@ -1,5 +1,6 @@
 use anyhow::{Context, Result, bail};
 use rumoca_core::{msl_cache_dir_from_manifest, workspace_root_from_manifest_dir};
+use rumoca_msl_quality::TraceExceptionKind;
 use serde::Serialize;
 use serde_json::Value;
 use std::collections::HashSet;
@@ -25,6 +26,17 @@ pub const OMC_BATCH_TIMEOUT_POLL: Duration = Duration::from_millis(25);
 /// The OMC-generated state inventory shared by comparison and cache transport.
 pub fn omc_init_xml_file_name(model_name: &str) -> String {
     format!("{model_name}_init.xml")
+}
+
+/// The tight reference trace an OMC reference entry declares (relative to the
+/// results directory), when it declares one: part of the model's OMC artifacts
+/// wherever they are stored or restored.
+pub fn declared_tight_trace_file(entry: &serde_json::Value) -> Option<&str> {
+    let tight = entry.get("tight_reference")?;
+    if tight.get("state")?.as_str()? != "trace" {
+        return None;
+    }
+    tight.get("file")?.as_str()
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -451,61 +463,11 @@ pub const TRACE_EXCLUSIONS_FILE_REL: &str =
 /// rejected rather than read as "nothing is excepted".
 pub const TRACE_EXCLUSIONS_SCHEMA: &str = "msl_trace_exceptions_v2";
 
-/// Why a model that simulates is not held to strict-high pointwise parity
-/// (SPEC_0033 typed trace exceptions). There is no other kind: a model that
-/// simulates without one of these must reach the strict-high band.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum TraceExceptionKind {
-    /// A random or impure source: traces differ by construction, so the
-    /// obligation is statistical, not pointwise.
-    ImpureSource,
-    /// The OMC reference does not resolve the model: it is not converged or
-    /// not accurate enough for the observables compared.
-    ReferenceFailure,
-    /// A documented property of the model, such as chaos, a discontinuity
-    /// wrapped in `noEvent` by design, or an observable the model leaves
-    /// underdetermined, makes one trajectory non-identifying.
-    ModelIssue,
-    /// A reviewed proof that pointwise comparison cannot identify the model.
-    Nonidentifiable,
-    /// The comparator, not the model or the reference, cannot identify the
-    /// channels; the row names the comparator improvement that retires it.
-    ComparatorLimitation,
-}
-
-impl TraceExceptionKind {
-    fn parse(value: &str) -> Option<Self> {
-        Some(match value {
-            "impure_source" => Self::ImpureSource,
-            "reference_failure" => Self::ReferenceFailure,
-            "model_issue" => Self::ModelIssue,
-            "nonidentifiable" => Self::Nonidentifiable,
-            "comparator_limitation" => Self::ComparatorLimitation,
-            _ => return None,
-        })
-    }
-
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::ImpureSource => "impure_source",
-            Self::ReferenceFailure => "reference_failure",
-            Self::ModelIssue => "model_issue",
-            Self::Nonidentifiable => "nonidentifiable",
-            Self::ComparatorLimitation => "comparator_limitation",
-        }
-    }
-}
-
 /// The comparator improvement that would retire a `comparator_limitation`
 /// row. The end state is fewer exceptions through a better comparator.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ComparatorImprovement {
-    /// Normalize channels whose reference is zero in exact arithmetic by a
-    /// physical scale instead of the reference's own near-zero spread.
-    NearZeroChannelScaling,
     /// Align samples at an event instant by event side, so pre- and
     /// post-event values recorded at shifted coordinates compare.
     EventInstantAlignment,
@@ -515,13 +477,26 @@ pub enum ComparatorImprovement {
 }
 
 impl ComparatorImprovement {
+    /// Every improvement, by its `retired_by` name: the one list both parsing
+    /// and the error message read. An improvement that has landed is deleted
+    /// here with the last row it retired, so no row can cite a finished fix.
+    const ALL: [(Self, &'static str); 2] = [
+        (Self::EventInstantAlignment, "event_instant_alignment"),
+        (
+            Self::AggregateToleranceAtAnnotationScale,
+            "aggregate_tolerance_at_annotation_scale",
+        ),
+    ];
+
     fn parse(value: &str) -> Option<Self> {
-        Some(match value {
-            "near_zero_channel_scaling" => Self::NearZeroChannelScaling,
-            "event_instant_alignment" => Self::EventInstantAlignment,
-            "aggregate_tolerance_at_annotation_scale" => Self::AggregateToleranceAtAnnotationScale,
-            _ => return None,
-        })
+        Self::ALL
+            .iter()
+            .find(|(_, name)| *name == value)
+            .map(|(improvement, _)| *improvement)
+    }
+
+    fn names() -> String {
+        Self::ALL.map(|(_, name)| name).join(", ")
     }
 }
 
@@ -707,9 +682,8 @@ fn parse_retired_by(
                 .map(Some)
                 .with_context(|| {
                     format!(
-                        "exception '{model_name}' names no known `retired_by` improvement \
-                     (near_zero_channel_scaling, event_instant_alignment, \
-                     aggregate_tolerance_at_annotation_scale)"
+                        "exception '{model_name}' names no known `retired_by` improvement ({})",
+                        ComparatorImprovement::names()
                     )
                 })
         }
@@ -1042,7 +1016,7 @@ mod tests {
                {"model_name":"B.Chaos","kind":"model_issue","reason":"chaotic",
                 "evidence":{"facts":["StopTime=50000 s"],"artifact":"msl:B.Chaos"}},
                {"model_name":"C.Node","kind":"comparator_limitation","reason":"zero node",
-                "evidence":{"facts":["374/391 channels high"]},"retired_by":"near_zero_channel_scaling"}"#,
+                "evidence":{"facts":["374/391 channels high"]},"retired_by":"event_instant_alignment"}"#,
         );
         let exceptions = load_trace_exclusions_file(&path).expect("load exceptions");
         assert_eq!(exceptions.len(), 3);
@@ -1052,7 +1026,7 @@ mod tests {
         assert_eq!(noise.retired_by, None);
         assert_eq!(
             exceptions["C.Node"].retired_by,
-            Some(ComparatorImprovement::NearZeroChannelScaling)
+            Some(ComparatorImprovement::EventInstantAlignment)
         );
         let reasons = typed_exception_reasons(exceptions);
         assert_eq!(reasons["B.Chaos"], "model_issue: chaotic");
@@ -1122,6 +1096,12 @@ mod tests {
                 "no known `retired_by`",
             ),
             (
+                // A landed improvement retires nothing: a row cannot cite it.
+                "landedretire",
+                r#"{"model_name":"A","kind":"comparator_limitation","reason":"r","evidence":{"facts":["f"]},"retired_by":"near_zero_channel_scaling"}"#,
+                "(event_instant_alignment, aggregate_tolerance_at_annotation_scale)",
+            ),
+            (
                 "strayretire",
                 r#"{"model_name":"A","kind":"model_issue","reason":"r","evidence":{"facts":["f"]},"retired_by":"event_instant_alignment"}"#,
                 "not a comparator_limitation",
@@ -1141,7 +1121,7 @@ mod tests {
         let root = workspace_root_from_manifest_dir(env!("CARGO_MANIFEST_DIR"));
         let exceptions = load_trace_exclusions_file(&root.join(TRACE_EXCLUSIONS_FILE_REL))
             .expect("tracked exceptions must parse");
-        assert_eq!(exceptions.len(), 54);
+        assert_eq!(exceptions.len(), 48);
         let count = |kind| {
             exceptions
                 .values()
@@ -1150,7 +1130,7 @@ mod tests {
         };
         assert_eq!(count(TraceExceptionKind::ReferenceFailure), 31);
         assert_eq!(count(TraceExceptionKind::ModelIssue), 7);
-        assert_eq!(count(TraceExceptionKind::ComparatorLimitation), 16);
+        assert_eq!(count(TraceExceptionKind::ComparatorLimitation), 10);
         for (model, exception) in &exceptions {
             if let Some(artifact) = &exception.evidence.artifact {
                 assert!(

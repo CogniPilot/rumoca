@@ -8,6 +8,7 @@ use super::common::{
     summarize_batch_timings, summarize_omc_error, typed_exception_reasons, unix_timestamp_seconds,
     write_pretty_json,
 };
+use super::runtime_ratio::{RuntimeSeconds, model_runtime_ratio};
 use anyhow::{Context, Result, bail};
 use clap::Args as ClapArgs;
 use rumoca_sim::sim_trace_compare::{
@@ -19,21 +20,20 @@ use serde_json::{Value, json};
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
-use std::sync::mpsc;
-use std::thread;
 use std::time::{Duration, Instant};
 
+mod calibration;
 mod omc_session;
 mod output;
 mod retry_policy;
 mod runtime;
+mod session_pool;
 mod simulation_result;
 mod speed_report;
 mod state_selection;
 #[cfg(test)]
 mod tests;
+mod tight_reference;
 use omc_session::{OmcEvalError, OmcSession, OmcSimOutcome};
 use output::{
     build_sim_output_payload, compute_trace_output_summary, print_summary, write_trace_report,
@@ -43,6 +43,7 @@ use runtime::{
     attach_rumoca_runtime, ensure_target_placeholders, load_rumoca_runtime,
     path_for_rumoca_results, select_omc_simulation_models,
 };
+use session_pool::{SessionJob, SessionPoolConfig, run_session_pool};
 use simulation_result::build_session_model_result;
 use state_selection::StateSelectionMetric;
 
@@ -110,6 +111,11 @@ pub struct Args {
     /// newly-passing rumoca models already have an OMC baseline to compare to.
     #[arg(long, default_value_t = false)]
     rumoca_sim_ok_only: bool,
+    /// After the timed pass, OMC-time the pinned calibration set fresh, so the
+    /// quality gate can measure this runner's speed in the common frame (rule
+    /// B). Full and sharded runs pass it; focused runs need not.
+    #[arg(long, default_value_t = false)]
+    calibration_pass: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -135,6 +141,10 @@ struct SimModelResult {
     omc_timing_context: Option<serde_json::Value>,
     trace_file: Option<String>,
     trace_error: Option<String>,
+    /// The tight reference a flagged model's OMC reference carries (see
+    /// `tight_reference`); absent for a model that needs none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    tight_reference: Option<tight_reference::TightReference>,
     rumoca_status: Option<String>,
     rumoca_ic_status: Option<String>,
     rumoca_ic_error: Option<String>,
@@ -162,6 +172,8 @@ struct SimRunState {
     // The session pool pulls models one at a time, so the queue is a flat model
     // list, so scheduling stays explicit at the subprocess boundary.
     pending_models: Vec<String>,
+    /// The calibration pass's timings, when it ran.
+    calibration_timings: Option<Value>,
 }
 
 /// Every candidate the comparator handled: compared, or recorded under the map
@@ -403,6 +415,12 @@ pub fn run(args: Args) -> Result<()> {
     }
     run_session_pending(&args, workers, &paths, &mut state, cache_valid)?;
     ensure_omc_trace_artifacts(&paths, &mut state.all_results);
+    if args.calibration_pass {
+        state.calibration_timings =
+            Some(calibration::time_calibration_set(&args, workers, &paths)?);
+    }
+    // After every timed run, so no rerun overlaps one (see `tight_reference`).
+    tight_reference::simulate_tight_references(&args, workers, &paths, &mut state.all_results)?;
     attach_rumoca_runtime(&rumoca_runtimes, &mut state.all_results);
     ensure_target_placeholders(&model_names, &rumoca_runtimes, &mut state.all_results);
     let trace_exclusions = load_trace_exclusions(&args, &paths)?;
@@ -702,43 +720,89 @@ fn prepare_run_state(model_names: &[String]) -> SimRunState {
         all_results: BTreeMap::new(),
         batch_timings: Vec::new(),
         pending_models: model_names.to_vec(),
+        calibration_timings: None,
     }
 }
 
-/// Outcome of simulating one model inside a persistent session worker.
-struct SessionModelOutcome {
-    idx: usize,
-    model: String,
+/// One timed reference run in a session.
+struct TimedOutcome {
     result: SimModelResult,
     elapsed_seconds: f64,
     timed_out: bool,
 }
 
-/// Shared, immutable context handed to each session worker thread.
-struct SessionWorkerCtx<'a> {
-    models: &'a [String],
-    next: &'a AtomicUsize,
-    tx: &'a mpsc::Sender<SessionModelOutcome>,
-    msl_exprs: &'a [String],
-    services_package: &'a Path,
-    work_dir: &'a Path,
+/// The timed reference run: each model simulated once, its wall time the OMC
+/// side of the speed report.
+struct TimedSimulation {
     stop_time: f64,
     use_experiment: bool,
-    omc_threads: usize,
     sim_timeout: Duration,
-    startup_timeout: Duration,
-    load_timeout: Duration,
-    /// CPU core to pin this worker (and the OMC process it spawns) to, keeping
-    /// caches warm and avoiding SMT-sibling oversubscription. `None` when more
-    /// workers than cores were requested.
-    cpu_core_id: Option<usize>,
 }
 
-/// Persistent-session execution path: the OMC analogue of the rumoca warm
-/// worker queue. Each worker thread owns one [`OmcSession`] that loads the MSL
-/// once, then pulls models from a shared atomic index and simulates them. On a
-/// per-model timeout (or transport failure) the session is killed and the next
-/// model respawns a fresh one, so a single hung model never blocks the others.
+impl SessionJob for TimedSimulation {
+    type Outcome = TimedOutcome;
+
+    fn run(&self, session: &mut OmcSession, model: &str) -> (TimedOutcome, bool) {
+        let start = Instant::now();
+        let sim =
+            session.simulate_model(model, self.stop_time, self.use_experiment, self.sim_timeout);
+        let elapsed_seconds = start.elapsed().as_secs_f64();
+        let (result, timed_out, poisoned) = match sim {
+            Ok(outcome) => (
+                build_session_model_result(&outcome, elapsed_seconds),
+                false,
+                false,
+            ),
+            Err(OmcEvalError::Timeout) => (
+                session_timeout_result(elapsed_seconds, self.sim_timeout),
+                true,
+                true,
+            ),
+            Err(OmcEvalError::Io(error)) => (
+                session_error_result(format!("omc session io error: {error}")),
+                false,
+                true,
+            ),
+        };
+        let outcome = TimedOutcome {
+            result,
+            elapsed_seconds,
+            timed_out,
+        };
+        (outcome, poisoned)
+    }
+
+    fn spawn_failed(&self, error: String) -> TimedOutcome {
+        TimedOutcome {
+            result: session_error_result(error),
+            elapsed_seconds: 0.0,
+            timed_out: false,
+        }
+    }
+}
+
+/// The session pool both passes use: one heavyweight OMC session per real CPU
+/// core (not per SMT sibling), mirroring the rumoca warm-worker pool, with
+/// headroom cores reserved on large hosts so the machine stays usable.
+/// `workers == 0` selects the auto/headroom default.
+fn session_pool_config(
+    args: &Args,
+    workers: usize,
+    paths: &MslPaths,
+    models: usize,
+) -> Result<SessionPoolConfig> {
+    Ok(SessionPoolConfig {
+        msl_exprs: msl_load_lines(paths)?,
+        services_package: omc_services_package(paths),
+        work_dir: paths.sim_work_dir.clone(),
+        omc_threads: args.omc_threads,
+        startup_timeout: Duration::from_secs(60),
+        load_timeout: Duration::from_secs(120),
+        worker_count: workers.max(1).min(models),
+    })
+}
+
+/// The timed reference run over every model without a reusable cached result.
 fn run_session_pending(
     args: &Args,
     workers: usize,
@@ -773,182 +837,51 @@ fn run_session_pending(
         return Ok(());
     }
 
-    let msl_exprs = msl_load_lines(paths)?;
-    let services_package = omc_services_package(paths);
-    // Mirror the rumoca warm-worker pool: one heavyweight OMC session per real
-    // CPU core (not per SMT sibling), reserving headroom cores on large hosts so
-    // the machine stays usable, and pin each worker to its core to keep caches
-    // warm. `args.workers == 0` selects the auto/headroom default.
+    let config = session_pool_config(args, workers, paths, models.len())?;
     let physical_cores = rumoca_worker::physical_cpu_core_count()
         .unwrap_or_else(|| rumoca_worker::available_cpu_core_ids().len())
         .max(1);
-    let worker_count = workers.max(1).min(models.len());
-    let core_plan = rumoca_worker::cpu_core_plan(worker_count);
-    let pinned = core_plan.iter().filter(|core| core.is_some()).count();
-    let sim_timeout = Duration::from_secs(args.batch_timeout_seconds.max(1));
-    let startup_timeout = Duration::from_secs(60);
-    let load_timeout = Duration::from_secs(120);
+    let pinned = rumoca_worker::cpu_core_plan(config.worker_count)
+        .iter()
+        .filter(|core| core.is_some())
+        .count();
     let total = models.len();
     println!(
-        "OMC session pool: {worker_count} persistent omc worker(s) ({pinned} pinned; {physical_cores} physical cores, headroom reserved) over {total} models (MSL loaded once per worker)"
+        "OMC session pool: {} persistent omc worker(s) ({pinned} pinned; {physical_cores} physical cores, headroom reserved) over {total} models (MSL loaded once per worker)",
+        config.worker_count
     );
-
-    let models = Arc::new(models);
-    let next = Arc::new(AtomicUsize::new(0));
-    let (tx, rx) = mpsc::channel::<SessionModelOutcome>();
-    let mut handles = Vec::with_capacity(worker_count);
-    for worker_idx in 0..worker_count {
-        let models = Arc::clone(&models);
-        let next = Arc::clone(&next);
-        let tx = tx.clone();
-        let msl_exprs = msl_exprs.clone();
-        let services_package = services_package.clone();
-        let work_dir = paths.sim_work_dir.clone();
-        let stop_time = args.stop_time;
-        let use_experiment = args.use_experiment_stop_time;
-        let omc_threads = args.omc_threads;
-        let cpu_core_id = core_plan.get(worker_idx).copied().flatten();
-        handles.push(thread::spawn(move || {
-            run_one_session_worker(SessionWorkerCtx {
-                models: &models,
-                next: &next,
-                tx: &tx,
-                msl_exprs: &msl_exprs,
-                services_package: &services_package,
-                work_dir: &work_dir,
-                stop_time,
-                use_experiment,
-                omc_threads,
-                sim_timeout,
-                startup_timeout,
-                load_timeout,
-                cpu_core_id,
-            });
-        }));
-    }
-    drop(tx);
+    let job = TimedSimulation {
+        stop_time: args.stop_time,
+        use_experiment: args.use_experiment_stop_time,
+        sim_timeout: Duration::from_secs(args.batch_timeout_seconds.max(1)),
+    };
 
     // Each timing collected here carries the context it was taken under, so a
-    // cached timing from another worker count or host is recognisable later.
-    let context = serde_json::json!({
-        "workers": workers,
-        "omc_threads": args.omc_threads,
-        "host": output::host_description(),
-    });
+    // cached timing from another worker count, host, run or runner is
+    // recognisable later.
+    let context = calibration::timing_context(args, workers);
     let mut completed = 0usize;
-    for outcome in rx {
+    run_session_pool(&models, &config, &job, |idx, outcome| {
         completed += 1;
         state.batch_timings.push(BatchTimingDetail {
-            batch_idx: outcome.idx,
+            batch_idx: idx,
             requested_models: 1,
             parsed_models: usize::from(outcome.result.status == "success"),
             elapsed_seconds: round3(outcome.elapsed_seconds),
             timed_out: outcome.timed_out,
             skipped: false,
         });
+        let model = &models[idx];
         let mut result = outcome.result;
         result.omc_timing_context = Some(context.clone());
-        carry_failed_attempts(&mut result, state.all_results.get(&outcome.model));
-        state.all_results.insert(outcome.model, result);
+        carry_failed_attempts(&mut result, state.all_results.get(model));
+        state.all_results.insert(model.clone(), result);
         if completed.is_multiple_of(25) || completed == total {
             println!("  OMC session progress: {completed}/{total} models");
         }
-    }
-    for handle in handles {
-        let _ = handle.join();
-    }
+    });
     Ok(())
 }
-
-fn run_one_session_worker(ctx: SessionWorkerCtx<'_>) {
-    // Pin before spawning OMC: on Linux the omc child inherits this thread's
-    // CPU affinity, so the whole session stays on one core.
-    if let Some(core_id) = ctx.cpu_core_id
-        && let Err(error) = rumoca_worker::pin_current_thread_to_cpu_core(core_id)
-    {
-        eprintln!("  OMC session worker: failed to pin to CPU core {core_id}: {error}");
-    }
-    let mut session: Option<OmcSession> = None;
-    // A long-lived omc interactive process accumulates memory across simulate()
-    // calls (loaded result sets, codegen scratch), so recycle the session every
-    // few models. This bounds RSS while still amortizing the MSL load across the
-    // batch (one reload per recycle, not per model).
-    let mut models_on_session = 0usize;
-    loop {
-        let idx = ctx.next.fetch_add(1, AtomicOrdering::Relaxed);
-        let Some(model) = ctx.models.get(idx) else {
-            break;
-        };
-        if session.is_none() {
-            match OmcSession::spawn(
-                ctx.work_dir,
-                ctx.msl_exprs,
-                ctx.services_package,
-                ctx.omc_threads,
-                ctx.startup_timeout,
-                ctx.load_timeout,
-            ) {
-                Ok(spawned) => {
-                    session = Some(spawned);
-                    models_on_session = 0;
-                }
-                Err(error) => {
-                    let _ = ctx.tx.send(SessionModelOutcome {
-                        idx,
-                        model: model.clone(),
-                        result: session_error_result(format!("omc session spawn failed: {error}")),
-                        elapsed_seconds: 0.0,
-                        timed_out: false,
-                    });
-                    continue;
-                }
-            }
-        }
-        let live = session.as_mut().expect("session present after spawn");
-        let start = Instant::now();
-        let sim = live.simulate_model(model, ctx.stop_time, ctx.use_experiment, ctx.sim_timeout);
-        let elapsed = start.elapsed().as_secs_f64();
-        let (result, timed_out) = match sim {
-            Ok(outcome) => (build_session_model_result(&outcome, elapsed), false),
-            Err(OmcEvalError::Timeout) => {
-                // Poisoned REQ socket after a hung model: kill and respawn.
-                if let Some(mut dead) = session.take() {
-                    dead.kill();
-                }
-                (session_timeout_result(elapsed, ctx.sim_timeout), true)
-            }
-            Err(OmcEvalError::Io(error)) => {
-                if let Some(mut dead) = session.take() {
-                    dead.kill();
-                }
-                (
-                    session_error_result(format!("omc session io error: {error}")),
-                    false,
-                )
-            }
-        };
-        let _ = ctx.tx.send(SessionModelOutcome {
-            idx,
-            model: model.clone(),
-            result,
-            elapsed_seconds: elapsed,
-            timed_out,
-        });
-        // `session` is still alive only on the success path (timeout/io already
-        // took and killed it). Recycle it once it has handled enough models.
-        if session.is_some() {
-            models_on_session += 1;
-            if models_on_session >= SESSION_RECYCLE_MODELS
-                && let Some(mut spent) = session.take()
-            {
-                spent.kill();
-            }
-        }
-    }
-}
-
-/// Recycle an omc session after this many models to bound its memory growth.
-const SESSION_RECYCLE_MODELS: usize = 25;
 
 fn session_timeout_result(elapsed: f64, sim_timeout: Duration) -> SimModelResult {
     SimModelResult {
@@ -986,6 +919,7 @@ fn empty_omc_result() -> SimModelResult {
         omc_timing_context: None,
         trace_file: None,
         trace_error: None,
+        tight_reference: None,
         rumoca_status: None,
         rumoca_ic_status: None,
         rumoca_ic_error: None,
@@ -1448,9 +1382,9 @@ fn quantify_trace_differences(
                     | TraceExitKind::ComparatorFailed
                     | TraceExitKind::NoComparableSamples => &mut report.skipped,
                     TraceExitKind::TraceNonidentifiable => &mut report.trace_nonidentifiable,
-                    TraceExitKind::RumocaTraceMissing | TraceExitKind::OmcTraceMissing => {
-                        &mut report.missing_trace
-                    }
+                    TraceExitKind::RumocaTraceMissing
+                    | TraceExitKind::OmcTraceMissing
+                    | TraceExitKind::TightReferenceMissing => &mut report.missing_trace,
                 };
                 map.insert(model_name.clone(), exit);
             }
@@ -1519,17 +1453,20 @@ fn compare_one_candidate(
             format!("failed to load omc trace: {error}"),
         )
     })?;
-    let metric = compare_model_traces(model_name, &rumoca_trace, &omc_trace).map_err(|error| {
-        // "nothing was comparable" is a property of the two traces; every other
-        // error is a defect in the comparison itself. The distinction is decided
-        // here, where the typed error is in hand, so no reader downstream has to
-        // recover it from the message text.
-        let kind = match error {
-            TraceCompareError::NoComparableSamples => TraceExitKind::NoComparableSamples,
-            _ => TraceExitKind::ComparatorFailed,
-        };
-        TraceExitRecord::new(kind, format!("trace compare failed: {error}"))
-    })?;
+    let omc_tight = tight_reference::required_tight_reference(paths, omc_model, &omc_trace)
+        .map_err(|why| TraceExitRecord::new(TraceExitKind::TightReferenceMissing, why))?;
+    let metric = compare_model_traces(model_name, &rumoca_trace, &omc_trace, omc_tight.as_ref())
+        .map_err(|error| {
+            // "nothing was comparable" is a property of the two traces; every other
+            // error is a defect in the comparison itself. The distinction is decided
+            // here, where the typed error is in hand, so no reader downstream has to
+            // recover it from the message text.
+            let kind = match error {
+                TraceCompareError::NoComparableSamples => TraceExitKind::NoComparableSamples,
+                _ => TraceExitKind::ComparatorFailed,
+            };
+            TraceExitRecord::new(kind, format!("trace compare failed: {error}"))
+        })?;
     Ok(TraceModelMetric {
         metric,
         state_selection: state_selection::compare_model_state_selection(
@@ -1844,21 +1781,37 @@ fn compute_runtime_ratio_buckets(state: &SimRunState) -> RuntimeRatioBuckets {
     let both_success = state.all_results.values().filter(|result| {
         result.status == "success" && result.rumoca_status.as_deref() == Some("sim_ok")
     });
-    let system_ratio_both_success =
-        compute_runtime_ratio_stats(both_success.clone().filter_map(|result| {
-            runtime_pair(
-                rumoca_runtime_sim_seconds(result),
-                result.sim_system_seconds,
-            )
-        }));
-    let wall_ratio_both_success = compute_runtime_ratio_stats(both_success.filter_map(|result| {
-        runtime_pair(result.rumoca_sim_wall_seconds, result.omc_wall_seconds)
-    }));
+    // The models the gate records per-model ratios for (see `runtime_ratio`).
+    let ratios = both_success
+        .filter_map(|result| model_runtime_ratio(&runtime_seconds(result)))
+        .collect::<Vec<_>>();
+    let system_ratio_both_success = compute_runtime_ratio_stats(
+        ratios
+            .iter()
+            .map(|ratio| (ratio.omc_system, ratio.rumoca_system)),
+    );
+    let wall_ratio_both_success = compute_runtime_ratio_stats(
+        ratios
+            .iter()
+            .map(|ratio| (ratio.omc_wall, ratio.rumoca_wall)),
+    );
     RuntimeRatioBuckets {
         system_ratio_all_positive,
         system_ratio_both_success,
         wall_ratio_all_positive,
         wall_ratio_both_success,
+    }
+}
+
+fn runtime_seconds(result: &SimModelResult) -> RuntimeSeconds {
+    RuntimeSeconds {
+        both_succeeded: result.status == "success"
+            && result.rumoca_status.as_deref() == Some("sim_ok"),
+        rumoca_sim_run_seconds: result.rumoca_sim_run_seconds,
+        rumoca_sim_seconds: result.rumoca_sim_seconds,
+        rumoca_sim_wall_seconds: result.rumoca_sim_wall_seconds,
+        omc_sim_system_seconds: result.sim_system_seconds,
+        omc_wall_seconds: result.omc_wall_seconds,
     }
 }
 

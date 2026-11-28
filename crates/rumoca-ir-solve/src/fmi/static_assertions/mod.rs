@@ -234,6 +234,18 @@ pub(in crate::fmi) fn accepted_actions(
     }
 }
 
+/// Per event action, whether a runtime checks it at each accepted integrator
+/// step: an error-level assertion whose condition may change between events
+/// (MLS §8.3.7, §8.5), under the event-iteration dependence analysis. A
+/// condition that reads only parameter storage outside the external inputs
+/// cannot change between events, so the checks at initialization, at events
+/// and at output points already see every value it can take. `None` when the
+/// condition meets an operation the dependence analysis does not follow; a
+/// runtime then checks every unclocked assertion at each accepted step.
+pub fn accepted_step_assertions(model: &SolveModel) -> Option<Vec<bool>> {
+    event_iteration_accepted_actions(model).ok()
+}
+
 /// [`accepted_actions`] under the event iteration, where every coordinate
 /// may change between events and only parameter storage outside the external
 /// inputs holds still: a parameter, a constant, a discrete value, a relation

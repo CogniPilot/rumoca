@@ -20,7 +20,18 @@ export function testedMainSha(sourceSha, parentLine) {
 
 // Artifacts are measured history, not the separately promoted quality floor.
 // A complete MSL job is usable even if another job in main's CI run failed.
-export async function findMainArtifact({ github, repo, sha, timeoutMs = 600000,
+// The PR-vs-main comparison needs the artifact, so a main without one fails.
+export async function findMainArtifact(options) {
+  const found = await resolveMainArtifact(options);
+  if (found.unavailable) throw new Error(found.unavailable);
+  return found.artifact;
+}
+
+// Tested main's artifact, or why main has none. Exactly one state is a value
+// rather than an error: main's CI completed and left no usable MSL snapshot
+// (none recorded, or expired). A main still pending past the bounded wait, an
+// API failure or an artifact from another source throws.
+export async function resolveMainArtifact({ github, repo, sha, timeoutMs = 600000,
   pollMs = 15000, now = Date.now, sleep = ms => new Promise(r => setTimeout(r, ms)),
   log = () => {} }) {
   assert.match(sha, SHA, 'invalid main SHA');
@@ -32,16 +43,30 @@ export async function findMainArtifact({ github, repo, sha, timeoutMs = 600000,
     const exact = runs.filter(run => run.head_sha === sha && run.head_branch === 'main'
       && run.event === 'push' && run.head_repository?.full_name === repo.owner + '/' + repo.repo);
     const found = await artifactInRuns(github, repo, sha, exact);
-    if (found.artifact) return found.artifact;
+    if (found.artifact) return { artifact: found.artifact };
     const pending = exact.some(run => run.status !== 'completed');
     if (exact.length && !pending) {
-      throw new Error('main baseline unavailable for ' + sha + ': '
-        + (found.expired ? 'artifact expired; rebase onto main' : 'main CI produced no MSL snapshot; rebase onto main'));
+      return { unavailable: 'main baseline unavailable for ' + sha + ': '
+        + (found.expired ? 'artifact expired; rebase onto main' : 'main CI produced no MSL snapshot; rebase onto main') };
     }
     if (now() >= deadline) throw new Error('main baseline pending for ' + sha + ': bounded wait expired');
     log('Waiting for the MSL snapshot of main at ' + sha);
     await sleep(Math.min(pollMs, deadline - now()));
   }
+}
+
+// The PR-vs-main step's view of tested main. A main whose CI completed without
+// a usable MSL snapshot is the typed "not compared" state: no deltas are
+// reported, the reason goes into the PR comment, and the step succeeds. A main
+// still pending, an API failure or an artifact from another source still
+// throws, so the comparison fails closed on everything else.
+export async function resolveTestedMainBaseline({ resultsDir, ...options }) {
+  const found = await resolveMainArtifact(options);
+  if (found.unavailable) {
+    writeBaselineNotCompared(resultsDir, found.unavailable, options.sha);
+    return { available: false, reason: found.unavailable };
+  }
+  return { available: true, binding: found.artifact };
 }
 
 async function artifactInRuns(github, repo, sha, runs) {
@@ -174,8 +199,7 @@ export function renderMainComparison(binding, comparison, provenance) {
     'Main snapshot: Actions run ' + binding.runId + ', artifact ' + binding.artifactId + '.',
     'Source binding: ' + provenance + '.', '',
     comparison.losses.length ? '**🔴 Model regression: ' + comparison.losses.length + ' successful model/stage memberships lost.**'
-      : comparison.confirmations?.length ? '**Timeout confirmation completed: no unresolved model/stage loss. Initial measurements below are unchanged.**'
-        : '**No previously successful model/stage membership lost.**', '',
+      : '**No previously successful model/stage membership lost.**', '',
     '| Stage | Main | PR test merge | Δ |', '|---|---:|---:|---:|'];
   for (const [stage, counts] of Object.entries(comparison.counts)) {
     const delta = counts.current - counts.main;
@@ -185,21 +209,6 @@ export function renderMainComparison(binding, comparison, provenance) {
     lines.push('', '| Lost model | Stage | Current status |', '|---|---|---|');
     for (const loss of comparison.losses.slice(0, 20)) lines.push('| ' + code(loss.model) + ' | ' + loss.stage + ' | ' + code(loss.status) + ' |');
     lines.push('', 'Every loss is recorded in msl_main_comparison.json in the current run artifact. Gains never offset losses.');
-  }
-  if (comparison.confirmations?.length) {
-    lines.push('', '#### Timeout-loss confirmations', '',
-      'Models: ' + comparison.confirmations.filter(attempt => attempt.outcome === 'recovered').length
-        + ' recovered, ' + comparison.confirmations.filter(attempt => attempt.outcome !== 'recovered').length
-        + ' unconfirmed. Unconfirmed losses remain red.', '',
-      'One isolated confirmation per model, using unchanged CI budgets. Original rows and confirmation rows are retained in msl_main_comparison.json. This checks stage completion, not trace parity or speed.', '',
-      '| Model | Initial phase/status | Confirmation phase/status | Outcome |', '|---|---|---|---|');
-    const status = row => row ? row.phase_reached + '/' + (row.sim_status ?? row.error_code ?? 'none')
-      + ' (' + (row.sim_wall_seconds ?? row.compile_seconds ?? 'unrecorded') + ' s)' : 'no result';
-    for (const attempt of comparison.confirmations) lines.push('| ' + code(attempt.model) + ' | '
-      + code(status(attempt.original)) + ' | ' + code(status(attempt.row)) + ' | '
-      + code(attempt.outcome + (attempt.recoveredStages.length ? ': ' + attempt.recoveredStages.join(', ')
-        : ': ' + (attempt.reason ?? 'no completion evidence'))) + ' |');
-    lines.push('', 'The Main/PR/Δ table keeps the initial run counts. Recovered stages are listed separately; gains never cancel unresolved losses.');
   }
   lines.push('', 'Simulated means execution completed, not trace parity. The promoted quality-floor gate is separate.', '');
   return lines.join('\n');
@@ -221,6 +230,16 @@ export function writeComparison(resultsDir, binding, comparison, provenance) {
   const note = renderMainComparison(binding, comparison, provenance);
   fs.writeFileSync(file, marker + '\n' + note + '\n' + body.slice(marker.length).trimStart());
   return comparison;
+}
+
+export function writeBaselineNotCompared(resultsDir, reason, sha) {
+  fs.mkdirSync(resultsDir, { recursive: true });
+  fs.writeFileSync(path.join(resultsDir, 'msl_pr_comment.md'), [
+    '<!-- rumoca-msl-quality-summary -->', '### MSL main comparison: not compared', '',
+    '**Tested main has no MSL snapshot, so no PR-vs-main deltas are reported.**', '',
+    'Tested main: ' + code(sha) + '.', '', code(reason), '',
+    'No checked-in or different-commit baseline was substituted. The promoted quality-floor gate still runs.', '',
+  ].join('\n'));
 }
 
 export function writeBaselineFailure(resultsDir, message, sha = 'unresolved') {

@@ -108,7 +108,7 @@ fn a_model_metric_stays_finite_when_finite_samples_overflow_the_integral() {
     // the model mean NaN, and its JSON `null` stopped the quality report. The
     // reference side is below the unbounded magnitude, so it is scored.
     let (rumoca, omc) = room_traces(f64::MAX, 1e59);
-    let metric = compare_model_traces("RoomCO2", &rumoca, &omc).unwrap();
+    let metric = compare_model_traces("RoomCO2", &rumoca, &omc, None).unwrap();
     let channel = metric
         .worst_variables
         .iter()
@@ -132,7 +132,7 @@ fn a_channel_unbounded_in_both_traces_is_recorded_and_kept_out_of_the_bands() {
     // there is no finite error to score. RoomCO2's `m_flow_turbulent`
     // made the model near agreement and failed the merge gate (#755).
     let (rumoca, omc) = room_traces(f64::MAX, 1e60);
-    let metric = compare_model_traces("RoomCO2", &rumoca, &omc).unwrap();
+    let metric = compare_model_traces("RoomCO2", &rumoca, &omc, None).unwrap();
     // Read through the JSON the reports read, so the same test runs on the
     // code before this field existed.
     let json = serde_json::to_value(&metric).unwrap();
@@ -163,7 +163,7 @@ fn a_single_instant_metric_stays_finite_when_its_error_overflows_the_scale() {
     // score was `inf / inf`.
     let rumoca = trace("Instant", vec![0.0], vec!["x"], vec![vec![f64::MAX]]);
     let omc = trace("Instant", vec![0.0, 0.0], vec!["x"], vec![vec![0.0, 0.0]]);
-    let metric = compare_model_traces("Instant", &rumoca, &omc).unwrap();
+    let metric = compare_model_traces("Instant", &rumoca, &omc, None).unwrap();
     assert_eq!(metric.compared_variables, 1);
     assert_eq!(metric.max_channel_bounded_normalized_l1, 1.0);
     assert!(metric.mean_channel_bounded_normalized_l1.is_finite());
@@ -176,7 +176,7 @@ fn a_channel_unbounded_in_opposite_directions_is_scored_as_a_full_deviation() {
     // `+inf` against `-inf` is a disagreement, not two spellings of one
     // unbounded value: the channel stays compared and scores 1.0.
     let (rumoca, omc) = room_traces(f64::MAX, -1e60);
-    let metric = compare_model_traces("RoomCO2", &rumoca, &omc).unwrap();
+    let metric = compare_model_traces("RoomCO2", &rumoca, &omc, None).unwrap();
     let json = serde_json::to_value(&metric).unwrap();
     assert!(json.get("unbounded_channels").is_none());
     assert_eq!(metric.compared_variables, 2);

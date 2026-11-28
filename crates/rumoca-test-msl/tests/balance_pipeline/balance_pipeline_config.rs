@@ -31,6 +31,21 @@ impl MslParityBudgetProfile {
     }
 }
 
+/// The rumoca-test-msl crate directory of the checkout containing `start`, if
+/// any: the runtime answer a prebuilt harness needs, since the compile-time
+/// `CARGO_MANIFEST_DIR` of a Nix-built binary names a build sandbox that no
+/// longer exists.
+pub(crate) fn workspace_crate_from(start: &std::path::Path) -> Option<PathBuf> {
+    start.ancestors().find_map(|dir| {
+        let is_workspace_root = dir.join("Cargo.toml").is_file()
+            && fs::read_to_string(dir.join("Cargo.toml"))
+                .map(|s| s.contains("[workspace]"))
+                .unwrap_or(false);
+        let crate_dir = dir.join("crates/rumoca-test-msl");
+        (is_workspace_root && crate_dir.join("Cargo.toml").is_file()).then_some(crate_dir)
+    })
+}
+
 /// The `rumoca-test-msl` crate directory, resolved at RUNTIME.
 ///
 /// Every path the harness reads or writes (the parity config, sim-target JSONs,
@@ -45,16 +60,6 @@ impl MslParityBudgetProfile {
 /// the xtask sets to the workspace root). Falls back to the compile-time manifest
 /// dir if the CWD isn't inside a rumoca workspace.
 pub(crate) fn msl_crate_manifest_dir() -> PathBuf {
-    fn workspace_crate_from(start: &std::path::Path) -> Option<PathBuf> {
-        start.ancestors().find_map(|dir| {
-            let is_workspace_root = dir.join("Cargo.toml").is_file()
-                && fs::read_to_string(dir.join("Cargo.toml"))
-                    .map(|s| s.contains("[workspace]"))
-                    .unwrap_or(false);
-            let crate_dir = dir.join("crates/rumoca-test-msl");
-            (is_workspace_root && crate_dir.join("Cargo.toml").is_file()).then_some(crate_dir)
-        })
-    }
     std::env::current_dir()
         .ok()
         .and_then(|cwd| workspace_crate_from(&cwd))
@@ -120,6 +125,10 @@ pub(crate) struct MslParityConfig {
     /// Resolved quality baseline JSON file. Relative paths are resolved from
     /// the workspace root.
     pub quality_baseline_file: Option<PathBuf>,
+    /// The raw promoted baseline asset the per-model rule judges against (the
+    /// baseline promotion judges against). Relative paths are resolved from
+    /// the workspace root.
+    pub promoted_baseline_file: Option<PathBuf>,
     /// Opt into the generated simulation-targets file when no explicit file or
     /// committed file applies.
     pub generated_sim_targets_file: Option<bool>,
@@ -129,6 +138,13 @@ pub(crate) struct MslParityConfig {
     pub shard_index: Option<usize>,
     /// Total shard count for a sharded parity run (`--shard m/n` → `n`).
     pub shard_count: Option<usize>,
+    /// A re-measurement's one raised stage budget (rule B, step 5): that
+    /// stage's budget is multiplied by `factor`; every other stage keeps its
+    /// own.
+    pub(crate) raised_stage: Option<RaisedStage>,
+    /// Re-run a shard's comparator tail on its results after `verify
+    /// msl-remeasure` patched them (`test_msl_refresh_shard_parity`).
+    pub(crate) refresh_parity: Option<bool>,
     /// Fan-in directory holding each shard's `shard-*/msl_results.json`. When
     /// set, the merge-and-gate entry loads + concatenates those partials,
     /// recomputes the full-set aggregates, and runs the quality gate once on the
@@ -285,6 +301,51 @@ pub(crate) fn msl_results_dir() -> PathBuf {
         return path.clone();
     }
     msl_workspace_root().join(path)
+}
+
+pub(crate) fn promoted_baseline_file() -> Option<PathBuf> {
+    let path = parity_config().promoted_baseline_file.as_ref()?;
+    if path.as_os_str().is_empty() {
+        return None;
+    }
+    if path.is_absolute() {
+        return Some(path.clone());
+    }
+    Some(msl_workspace_root().join(path))
+}
+
+/// One stage whose watchdog budget a re-measurement raises; the factor is
+/// refused at load unless it is in 1..=3.
+#[derive(Debug, Clone, Copy, PartialEq, serde::Deserialize)]
+#[serde(deny_unknown_fields, try_from = "RaisedStageWire")]
+pub(crate) struct RaisedStage {
+    pub(crate) phase: rumoca_worker::WorkerProgressPhase,
+    /// At least 1 and at most 3: the stage's budget times the shard's speed.
+    pub(crate) factor: f64,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RaisedStageWire {
+    phase: rumoca_worker::WorkerProgressPhase,
+    factor: f64,
+}
+
+impl TryFrom<RaisedStageWire> for RaisedStage {
+    type Error = String;
+
+    fn try_from(wire: RaisedStageWire) -> Result<Self, Self::Error> {
+        if !(1.0..=3.0).contains(&wire.factor) {
+            return Err(format!(
+                "raised_stage.factor {} is outside 1..=3",
+                wire.factor
+            ));
+        }
+        Ok(Self {
+            phase: wire.phase,
+            factor: wire.factor,
+        })
+    }
 }
 
 pub(crate) fn quality_baseline_file_override() -> Option<PathBuf> {

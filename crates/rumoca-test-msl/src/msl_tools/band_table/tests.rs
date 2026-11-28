@@ -533,6 +533,104 @@ fn strict_high_totals_alone_hide_the_departure_the_diff_reports() {
 /// over 165 channels; a run comparing three of them and calling it the same band
 /// is not the same claim.
 #[test]
+fn channels_that_move_between_bands_under_a_kept_band_are_reported() {
+    // A scoring change can move a model's channels between bands while the
+    // model keeps its band and its compared set: SpeedControlledDCPM's two
+    // anti-windup channels, minor before the excursion rule and high after.
+    let before = derive_tagged(
+        "before",
+        &trace_payload(
+            json!({
+                "Mover": metric_over("Mover", 348, 4, 0, 0.1993),
+                "Still": metric_over("Still", 40, 0, 0, 1.0e-9),
+            }),
+            json!({}),
+            json!({}),
+        ),
+        &results_payload(&[("Mover", Some("sim_ok")), ("Still", Some("sim_ok"))]),
+    );
+    let after = derive_tagged(
+        "after",
+        &trace_payload(
+            json!({
+                "Mover": metric_over("Mover", 352, 0, 0, 1.0e-8),
+                "Still": metric_over("Still", 40, 0, 0, 1.0e-9),
+            }),
+            json!({}),
+            json!({}),
+        ),
+        &results_payload(&[("Mover", Some("sim_ok")), ("Still", Some("sim_ok"))]),
+    );
+
+    let transitions = diff_band_tables(&before, &after);
+
+    assert!(transitions.band_changed.is_empty());
+    assert!(transitions.coverage_dropped.is_empty());
+    assert_eq!(transitions.counts.channels_changed, 1);
+    let moved = &transitions.channels_changed[0];
+    assert_eq!(moved.model_name, "Mover");
+    assert_eq!(moved.band, BandLabel::High);
+    assert_eq!((moved.before.high, moved.before.minor), (348, 4));
+    assert_eq!((moved.after.high, moved.after.minor), (352, 0));
+    assert_eq!(moved.before_max_channel_bounded_normalized_l1, Some(0.1993));
+}
+
+#[test]
+fn a_rescored_channel_that_stays_in_its_band_is_reported() {
+    // A widened scale can lower a channel's score without moving it out of
+    // the high band: the counts stay equal and only the worst score moves.
+    let table = |label: &str, max_dev: f64| {
+        derive_tagged(
+            label,
+            &trace_payload(
+                json!({ "Kept": metric_over("Kept", 40, 0, 0, max_dev) }),
+                json!({}),
+                json!({}),
+            ),
+            &results_payload(&[("Kept", Some("sim_ok"))]),
+        )
+    };
+    let transitions = diff_band_tables(&table("before", 0.04), &table("after", 1.0e-8));
+    assert_eq!(transitions.counts.channels_changed, 1);
+    assert_eq!(
+        transitions.channels_changed[0].before,
+        transitions.channels_changed[0].after
+    );
+    assert_eq!(
+        transitions.channels_changed[0].after_max_channel_bounded_normalized_l1,
+        Some(1.0e-8)
+    );
+    // An identical rerun reports nothing.
+    let same = diff_band_tables(&table("a", 0.04), &table("b", 0.04));
+    assert!(same.channels_changed.is_empty());
+}
+
+#[test]
+fn a_coverage_drop_is_not_also_reported_as_moved_channels() {
+    let before = derive_tagged(
+        "wide",
+        &trace_payload(
+            json!({ "Wide": metric_over("Wide", 165, 0, 0, 1.0e-9) }),
+            json!({}),
+            json!({}),
+        ),
+        &results_payload(&[("Wide", Some("sim_ok"))]),
+    );
+    let after = derive_tagged(
+        "narrow",
+        &trace_payload(
+            json!({ "Wide": metric_over("Wide", 3, 0, 0, 1.0e-9) }),
+            json!({}),
+            json!({}),
+        ),
+        &results_payload(&[("Wide", Some("sim_ok"))]),
+    );
+    let transitions = diff_band_tables(&before, &after);
+    assert_eq!(transitions.counts.coverage_dropped, 1);
+    assert!(transitions.channels_changed.is_empty());
+}
+
+#[test]
 fn a_model_that_keeps_its_band_over_fewer_channels_is_reported_as_a_coverage_drop() {
     let before = derive_tagged(
         "wide",

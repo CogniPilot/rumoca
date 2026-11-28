@@ -76,7 +76,7 @@ permissions.
 
 When a full main CI run improves every ratcheted metric without regressions, the
 MSL Baseline Ratchet workflow publishes the new baseline to that release asset.
-The ratchet (`.github/scripts/msl-baseline-ratchet.mjs`) reads the quality
+The ratchet (`cargo xtask verify msl-ratchet`) reads the quality
 schema from the checked-in baseline of the same commit and refuses a snapshot
 under any other schema. A promoted asset at an older schema is crossed only
 through the reviewed reference boundary chain the gate resolves it through: the
@@ -109,11 +109,12 @@ higher-is-better count stay raw: a newly compared model can only raise them by
 being non-high, which the unexcepted roster already refuses. A model that leaves
 the compared set is refused by the gate's certified-roster check before the
 ratchet runs. The baseline resolver applies the same rule when a checked-in
-baseline replaces an older promoted asset, and both implementations read the
-shared cases in `.github/scripts/msl-baseline-cohort-cases.json`.
+baseline replaces an older promoted asset; both use xtask's one cohort
+comparison, whose cases are in
+`crates/xtask/src/verify_cmd/msl_quality_baseline/testdata/cohort-cases.json`.
 
-`node --test .github/scripts/*.test.mjs` runs the ratchet's tests, including one
-that crosses from every version the tracked baseline's chain reaches.
+`cargo test -p xtask ratchet` runs the ratchet's tests, including one that
+crosses from every version the tracked baseline's chain reaches.
 Do not promote focused subsets or one-off explicit target files as the baseline.
 Promotion requires a full-run snapshot with non-empty `omc_version` metadata.
 
@@ -157,16 +158,16 @@ under schema `msl_trace_exceptions_v2`. Every row is typed and evidenced:
 
 ```json
 {
-  "model_name": "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierBridge2mPulse.ThyristorBridge2mPulse_R",
+  "model_name": "Modelica.Electrical.Analog.Examples.OpAmps.ControlCircuit",
   "kind": "comparator_limitation",
-  "reason": "The 17 differing channels are all aliases of one degenerate node ...",
+  "reason": "At the 0.1 s input step, OMC records the pre-event PIA resistor loss powers at t=0.1 and the post-event values at t=0.1000000001100004 ...",
   "evidence": {
     "facts": [
-      "17 differing channels are aliases of the supply star point, 0 V in exact arithmetic",
-      "all 401 other channels strict-high"
+      "281/283 channels strict-high",
+      "OMC records pre-event values at t=0.1 and post-event values at t=0.1000000001100004; Rumoca records post-event values at t=0.1"
     ]
   },
-  "retired_by": "near_zero_channel_scaling"
+  "retired_by": "event_instant_alignment"
 }
 ```
 
@@ -178,8 +179,11 @@ under schema `msl_trace_exceptions_v2`. Every row is typed and evidenced:
 | `nonidentifiable` | a reviewed proof that pointwise comparison cannot identify the model |
 | `comparator_limitation` | the comparator cannot identify the channels; `retired_by` names the improvement that retires the row |
 
-A `comparator_limitation` row names one of `near_zero_channel_scaling`,
-`event_instant_alignment`, or `aggregate_tolerance_at_annotation_scale`. Angle
+A `comparator_limitation` row names one of `event_instant_alignment` or
+`aggregate_tolerance_at_annotation_scale`. An improvement that has landed is
+removed from the list with the last row it retired: a channel whose flat
+reference carries an event is now scaled by that event (the excursion rule), so
+`near_zero_channel_scaling` no longer exists. Angle
 and power-factor channels compare under the phasor rule (SPEC_0050) and need no
 row. The end state is fewer exceptions through a better comparator.
 

@@ -2,18 +2,6 @@
   "schema": "msl_trace_exceptions_v2",
   "exceptions": [
     {
-      "model_name": "Modelica.Blocks.Examples.DemoSignalCharacteristic",
-      "kind": "comparator_limitation",
-      "reason": "The analytic first-harmonic cosine coefficient is zero. Rumoca and OMC both leave integration residue, and Rumoca's residual is closer to zero; OMC's near-zero reference spread makes normalized pointwise comparison non-identifying.",
-      "evidence": {
-        "facts": [
-          "analytic first-harmonic cosine coefficient is 0",
-          "OMC reference spread of that channel is at integration-residue scale; Rumoca residual is closer to 0"
-        ]
-      },
-      "retired_by": "near_zero_channel_scaling"
-    },
-    {
       "model_name": "Modelica.Clocked.Examples.Elementary.BooleanSignals.Sample2",
       "kind": "reference_failure",
       "reason": "OMC a96aa1a-cmake reports an internal backend error for this model (BackendDAETransform.analyseStrongComponentBlock: purely discrete algebraic loop through xor, xor1, sample2 and hold1), so the parity harness records the reference as an error. OMC still writes a result file after the error; the Rumoca trace agrees with it exactly on every shared channel. This is a reference-generation failure, not strict-high credit.",
@@ -201,19 +189,6 @@
       "retired_by": "event_instant_alignment"
     },
     {
-      "model_name": "Modelica.Electrical.Machines.Examples.DCMachines.DCPM_Drive",
-      "kind": "comparator_limitation",
-      "reason": "Only four aliases of the two IdealDcDc power-balance residuals are non-high; 586/590 channels and every initial condition are high. These near-zero residuals drive integral controllers with Ti=1e-6 and are dominated by integration error: tightening OMC from 1e-6 to 1e-8 reduces their ranges from 8.18e-3/6.84e-3 W to 7.16e-4/1.92e-4 W, while tightened Rumoca gives comparable 7.83e-4/2.62e-4 W ranges. The default-tolerance OMC residual is not converged enough to identify pointwise parity, while the physical trajectory agrees.",
-      "evidence": {
-        "facts": [
-          "586/590 channels and every initial condition high",
-          "non-high channels: four aliases of the two IdealDcDc power-balance residuals",
-          "OMC residual ranges 8.18e-3/6.84e-3 W at 1e-6 and 7.16e-4/1.92e-4 W at 1e-8; tightened Rumoca 7.83e-4/2.62e-4 W"
-        ]
-      },
-      "retired_by": "near_zero_channel_scaling"
-    },
-    {
       "model_name": "Modelica.Electrical.Machines.Examples.InductionMachines.IMS_Start",
       "kind": "reference_failure",
       "reason": "Default OMC reference accuracy is insufficient for this model's near-zero summed currents and pre-closing leakage voltages. With lossless trace decoding, the unchanged Rumoca trace has 690 high, 18 near, and two deviating channels against OMC at the model's 1e-6 tolerance. The same xtask-generated OMC executable at 1e-10 and 1e-12 agrees with that unchanged Rumoca trace on all 710 shared channels; the two refined OMC traces agree on all 735 shared channels. Default OMC's summed star current reaches 9.24e-6 A while Rumoca remains near 1e-13 A, consistent with the SpacePhasor zero-sequence equations. This is a pointwise-reference limitation, not strict-high or certification credit. Source equations, immutable executable/input hashes, and convergence comparisons are recorded in docs/dev-guide/src/tooling/multibody-coverage.md at evidence commit 3d76411c; official tolerances and reference traces are unchanged.",
@@ -281,48 +256,6 @@
       "retired_by": "aggregate_tolerance_at_annotation_scale"
     },
     {
-      "model_name": "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierBridge2mPulse.HalfControlledBridge2mPulse",
-      "kind": "comparator_limitation",
-      "reason": "The 17 differing channels are all aliases of one degenerate node: the supply star point (sineVoltage.plug_n joined through MultiStarResistance, R=1e6, to ground), which carries zero net current in exact arithmetic so its exact voltage is 0 V; OMC's reference spread is below 1e-9 V. Rumoca's within-tolerance algebraic-loop residual current of order 1e-10 A is amplified by the 1e6 ohm grounding resistance into a broadband 1e-4 V signal that saturates the metric against the 1e-6 normalization floor. All 374 other channels are strict-high (currentSensor.i and voltagesensor.v agree within 1.4e-3 on 13.5 A and 269 V scales) and the rectifier conduction sequence is identical with every switching edge matching within 6e-7 s, so the near-zero reference makes pointwise comparison non-identifying for this node.",
-      "evidence": {
-        "facts": [
-          "17 differing channels are aliases of the supply star point, 0 V in exact arithmetic",
-          "OMC reference spread below 1e-9 V",
-          "all 374 other channels strict-high",
-          "every switching edge matches within 6e-7 s"
-        ]
-      },
-      "retired_by": "near_zero_channel_scaling"
-    },
-    {
-      "model_name": "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierBridge2mPulse.ThyristorBridge2mPulse_R",
-      "kind": "comparator_limitation",
-      "reason": "The 17 differing channels are all aliases of one degenerate node: the supply star point (sineVoltage.plug_n joined through MultiStarResistance, R=1e6, to ground), which carries zero net current in exact arithmetic so its exact voltage is 0 V; OMC's reference spread is below 8.5e-10 V. Rumoca's within-tolerance algebraic-loop residual current of order 1e-10 A is amplified by the 1e6 ohm grounding resistance into a broadband 1.2e-4 V mean signal that saturates the metric against the 1e-6 normalization floor. All 401 other channels are strict-high (currentSensor.i and voltagesensor.v agree within 1.7e-3 on 13.5 A and 269 V scales) and the thyristor firing sequence is identical with every interior switching edge matching within 5.9e-7 s, ruling out a torn-solve root divergence; the near-zero reference makes pointwise comparison non-identifying for this node.",
-      "evidence": {
-        "facts": [
-          "17 differing channels are aliases of the supply star point, 0 V in exact arithmetic",
-          "OMC reference spread below 8.5e-10 V",
-          "all 401 other channels strict-high",
-          "every interior switching edge matches within 5.9e-7 s"
-        ]
-      },
-      "retired_by": "near_zero_channel_scaling"
-    },
-    {
-      "model_name": "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierBridge2mPulse.ThyristorBridge2mPulse_RL",
-      "kind": "comparator_limitation",
-      "reason": "The 17 differing channels are all aliases of one degenerate node: the supply star point (sineVoltage.plug_n joined through MultiStarResistance, R=1e6, to ground), which carries zero net current in exact arithmetic so its exact voltage is 0 V; OMC's reference spread is below 8.9e-10 V. Rumoca's within-tolerance algebraic-loop residual current of order 1e-10 A is amplified by the 1e6 ohm grounding resistance into a broadband 8.4e-5 V mean signal that saturates the metric against the 1e-6 normalization floor. All 407 other channels are strict-high (inductor.i agrees within 2.3e-4 on a 9.56 A scale and voltagesensor.v within 1.7e-3 on 269 V) and the thyristor firing sequence is identical with every interior switching edge matching within 6.4e-7 s, ruling out a torn-solve root divergence; the near-zero reference makes pointwise comparison non-identifying for this node.",
-      "evidence": {
-        "facts": [
-          "17 differing channels are aliases of the supply star point, 0 V in exact arithmetic",
-          "OMC reference spread below 8.9e-10 V",
-          "all 407 other channels strict-high",
-          "every interior switching edge matches within 6.4e-7 s"
-        ]
-      },
-      "retired_by": "near_zero_channel_scaling"
-    },
-    {
       "model_name": "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierCenterTap2Pulse.ThyristorCenterTap2Pulse_RLV_Characteristic",
       "kind": "comparator_limitation",
       "reason": "Only aliases of the period-integrated RootMeanSquare/Mean aggregate differ. At the annotation tolerance of 1e-6, OMC's endpoint RMS is 109.999434852 V; rerunning the same generated OMC model at 1e-10 moves it to 110.000018546 V, a 5.84e-4 V shift that accounts for Rumoca's 5.74e-4 V difference. The physical waveform and state channels agree, so the default-tolerance OMC trace is not converged enough to identify pointwise aggregate parity.",
@@ -358,21 +291,6 @@
         ]
       },
       "retired_by": "event_instant_alignment"
-    },
-    {
-      "model_name": "Modelica.Fluid.Examples.AST_BatchPlant.Test.TwoTanks",
-      "kind": "comparator_limitation",
-      "reason": "The 11 non-high channels are all aliases of tank1's temperature and enthalpy (74 of 85 channels high, tank2 and every flow and level channel high). Tank1 only drains through its bottom port into the pipe, so its exact temperature is the constant 323.15 K; OMC's whole reference spread on these channels (6.37e-6 K) is its own integration residue, since the same OMC model at tolerance 1e-10 differs from its 1e-6 trace by exactly that 6.37e-6 K. Normalizing against that spread makes pointwise comparison non-identifying: Rumoca's 1e-6 drift of 2.4e-4 K is 7.4e-7 of the level, inside the experiment's relative tolerance, and at rtol = atol = 1e-10 Rumoca agrees with the 1e-10 OMC trace to 4.7e-9 K on these channels while both remain near-flat (drifts 6.9e-9 and 2.2e-9 K), so the channel stays degenerate at every tolerance.",
-      "evidence": {
-        "facts": [
-          "74/85 channels high; the 11 non-high channels are tank1.medium.T, tank1.medium.T_degC, tank1.medium.state.T, tank1.medium.h, tank1.medium.u, tank1.heatTransfer.Ts[1], tank1.heatTransfer.states[1].T, tank1.heatTransfer.heatPorts[1].T, pipe.flowModel.states[1].T, pipe.port_b.h_outflow and tank1.ports[1].h_outflow",
-          "exact tank1 temperature is constant 323.15 K; OMC 1e-6 vs OMC 1e-10 on tank1.medium.T: max abs 6.371e-6 K, equal to the reference spread",
-          "Rumoca vs OMC at rtol = atol = 1e-10 on tank1.medium.T: max abs 4.7e-9 K; tank2 mixing temperature within 1.2e-6 K of the exact 75 degC energy balance",
-          "a tolerance-times-nominal floor (1e-6 x 300 K) would still score the 1.69e-4 K mean error at 0.56, so no unit-free floor identifies the channel"
-        ],
-        "artifact": "msl:Modelica.Fluid.Examples.AST_BatchPlant.Test.TwoTanks"
-      },
-      "retired_by": "near_zero_channel_scaling"
     },
     {
       "model_name": "Modelica.Fluid.Examples.TraceSubstances.RoomCO2WithControls",

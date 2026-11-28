@@ -582,6 +582,7 @@ pub(super) fn finalize_early_summary(
 ) -> MslSummary {
     timings.frontend_compile_seconds = frontend_compile_start.elapsed().as_secs_f64();
     timings.core_pipeline_seconds = core_start.elapsed().as_secs_f64();
+    timings.window = TimingWindow::ending_now(timings.core_pipeline_seconds);
     capture_process_peak_rss(timings);
     summary.timings = timings.clone();
     summary

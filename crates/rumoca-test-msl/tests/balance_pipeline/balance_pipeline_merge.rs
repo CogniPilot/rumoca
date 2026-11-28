@@ -10,6 +10,7 @@
 //! concatenating the shard files.
 
 use super::*;
+use rumoca_test_msl::msl_tools::runtime_ratio::{RuntimeSeconds, model_runtime_ratio};
 use serde_json::{Map, Value, json};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -18,6 +19,8 @@ use tempfile::tempdir;
 
 const SHARD_OMC_REFERENCE_FILE: &str = "omc_simulation_reference.json";
 const SHARD_TRACE_COMPARISON_FILE: &str = "sim_trace_comparison.json";
+/// The re-measurements `verify msl-remeasure` made on a shard.
+const REMEASURED_FILE: &str = "msl_remeasured.json";
 
 /// Concatenate per-shard summaries into one full-set summary, reusing the normal
 /// aggregate builder. Pure (no I/O), so the merge arithmetic is unit-testable.
@@ -351,11 +354,15 @@ fn runtime_ratio_bucket(
     both_success_only: bool,
 ) -> Option<Value> {
     runtime_ratio_stats(models.values().filter_map(|model| {
-        if both_success_only
-            && (model_status(model) != Some("success")
-                || model_rumoca_status(model) != Some("sim_ok"))
-        {
-            return None;
+        if both_success_only {
+            // The models the gate records per-model ratios for, so the two
+            // cannot disagree (see `runtime_ratio`).
+            let ratio = model_runtime_ratio(&RuntimeSeconds::from_model_json(model))?;
+            return Some(if wall {
+                (ratio.omc_wall, ratio.rumoca_wall)
+            } else {
+                (ratio.omc_system, ratio.rumoca_system)
+            });
         }
         if wall {
             runtime_pair(
@@ -1103,16 +1110,121 @@ fn write_pretty_json_file(path: &Path, payload: &Value) -> Result<(), String> {
     fs::write(path, json).map_err(|e| format!("merge-shards: cannot write {}: {e}", path.display()))
 }
 
+/// Every shard's `msl_remeasured.json` models, merged (a model is on one
+/// shard).
+fn merged_remeasurements(shard_dirs: &[PathBuf]) -> Result<Value, String> {
+    let mut merged = Map::new();
+    for shard_dir in shard_dirs {
+        let file = shard_dir.join(REMEASURED_FILE);
+        if !file.is_file() {
+            continue;
+        }
+        let payload = read_shard_json(shard_dir, REMEASURED_FILE)?;
+        if let Some(models) = payload.get("models").and_then(Value::as_object) {
+            merged.extend(models.clone());
+        }
+    }
+    Ok(Value::Object(merged))
+}
+
+fn shard_index(shard_dir: &Path) -> Result<u64, String> {
+    shard_dir
+        .file_name()
+        .and_then(|name| name.to_str())
+        .and_then(|name| name.strip_prefix("shard-"))
+        .and_then(|index| index.parse::<u64>().ok())
+        .ok_or_else(|| format!("merge-shards: {} is not shard-<n>", shard_dir.display()))
+}
+
+/// Each shard's rumoca and OMC timing windows and the gap between them
+/// (OMC's start less rumoca's finish; negative when they overlap): rule B's
+/// gauge reads OMC's minutes and judges rumoca's, so the report says how far
+/// apart they were.
+fn shard_timing_windows(shards: &[(u64, Option<&Value>, Option<&Value>)]) -> Value {
+    let at = |window: Option<&Value>, key: &str| window.and_then(|w| w.get(key)?.as_f64());
+    Value::Array(
+        shards
+            .iter()
+            .map(|&(shard, rumoca, omc)| {
+                let gap = at(omc, "started_unix_seconds")
+                    .zip(at(rumoca, "finished_unix_seconds"))
+                    .map(|(started, finished)| started - finished);
+                json!({
+                    "shard": shard,
+                    "rumoca": rumoca.cloned(),
+                    "omc": omc.cloned(),
+                    "gap_seconds": gap,
+                })
+            })
+            .collect(),
+    )
+}
+
+/// Mark each OMC model of a shard's reference with its `shard` index (the
+/// merged file no longer says which shard a model ran on, and rule B judges a
+/// model by its own shard's speed), and return the shard's calibration
+/// section, marked `fresh` when its timings carry the shard's own run.
+fn annotate_omc_timings(shard_dir: &Path, payload: &mut Value) -> Result<Option<Value>, String> {
+    let shard = shard_index(shard_dir)?;
+    let own_run = payload.get("timing_run").cloned().unwrap_or_default();
+    let calibration = payload
+        .get("calibration_timings")
+        .filter(|section| !section.is_null())
+        .map(|section| {
+            let mut section = section.clone();
+            let fresh = rumoca_msl_quality::speed::timing_run_of(&section) == own_run;
+            section["fresh"] = fresh.into();
+            section
+        });
+    if let Some(models) = payload.get_mut("models").and_then(Value::as_object_mut) {
+        for entry in models.values_mut().filter_map(Value::as_object_mut) {
+            entry.insert("shard".to_string(), shard.into());
+        }
+    }
+    Ok(calibration)
+}
+
 fn merge_shard_parity_artifacts(dir: &Path, results_dir: &Path) -> Result<(), String> {
     let shard_dirs = list_shard_dirs(dir)?;
-    let omc_payloads = load_shard_json_payloads(&shard_dirs, SHARD_OMC_REFERENCE_FILE)?;
+    let mut omc_payloads = load_shard_json_payloads(&shard_dirs, SHARD_OMC_REFERENCE_FILE)?;
+    let mut calibration = Map::new();
+    for (shard_dir, payload) in shard_dirs.iter().zip(&mut omc_payloads) {
+        if let Some(section) = annotate_omc_timings(shard_dir, payload)? {
+            calibration.insert(shard_index(shard_dir)?.to_string(), section);
+        }
+    }
     let trace_payloads = load_shard_json_payloads(&shard_dirs, SHARD_TRACE_COMPARISON_FILE)?;
     let omc_models = merge_required_object_maps(&omc_payloads, &["models"], "OMC model")?;
     let trace_models = merge_required_object_maps(&trace_payloads, &["models"], "trace model")?;
     let trace_summary = build_flat_trace_summary(&omc_payloads, &trace_models)?;
     let merged_trace =
         merge_trace_comparison_payloads(&trace_payloads, trace_models, &trace_summary)?;
-    let merged_omc = merge_omc_reference_payloads(&omc_payloads, omc_models, &trace_summary)?;
+    let mut merged_omc = merge_omc_reference_payloads(&omc_payloads, omc_models, &trace_summary)?;
+    let result_payloads = load_shard_json_payloads(&shard_dirs, "msl_results.json")?;
+    let mut shards = Vec::with_capacity(shard_dirs.len());
+    for ((shard_dir, omc), results) in shard_dirs.iter().zip(&omc_payloads).zip(&result_payloads) {
+        shards.push((
+            shard_index(shard_dir)?,
+            results
+                .get("timings")
+                .and_then(|timings| timings.get("window")),
+            omc.get("timing_window"),
+        ));
+    }
+    if let Some(root) = merged_omc.as_object_mut() {
+        root.insert(
+            "shard_timing_windows".to_string(),
+            shard_timing_windows(&shards),
+        );
+        root.insert(
+            "calibration_by_shard".to_string(),
+            Value::Object(calibration),
+        );
+        root.insert(
+            "remeasured".to_string(),
+            merged_remeasurements(&shard_dirs)?,
+        );
+    }
 
     write_pretty_json_file(&results_dir.join(SHARD_OMC_REFERENCE_FILE), &merged_omc)?;
     write_pretty_json_file(
@@ -1167,6 +1279,29 @@ fn test_msl_merge_and_gate() {
         "Merged MSL quality gate passed ({} sim_ok / {} attempted; sim_ok is completion, never parity)",
         merged.sim_ok, merged.sim_attempted
     );
+}
+
+/// After `verify msl-remeasure` replaced re-measured rows in a shard's
+/// results, run the shard's own tail again (results write, OMC reference and
+/// trace comparison on resume, snapshot), so every file the merge reads
+/// agrees with the patched rows. Does nothing unless the parity config asks
+/// for it (`--refresh-parity`).
+#[cfg(feature = "msl-full-test")]
+#[test]
+fn test_msl_refresh_shard_parity() {
+    if parity_config().refresh_parity != Some(true) {
+        return;
+    }
+    let path = msl_results_dir().join("msl_results.json");
+    let raw = fs::read_to_string(&path)
+        .unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
+    let summary: MslSummary = serde_json::from_str(&raw)
+        .unwrap_or_else(|error| panic!("invalid {}: {error}", path.display()));
+    println!(
+        "Refreshing the comparator tail over {} re-measured results",
+        summary.model_results.len()
+    );
+    print_final_stats(&summary);
 }
 
 #[cfg(test)]
@@ -1498,4 +1633,52 @@ fn merged_omc_timing_keeps_per_shard_worker_counts() {
     assert_eq!(merged["rumoca_sim_workers"], json!(2));
     assert_eq!(merged["shards"], json!(3));
     assert_eq!(merged["batches_ran"], json!(9));
+}
+
+/// The merged runtime statistics count exactly the models that have a runtime
+/// ratio, the ones the gate records per model: otherwise a snapshot's
+/// `sample_count` and medians disagree with its own `runtime_model_ratios`.
+#[test]
+fn merged_runtime_stats_count_exactly_the_models_with_a_runtime_ratio() {
+    let timed = |run: f64, wall: Option<f64>| {
+        let mut model = json!({
+            "status": "success", "rumoca_status": "sim_ok",
+            "rumoca_sim_run_seconds": run, "rumoca_sim_seconds": 0.8,
+            "rumoca_sim_wall_seconds": 1.0, "sim_system_seconds": 2.0,
+        });
+        if let Some(wall) = wall {
+            model["omc_wall_seconds"] = json!(wall);
+        }
+        model
+    };
+    let mut models = Map::new();
+    models.insert("Timed".into(), timed(0.5, Some(4.0)));
+    // A run phase that rounds to zero falls back to the simulation time.
+    models.insert("ZeroRunPhase".into(), timed(0.0, Some(4.0)));
+    // No OMC wall time: no ratio at all, so in neither statistic.
+    models.insert("NoOmcWall".into(), timed(0.5, None));
+    models.insert("NoOmcWallEither".into(), timed(0.5, None));
+    let with_ratio = models
+        .values()
+        .filter(|model| model_runtime_ratio(&RuntimeSeconds::from_model_json(model)).is_some())
+        .count();
+    assert_eq!(with_ratio, 2);
+    let comparison = build_runtime_comparison(&models);
+    for bucket in ["system_ratio_both_success", "wall_ratio_both_success"] {
+        assert_eq!(
+            json_usize(&comparison, &["ratio_stats", bucket, "sample_count"]),
+            Some(with_ratio),
+            "{bucket}"
+        );
+    }
+}
+
+#[test]
+fn each_shard_reports_its_two_timing_windows_and_their_gap() {
+    let rumoca = json!({ "started_unix_seconds": 100.0, "finished_unix_seconds": 400.0 });
+    let omc = json!({ "started_unix_seconds": 460.0, "finished_unix_seconds": 900.0 });
+    let windows = shard_timing_windows(&[(3, Some(&rumoca), Some(&omc)), (4, None, Some(&omc))]);
+    assert_eq!(windows[0]["shard"], 3);
+    assert_eq!(windows[0]["gap_seconds"], 60.0);
+    assert_eq!(windows[1]["gap_seconds"], Value::Null);
 }

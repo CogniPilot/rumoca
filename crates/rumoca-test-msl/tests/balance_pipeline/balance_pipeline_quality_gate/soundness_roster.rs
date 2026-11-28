@@ -138,12 +138,12 @@ pub(super) fn exception_file_reasons(measurement: &MslParityMeasurement) -> Vec<
 pub(super) fn insert_soundness_roster(
     root: &mut serde_json::Map<String, serde_json::Value>,
     table: &rumoca_test_msl::msl_tools::band_table::BandTable,
-) -> io::Result<()> {
+) -> io::Result<IndexSet<String>> {
     let unexcepted = table
         .unexcepted_non_high_rows()
         .map(|row| row.model_name.clone())
         .collect::<IndexSet<_>>();
-    let roster = serde_json::to_value(unexcepted).map_err(|error| {
+    let roster = serde_json::to_value(&unexcepted).map_err(|error| {
         io::Error::other(format!(
             "failed to serialize unexcepted non-high roster: {error}"
         ))
@@ -153,5 +153,5 @@ pub(super) fn insert_soundness_roster(
         "trace_exceptions_sha256".to_string(),
         serde_json::Value::String(table.source.exclusions_sha256.clone()),
     );
-    Ok(())
+    Ok(unexcepted)
 }

@@ -23,6 +23,7 @@ mod solver_backend_boundary;
 mod source_comment_hygiene;
 mod string_hashing;
 mod totality_debt;
+mod xtask_leaf_dependencies;
 
 use std::collections::BTreeSet;
 use std::fs;
@@ -449,28 +450,6 @@ fn test_session_has_no_fmt_or_lint_surface() {
             !content.contains(banned),
             "rumoca-compile must not expose {banned}; \
 Author reminder: fmt/lint APIs live in rumoca-tool-fmt and rumoca-tool-lint."
-        );
-    }
-}
-
-#[test]
-fn test_tool_dev_uses_session_facade() {
-    let cargo_toml = workspace_root().join("crates/xtask/Cargo.toml");
-    let content = fs::read_to_string(&cargo_toml).expect("read tool-dev Cargo.toml");
-
-    for banned in [
-        "rumoca",
-        "rumoca-core",
-        "rumoca-phase-solve",
-        "rumoca-ir-ast",
-        "rumoca-ir-flat",
-        "rumoca-ir-dae",
-        "rumoca-phase-parse",
-    ] {
-        assert!(
-            !manifest_declares_production_dependency(&content, banned),
-            "xtask must not depend directly on {banned}; \
-Author reminder: use rumoca-compile facade APIs instead."
         );
     }
 }

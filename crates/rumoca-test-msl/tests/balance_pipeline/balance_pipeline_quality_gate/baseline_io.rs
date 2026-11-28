@@ -2,11 +2,14 @@
 
 use super::*;
 
+/// The checked-in baseline, resolved at run time from the checkout the harness
+/// runs in (never the compile-time crate path, which a prebuilt binary cannot
+/// rely on), unless the parity config names one.
 pub(in super::super) fn msl_quality_baseline_path() -> PathBuf {
     if let Some(path) = quality_baseline_file_override() {
         return path;
     }
-    Path::new(env!("CARGO_MANIFEST_DIR")).join(MSL_QUALITY_BASELINE_FILE_REL)
+    msl_crate_manifest_dir().join(MSL_QUALITY_BASELINE_FILE_REL)
 }
 
 pub(in super::super) fn msl_quality_current_path() -> PathBuf {

@@ -310,6 +310,94 @@ fn simulation_parity_cache_carries_omc_traces_between_results_runs() {
     );
 }
 
+/// A tight reference is one of the model's OMC artifacts: the cache carries it
+/// between results directories with the normal trace, and a cached copy that
+/// no longer matches its digest invalidates the entry.
+#[test]
+fn simulation_parity_cache_carries_and_validates_the_declared_tight_reference() {
+    let temp = tempdir().expect("tempdir");
+    let first_results = temp.path().join("first-results");
+    let second_results = temp.path().join("second-results");
+    let active_path = first_results.join("omc_simulation_reference.json");
+    let cache_path = temp.path().join("cache/simulation/key.json");
+    let relative_trace = Path::new("sim_traces/omc/A.json");
+    let relative_tight = Path::new("sim_traces/omc/A.tight.json");
+    fs::create_dir_all(first_results.join("sim_traces/omc")).expect("mkdir trace dir");
+    fs::write(first_results.join(relative_trace), b"omc trace bytes").expect("write OMC trace");
+    fs::write(first_results.join(relative_tight), b"tight trace bytes").expect("write tight trace");
+    write_omc_init_xml(&first_results, "A", OMC_INIT_XML);
+    fs::write(
+        &active_path,
+        serde_json::to_vec_pretty(&json!({
+            "msl_version": "4.1.0",
+            "omc_version": "OpenModelica 1.26.1",
+            "use_experiment_stop_time": true,
+            "timing": { "batch_timeout_seconds": 600 },
+            "models": {
+                "A": {
+                    "status": "success",
+                    "trace_file": "sim_traces/omc/A.json",
+                    "tight_reference": {
+                        "state": "trace",
+                        "file": "sim_traces/omc/A.tight.json",
+                        "tolerance": 1e-8
+                    }
+                }
+            }
+        }))
+        .expect("serialize active payload"),
+    )
+    .expect("write active payload");
+
+    persist_simulation_parity_cache_entry(&active_path, &cache_path)
+        .expect("persist parity cache with its tight reference");
+    let second_active_path = second_results.join("omc_simulation_reference.json");
+    materialize_simulation_parity_cache_entry(&cache_path, &second_active_path)
+        .expect("materialize parity cache with its tight reference");
+    assert_eq!(
+        fs::read(second_results.join(relative_tight)).expect("read restored tight trace"),
+        b"tight trace bytes"
+    );
+    let restored: Value =
+        serde_json::from_slice(&fs::read(&second_active_path).expect("read restored payload"))
+            .expect("parse restored payload");
+    assert_eq!(
+        restored["models"]["A"]["tight_reference"]["file"],
+        "sim_traces/omc/A.tight.json"
+    );
+
+    let policy = SimulationParityCachePolicy {
+        batch_timeout_seconds: 600,
+        use_experiment_stop_time: true,
+        stop_time_override: None,
+    };
+    let matches = || {
+        simulation_parity_cache_matches(
+            &cache_path,
+            &["A".to_string()],
+            "4.1.0",
+            "OpenModelica 1.26.1",
+            policy,
+        )
+        .expect("cache validation should complete")
+    };
+    assert!(
+        matches(),
+        "a cache with its tight reference intact validates"
+    );
+    let cached_tight = cache_path.with_extension("artifacts").join(relative_tight);
+    fs::write(&cached_tight, b"stale tight trace").expect("corrupt cached tight trace");
+    assert!(
+        !matches(),
+        "a tight reference that fails its digest invalidates the cache"
+    );
+    fs::remove_file(&cached_tight).expect("remove cached tight trace");
+    assert!(
+        !matches(),
+        "a missing tight reference invalidates the cache"
+    );
+}
+
 #[test]
 fn simulation_parity_cache_rejects_missing_and_stale_traces() {
     let temp = tempdir().expect("tempdir");

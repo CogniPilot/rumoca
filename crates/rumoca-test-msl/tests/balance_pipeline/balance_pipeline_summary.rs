@@ -80,6 +80,7 @@ pub(super) fn finalize_msl_summary_from_results(
     let counters = summarize_msl_results(&model_results);
     timings.summarize_seconds = summarize_start.elapsed().as_secs_f64();
     timings.core_pipeline_seconds = core_start.elapsed().as_secs_f64();
+    timings.window = TimingWindow::ending_now(timings.core_pipeline_seconds);
     capture_process_peak_rss(&mut timings);
     println!(
         "Aggregated summary stats in {:.2}s",

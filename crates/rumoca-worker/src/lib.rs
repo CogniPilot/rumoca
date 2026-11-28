@@ -284,6 +284,9 @@ pub enum ModelWorkerRunOutcome {
 pub struct ModelWorkerPhaseTimeouts {
     default_secs: f64,
     simulation_secs: f64,
+    /// One stage whose budget a re-measurement raises; every other stage
+    /// keeps its own.
+    raised: Option<(WorkerProgressPhase, f64)>,
 }
 
 impl ModelWorkerPhaseTimeouts {
@@ -291,10 +294,33 @@ impl ModelWorkerPhaseTimeouts {
         Self {
             default_secs,
             simulation_secs,
+            raised: None,
         }
     }
 
-    pub const fn timeout_secs_for(self, phase: Option<WorkerProgressPhase>) -> f64 {
+    /// These budgets with `phase`'s alone raised to `secs`: the
+    /// re-measurement of a stage the watchdog killed, on the same runner. A
+    /// value below the stage's own budget is refused: a re-measurement never
+    /// gives a stage less time than the run it re-measures.
+    pub fn with_raised(self, phase: WorkerProgressPhase, secs: f64) -> Result<Self, String> {
+        let own = self.timeout_secs_for(Some(phase));
+        if !secs.is_finite() || secs < own {
+            return Err(format!(
+                "a raised {phase:?} budget of {secs} s is below its own {own} s"
+            ));
+        }
+        Ok(Self {
+            raised: Some((phase, secs)),
+            ..self
+        })
+    }
+
+    pub fn timeout_secs_for(self, phase: Option<WorkerProgressPhase>) -> f64 {
+        if let (Some((raised, secs)), Some(phase)) = (self.raised, phase)
+            && raised == phase
+        {
+            return secs;
+        }
         if matches!(phase, Some(WorkerProgressPhase::Sim)) {
             self.simulation_secs
         } else {
@@ -1246,5 +1272,39 @@ mod tests {
             14.0
         );
         assert_eq!(timeouts.timeout_secs_for(None), 10.0);
+    }
+
+    #[test]
+    fn a_raised_stage_alone_gets_the_raised_budget() {
+        let timeouts = ModelWorkerPhaseTimeouts::new(10.0, 14.0)
+            .with_raised(WorkerProgressPhase::Solve, 30.0)
+            .unwrap();
+        assert_eq!(
+            timeouts.timeout_secs_for(Some(WorkerProgressPhase::Solve)),
+            30.0
+        );
+        assert_eq!(
+            timeouts.timeout_secs_for(Some(WorkerProgressPhase::Flatten)),
+            10.0
+        );
+        assert_eq!(
+            timeouts.timeout_secs_for(Some(WorkerProgressPhase::Sim)),
+            14.0
+        );
+        assert_eq!(timeouts.timeout_secs_for(None), 10.0);
+        let sim = ModelWorkerPhaseTimeouts::new(10.0, 14.0)
+            .with_raised(WorkerProgressPhase::Sim, 42.0)
+            .unwrap();
+        assert_eq!(sim.timeout_secs_for(Some(WorkerProgressPhase::Sim)), 42.0);
+        assert_eq!(sim.timeout_secs_for(Some(WorkerProgressPhase::Solve)), 10.0);
+        // Never below the stage's own budget.
+        let base = ModelWorkerPhaseTimeouts::new(10.0, 14.0);
+        assert!(base.with_raised(WorkerProgressPhase::Solve, 9.0).is_err());
+        assert!(base.with_raised(WorkerProgressPhase::Sim, 13.0).is_err());
+        assert!(
+            base.with_raised(WorkerProgressPhase::Solve, f64::NAN)
+                .is_err()
+        );
+        assert!(base.with_raised(WorkerProgressPhase::Solve, 10.0).is_ok());
     }
 }

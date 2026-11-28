@@ -1705,11 +1705,11 @@ fn checked_quality_baseline_has_versioned_oracle_policy_migration_and_tensor_kpi
         baseline.phase_budgets,
         PhaseBudgets::new(20.0, 45.0).expect("immutable CI evidence budgets")
     );
-    assert_eq!(baseline.flatten_models, 542);
+    assert_eq!(baseline.flatten_models, 547);
     assert_eq!(baseline.partial_models, 13);
     assert_eq!(baseline.partial_model_names, reviewed_partial_model_names());
     assert_eq!(baseline.tensor_preservation.report_errors, 0);
-    assert_eq!(baseline.certified_strict_high_models.len(), 303);
+    assert_eq!(baseline.certified_strict_high_models.len(), 331);
     assert_eq!(baseline.unexcepted_non_high_models.len(), 1);
     assert_eq!(
         baseline.trace_exceptions_sha256.as_deref(),
@@ -1733,7 +1733,7 @@ fn checked_quality_baseline_has_versioned_oracle_policy_migration_and_tensor_kpi
             .map(|trace| trace.agreement_high),
         Some(baseline.certified_strict_high_models.len() + baseline.timing_margin_models.len())
     );
-    assert_eq!(baseline.timing_margin_models.len(), 4);
+    assert_eq!(baseline.timing_margin_models.len(), 3);
 
     let migration = baseline
         .metric_schema_migration
@@ -1930,69 +1930,4 @@ fn quality_context_rejects_baseline_partial_roster_drift() {
         msl_quality_context_mismatch_reason(gate_input_with_sim_rate(8, 10), &baseline, None)
             .expect("baseline count/roster drift must fail closed");
     assert!(reason.contains("count/roster mismatch"), "{reason}");
-}
-
-/// A roster addition must name its defect and be in the roster it adds to;
-/// the v8 boundary's LogicalSample addition is reviewed and the v9 to v14
-/// boundaries add none (SPEC_0050).
-#[test]
-fn roster_additions_name_their_defect_and_join_the_roster() {
-    let baseline =
-        load_msl_quality_baseline(&msl_quality_baseline_path()).expect("load checked baseline");
-    assert!(validate_unexcepted_non_high_roster(&baseline).is_ok());
-    let head = baseline
-        .reference_boundary_migration
-        .as_ref()
-        .expect("checked v15 boundary");
-    assert!(head.roster_additions.is_empty());
-    let v14 = head.previous.as_deref().expect("checked v14 boundary");
-    assert!(v14.roster_additions.is_empty());
-    let v13 = v14.previous.as_deref().expect("checked v13 boundary");
-    assert!(v13.roster_additions.is_empty());
-    let v12 = v13.previous.as_deref().expect("checked v12 boundary");
-    assert!(v12.roster_additions.is_empty());
-    let v11 = v12.previous.as_deref().expect("checked v11 boundary");
-    assert!(v11.roster_additions.is_empty());
-    let v10 = v11.previous.as_deref().expect("checked v10 boundary");
-    assert!(v10.roster_additions.is_empty());
-    let v9 = v10.previous.as_deref().expect("checked v9 boundary");
-    assert!(v9.roster_additions.is_empty());
-    assert_eq!(
-        v9.previous
-            .as_ref()
-            .map(|migration| migration.roster_additions.clone()),
-        Some(vec![schema_migrations::logical_sample_roster_addition()])
-    );
-
-    let mut unnamed = baseline.clone();
-    unnamed
-        .reference_boundary_migration
-        .as_mut()
-        .and_then(|migration| migration.previous.as_mut())
-        .and_then(|migration| migration.previous.as_mut())
-        .and_then(|migration| migration.previous.as_mut())
-        .and_then(|migration| migration.previous.as_mut())
-        .and_then(|migration| migration.previous.as_mut())
-        .and_then(|migration| migration.previous.as_mut())
-        .and_then(|migration| migration.previous.as_mut())
-        .unwrap()
-        .roster_additions[0]
-        .cause = " ".to_string();
-    assert!(validate_unexcepted_non_high_roster(&unnamed).is_err());
-
-    // Under the boundary that adds it, LogicalSample must be in the roster.
-    let mut outside = baseline;
-    outside.reference_boundary_migration = outside
-        .reference_boundary_migration
-        .and_then(|migration| migration.previous.map(|previous| *previous))
-        .and_then(|migration| migration.previous.map(|previous| *previous))
-        .and_then(|migration| migration.previous.map(|previous| *previous))
-        .and_then(|migration| migration.previous.map(|previous| *previous))
-        .and_then(|migration| migration.previous.map(|previous| *previous))
-        .and_then(|migration| migration.previous.map(|previous| *previous))
-        .and_then(|migration| migration.previous.map(|previous| *previous));
-    outside
-        .unexcepted_non_high_models
-        .shift_remove("Modelica.Clocked.Examples.Elementary.ClockSignals.LogicalSample");
-    assert!(validate_unexcepted_non_high_roster(&outside).is_err());
 }

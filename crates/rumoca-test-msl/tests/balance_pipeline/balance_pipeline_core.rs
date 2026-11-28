@@ -416,6 +416,7 @@ fn compile_timeout_phase_result(
 
 fn model_worker_wall_timeout_secs(stage_budget_secs: f64) -> f64 {
     stage_budget_secs * COMPILE_PIPELINE_STAGE_BUDGETS
+        + raised_compile_wall_delta_secs(stage_budget_secs, parity_config().raised_stage)
 }
 
 fn streaming_queue_bound(worker_threads: usize, model_count: usize) -> usize {
@@ -448,7 +449,7 @@ fn global_queue_sim_timeout_secs(
     model_budget_secs: f64,
 ) -> u64 {
     let compile_secs = model_worker_wall_timeout_secs(model_budget_secs).ceil() as u64;
-    let sim_secs = sim_timeout_secs().ceil() as u64;
+    let sim_secs = solver_timeout_secs().ceil() as u64;
     let per_wave_secs = compile_secs.saturating_add(sim_secs).saturating_add(5);
     work_queue_waves(model_count, worker_threads)
         .saturating_mul(per_wave_secs.max(1))
@@ -785,7 +786,7 @@ fn run_compile_model_in_process_worker(
     });
     let outcome = worker_ref.run_request(
         &request,
-        model_worker_phase_timeouts(phase_timeout_secs, sim_timeout_secs()),
+        model_worker_phase_timeouts(phase_timeout_secs, solver_timeout_secs()),
         &progress_jsonl,
     );
     if let Some(session) = perf_session {
@@ -925,7 +926,7 @@ fn prepare_model_worker_request(
         run_simulation: plan.run_simulation,
         selected_for_simulation: plan.selected_for_simulation,
         explicit_sim_target: plan.explicit_sim_target,
-        sim_timeout_secs: Some(sim_timeout_secs()),
+        sim_timeout_secs: Some(solver_timeout_secs()),
         emit_json: false,
         nan_trace: false,
         emit_modelica: false,

@@ -15,10 +15,13 @@ path = "src/main.rs"
 name = "rumoca-traversal-policy-check"
 path = "src/bin/rumoca-traversal-policy-check.rs"
 
-# xtask carries NO `rumoca-*` workspace dependency: it parses args, moves files,
-# and shells out. Compiler-linked work runs on demand through commands in the
-# owning package. The CI arch check enforces this boundary.
+# xtask builds no compiler: it parses args, moves files, and shells out.
+# Compiler-linked work runs on demand through commands in the owning package.
+# Its only workspace dependencies are declared leaves, which depend on no
+# workspace crate themselves (today `rumoca-msl-quality`; SPEC_0041 §1). The
+# architecture suite's xtask_leaf_dependencies check enforces this boundary.
 [dependencies]
+rumoca-msl-quality = { workspace = true }
 anyhow = { workspace = true }
 rustc-demangle = "0.1"
 clap = { workspace = true }

@@ -17,226 +17,40 @@ pub(super) fn quality_gate_v3_metric_schema_migration() -> MslMetricSchemaMigrat
     }
 }
 
-pub(super) fn reviewed_reference_boundary_migration() -> MslReferenceBoundaryMigration {
-    let mut migration = v14_reference_boundary_migration();
-    migration.previous = Some(Box::new(migration.clone()));
-    migration.metric.from_quality_gate_version = 14;
-    migration.metric.to_quality_gate_version = 15;
-    migration.metric.change = "typed-trace-exceptions-v7".to_string();
-    migration.metric.strict_high_before = 304;
-    migration.metric.strict_high_after = 304;
-    migration.metric.policy_excluded_after = 54;
-    migration.metric.excluded_strict_high_before = 0;
-    migration.metric.excluded_non_high_before = 1;
-    migration.metric.exclusions_sha256 =
-        "dbd79465290de942e805cbb369bb805e9eba0b42effeef3237a0f0d093e2c11f".to_string();
-    migration.evidence_git_commit = "128f70a6ea97334cef5a18ae8546a57abaf50168".to_string();
-    migration.evidence_run = "roomco2withcontrols-focused".to_string();
-    migration.policy_excluded_before = 53;
-    migration.roster_additions = Vec::new();
-    migration
+/// The reviewed reference boundary chain (SPEC_0033, SPEC_0050), newest link
+/// first. A boundary is reviewed by reviewing this file; nothing else
+/// declares it.
+pub(super) const MSL_REFERENCE_BOUNDARIES_FILE_REL: &str =
+    "tests/msl_tests/msl_reference_boundaries.json";
+pub(super) const REFERENCE_BOUNDARY_CHAIN_SCHEMA_VERSION: u32 = 1;
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct ReferenceBoundaryChainFile {
+    pub(super) schema_version: u32,
+    pub(super) chain: MslReferenceBoundaryMigration,
 }
 
-pub(super) fn v14_reference_boundary_migration() -> MslReferenceBoundaryMigration {
-    let mut migration = v13_reference_boundary_migration();
-    migration.previous = Some(Box::new(migration.clone()));
-    migration.metric.from_quality_gate_version = 13;
-    migration.metric.to_quality_gate_version = 14;
-    migration.metric.change = "phasor-angle-comparison-v1".to_string();
-    migration.metric.strict_high_before = 298;
-    migration.metric.strict_high_after = 304;
-    migration.metric.policy_excluded_after = 53;
-    migration.metric.excluded_strict_high_before = 0;
-    migration.metric.excluded_non_high_before = 0;
-    migration.metric.exclusions_sha256 =
-        "19d0bef167c5120f371e59de5f3c4ed785779b16115f4689ebd8976be55a1a14".to_string();
-    migration.evidence_git_commit = "f45f742de6ca9d824e3b707d1e91b31edd33ac7f".to_string();
-    migration.evidence_run = "ang-compare-quasistatic-focused".to_string();
-    migration.policy_excluded_before = 59;
-    migration.roster_additions = Vec::new();
-    migration
-}
-
-pub(super) fn v13_reference_boundary_migration() -> MslReferenceBoundaryMigration {
-    let mut migration = v12_reference_boundary_migration();
-    migration.previous = Some(Box::new(migration.clone()));
-    migration.metric.from_quality_gate_version = 12;
-    migration.metric.to_quality_gate_version = 13;
-    migration.metric.change = "typed-trace-exceptions-v6".to_string();
-    migration.metric.strict_high_before = 298;
-    migration.metric.strict_high_after = 298;
-    migration.metric.policy_excluded_after = 59;
-    migration.metric.excluded_strict_high_before = 0;
-    migration.metric.excluded_non_high_before = 8;
-    migration.metric.exclusions_sha256 =
-        "088949f877eab0b276dc056cb54e1bc2c62b25e1813d29cd1f5c616b6909d5ed".to_string();
-    migration.evidence_git_commit = "20face9056ff23ca23b71d111151d174c3755a05".to_string();
-    migration.evidence_run = "ci-37253114196".to_string();
-    migration.policy_excluded_before = 51;
-    migration.roster_additions = Vec::new();
-    migration
-}
-
-pub(super) fn v12_reference_boundary_migration() -> MslReferenceBoundaryMigration {
-    let mut migration = v11_reference_boundary_migration();
-    migration.previous = Some(Box::new(migration.clone()));
-    migration.metric.from_quality_gate_version = 11;
-    migration.metric.to_quality_gate_version = 12;
-    migration.metric.change = "typed-trace-exceptions-v5".to_string();
-    migration.metric.strict_high_before = 290;
-    migration.metric.strict_high_after = 290;
-    migration.metric.policy_excluded_after = 51;
-    migration.metric.excluded_strict_high_before = 0;
-    migration.metric.excluded_non_high_before = 0;
-    migration.metric.exclusions_sha256 =
-        "e4d219fec8391057e3e446b7e5cf83c115937e72d640eb92770bb6ddaf564bbb".to_string();
-    migration.evidence_git_commit = "a6ab80615c5f5efcd174c33979ddd3b35db1cfdb".to_string();
-    migration.evidence_run = "package-coverage-integration-full".to_string();
-    migration.policy_excluded_before = 38;
-    migration.roster_additions = Vec::new();
-    migration
-}
-
-pub(super) fn v11_reference_boundary_migration() -> MslReferenceBoundaryMigration {
-    let mut migration = v10_reference_boundary_migration();
-    migration.previous = Some(Box::new(migration.clone()));
-    migration.metric.from_quality_gate_version = 10;
-    migration.metric.to_quality_gate_version = 11;
-    migration.metric.change = "typed-trace-exceptions-v4".to_string();
-    migration.metric.strict_high_before = 231;
-    migration.metric.strict_high_after = 231;
-    migration.metric.policy_excluded_after = 38;
-    migration.metric.excluded_strict_high_before = 0;
-    migration.metric.excluded_non_high_before = 0;
-    migration.metric.exclusions_sha256 =
-        "d7069c55495f78ed4f67e1833762a924dcbd719d14a36faf1f1300cda701a4e4".to_string();
-    migration.evidence_git_commit = "8183e58220d930d1d2b5737a381b267881133d8a".to_string();
-    migration.evidence_run = "two-tanks-near-zero-channel-full".to_string();
-    migration.policy_excluded_before = 37;
-    migration.roster_additions = Vec::new();
-    migration
-}
-
-pub(super) fn v10_reference_boundary_migration() -> MslReferenceBoundaryMigration {
-    let mut migration = v9_reference_boundary_migration();
-    migration.previous = Some(Box::new(migration.clone()));
-    migration.metric.from_quality_gate_version = 9;
-    migration.metric.to_quality_gate_version = 10;
-    migration.metric.change = "typed-trace-exceptions-v3".to_string();
-    migration.metric.strict_high_before = 231;
-    migration.metric.strict_high_after = 231;
-    migration.metric.policy_excluded_after = 37;
-    migration.metric.excluded_strict_high_before = 0;
-    migration.metric.excluded_non_high_before = 0;
-    migration.metric.exclusions_sha256 =
-        "170408125e23ad781591e7fd5cb1f242595cbb617179df50a65705a4f709bcd2".to_string();
-    migration.evidence_git_commit = "d0aa5a1e376feb893ed4eb275420c99cd7562560".to_string();
-    migration.evidence_run = "controlled-tanks-reference-failure-ci-37070758328".to_string();
-    migration.policy_excluded_before = 36;
-    migration.roster_additions = Vec::new();
-    migration
-}
-
-pub(super) fn v9_reference_boundary_migration() -> MslReferenceBoundaryMigration {
-    let mut migration = v8_reference_boundary_migration();
-    migration.previous = Some(Box::new(migration.clone()));
-    migration.metric.from_quality_gate_version = 8;
-    migration.metric.to_quality_gate_version = 9;
-    migration.metric.change = "typed-trace-exceptions-v2".to_string();
-    migration.metric.strict_high_before = 231;
-    migration.metric.strict_high_after = 231;
-    migration.metric.policy_excluded_after = 36;
-    migration.metric.excluded_strict_high_before = 0;
-    migration.metric.excluded_non_high_before = 0;
-    migration.metric.exclusions_sha256 =
-        "69d6b7259debe61e12fb9a8d3b0003115c496d4ec0f4a84ae8de5a8f9f7dcc49".to_string();
-    migration.evidence_git_commit = "b4c670b55cc228fc1db13307b7252e8ba15c80f2".to_string();
-    migration.evidence_run = "reviewed-reference-failure-rows-full".to_string();
-    migration.policy_excluded_before = 33;
-    migration.roster_additions = Vec::new();
-    migration
-}
-
-pub(super) fn v8_reference_boundary_migration() -> MslReferenceBoundaryMigration {
-    let mut migration = v7_reference_boundary_migration();
-    migration.previous = Some(Box::new(migration.clone()));
-    migration.metric.from_quality_gate_version = 7;
-    migration.metric.to_quality_gate_version = 8;
-    migration.metric.change = "typed-trace-exceptions-v1".to_string();
-    migration.metric.strict_high_before = 231;
-    migration.metric.strict_high_after = 231;
-    migration.metric.policy_excluded_after = 33;
-    migration.metric.excluded_strict_high_before = 0;
-    migration.metric.excluded_non_high_before = 0;
-    migration.metric.exclusions_sha256 =
-        "d8ddb25c1169b72c35c89f77eed12e0b5ae9de8ef4ace0ec998ecdbcb0ec9da0".to_string();
-    migration.evidence_git_commit = "70fa6612a34b7e6b454672e448a747d6e4bdd440".to_string();
-    migration.evidence_run = "typed-trace-exceptions-full".to_string();
-    migration.policy_excluded_before = 23;
-    migration.roster_additions = vec![logical_sample_roster_addition()];
-    migration
-}
-
-pub(super) fn v7_reference_boundary_migration() -> MslReferenceBoundaryMigration {
-    let mut migration = previous_reference_boundary_migration();
-    migration.previous = Some(Box::new(migration.clone()));
-    migration.metric.from_quality_gate_version = 6;
-    migration.metric.to_quality_gate_version = 7;
-    migration.metric.change =
-        "reviewed-non-identifiable-discrete-and-internal-node-boundary-v1".to_string();
-    migration.metric.strict_high_before = 166;
-    migration.metric.strict_high_after = 166;
-    migration.metric.policy_excluded_after = 23;
-    migration.metric.excluded_strict_high_before = 0;
-    migration.metric.excluded_non_high_before = 2;
-    migration.metric.exclusions_sha256 =
-        "2f4742677e95825bc98f392ef063fdeb2b910b5de1b80c9e94e407a0de6f31dd".to_string();
-    migration.evidence_git_commit = "9e5b5c7d52e6dde1edc6164727a5620d5e0867bc".to_string();
-    migration.evidence_run = "msl-quality-0.10.0-reviewed-exclusions".to_string();
-    migration.policy_excluded_before = 21;
-    migration
-}
-
-pub(super) fn previous_reference_boundary_migration() -> MslReferenceBoundaryMigration {
-    let mut migration = base_reference_boundary_migration();
-    migration.previous = Some(Box::new(migration.clone()));
-    migration.metric.from_quality_gate_version = 5;
-    migration.metric.to_quality_gate_version = 6;
-    migration.metric.change = "reviewed-conditioned-observable-reference-boundary-v1".to_string();
-    migration.metric.strict_high_before = 166;
-    migration.metric.strict_high_after = 166;
-    migration.metric.policy_excluded_after = 21;
-    migration.metric.exclusions_sha256 =
-        "1da770784678228aff3c0d574bb48adce7138c5c54d252ce79883dd456d135b9".to_string();
-    migration.evidence_git_commit = "0de3f29c0ae9440061bef21c7eb9eb4650407015".to_string();
-    migration.evidence_run = "multibody-automatic-basis-full".to_string();
-    migration.policy_excluded_before = 20;
-    migration
-}
-
-pub(super) fn base_reference_boundary_migration() -> MslReferenceBoundaryMigration {
-    MslReferenceBoundaryMigration {
-        metric: MslMetricSchemaMigration {
-            from_quality_gate_version: 4,
-            to_quality_gate_version: 5,
-            change: "reviewed-reference-convergence-boundary-v1".to_string(),
-            strict_high_before: 160,
-            strict_high_after: 160,
-            policy_excluded_after: 20,
-            excluded_strict_high_before: 0,
-            excluded_non_high_before: 1,
-            exclusions_file:
-                "crates/rumoca-test-msl/tests/msl_tests/msl_trace_compare_exclusions.json"
-                    .to_string(),
-            exclusions_sha256: "30f7c38e58307d6af4f69b844512679ec860f367f88670481edad5318d7d29f8"
-                .to_string(),
-        },
-        evidence_git_commit: "3d76411c1a41a1b27e6a0ecbf1cf3e204f0b47a4".to_string(),
-        evidence_run: "multibody-guarded-affine-full-11".to_string(),
-        policy_excluded_before: 19,
-        roster_additions: Vec::new(),
-        previous: None,
+/// Parse a reference boundary chain file, refusing one of another schema.
+pub(super) fn parse_reference_boundary_chain(
+    text: &str,
+) -> Result<MslReferenceBoundaryMigration, String> {
+    let file: ReferenceBoundaryChainFile = serde_json::from_str(text)
+        .map_err(|error| format!("parse the reference boundary chain: {error}"))?;
+    if file.schema_version != REFERENCE_BOUNDARY_CHAIN_SCHEMA_VERSION {
+        return Err(format!(
+            "reference boundary chain schema {} is not the supported {}",
+            file.schema_version, REFERENCE_BOUNDARY_CHAIN_SCHEMA_VERSION
+        ));
     }
+    Ok(file.chain)
+}
+
+pub(super) fn reviewed_reference_boundary_migration() -> MslReferenceBoundaryMigration {
+    parse_reference_boundary_chain(include_str!(
+        "../../msl_tests/msl_reference_boundaries.json"
+    ))
+    .unwrap_or_else(|error| panic!("the reviewed reference boundary chain: {error}"))
 }
 
 pub(super) fn reviewed_partial_model_names() -> IndexSet<String> {
@@ -370,5 +184,56 @@ pub(super) fn logical_sample_roster_addition() -> MslRosterAddition {
                 .to_string(),
         ],
         owner: "kernel lane (root/time-event coincidence rule, SPEC_0044 ME-EVENT-004)".to_string(),
+        deviation_channels: None,
+        severe_channels: None,
     }
+}
+
+#[test]
+fn a_roster_additions_reviewed_channel_counts_survive_parse_and_serialize() {
+    let text = include_str!("../../msl_tests/msl_reference_boundaries.json");
+    let chain = parse_reference_boundary_chain(text).expect("the checked-in chain parses");
+    let written = serde_json::to_value(&chain).expect("the chain serializes");
+    let additions = written["roster_additions"]
+        .as_array()
+        .expect("head roster additions");
+    let two_tanks = additions
+        .iter()
+        .find(|addition| {
+            addition["model_name"] == "Modelica.Fluid.Examples.AST_BatchPlant.Test.TwoTanks"
+        })
+        .expect("the head boundary adds TwoTanks");
+    assert_eq!(two_tanks["deviation_channels"], 11);
+    assert_eq!(two_tanks["severe_channels"], 11);
+}
+
+#[test]
+fn the_reviewed_chain_is_one_contiguous_checked_in_file() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(MSL_REFERENCE_BOUNDARIES_FILE_REL);
+    let text = std::fs::read_to_string(&path)
+        .unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
+    let chain = parse_reference_boundary_chain(&text).expect("the checked-in chain parses");
+    assert_eq!(chain, reviewed_reference_boundary_migration());
+    assert_eq!(
+        chain.metric.to_quality_gate_version,
+        MSL_QUALITY_GATE_VERSION
+    );
+    let mut link = &chain;
+    while let Some(previous) = link.previous.as_deref() {
+        assert_eq!(
+            link.metric.from_quality_gate_version, previous.metric.to_quality_gate_version,
+            "boundary {} does not continue the chain",
+            link.metric.change
+        );
+        link = previous;
+    }
+}
+
+#[test]
+fn a_chain_file_of_another_schema_is_refused() {
+    let text = include_str!("../../msl_tests/msl_reference_boundaries.json");
+    let mut file: serde_json::Value = serde_json::from_str(text).unwrap();
+    file["schema_version"] = serde_json::json!(REFERENCE_BOUNDARY_CHAIN_SCHEMA_VERSION + 1);
+    let error = parse_reference_boundary_chain(&file.to_string()).unwrap_err();
+    assert!(error.contains("is not the supported"), "{error}");
 }

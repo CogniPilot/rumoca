@@ -53,7 +53,7 @@ fn phasor_trace(
 }
 
 fn compare(rumoca: &SimTrace, omc: &SimTrace) -> ModelDeviationMetric {
-    compare_model_traces("PhasorFixture", rumoca, omc).expect("fixture traces compare")
+    compare_model_traces("PhasorFixture", rumoca, omc, None).expect("fixture traces compare")
 }
 
 fn error_of(metric: &ModelDeviationMetric, name: &str) -> f64 {
