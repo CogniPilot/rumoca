@@ -30,12 +30,8 @@ pub use diagnostics::{
 pub use entry::{
     lower_dae_for_gpu_preparation, lower_dae_for_native_preparation, lower_dae_for_simulation,
 };
-#[cfg(all(
-    target_arch = "wasm32",
-    feature = "precompiled-runtime",
-    feature = "solver-rk45"
-))]
-pub(crate) use fmi::finish_component;
+#[cfg(any(feature = "solver-diffsol", feature = "solver-rk45"))]
+pub(crate) use fmi::{admit_runtime_component, finish_component};
 #[cfg(feature = "fmi")]
 pub use fmi::{lower_fmi_c_export_component, lower_fmi_component, lower_fmi_export_component};
 pub use linearization::{Linearization, linearization_for_dae};
