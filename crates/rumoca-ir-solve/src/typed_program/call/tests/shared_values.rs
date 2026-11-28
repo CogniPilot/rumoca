@@ -11,6 +11,9 @@ use crate::{
 
 /// One call of two `width`-vectors returning both swapped, values only.
 fn value_call(width: u32) -> SolvePureCallTable {
+    ordered_call(width, true)
+}
+fn ordered_call(width: u32, swap: bool) -> SolvePureCallTable {
     let vector = SolveValueType::tensor(SolveScalarType::real(profile()), vec![width]).unwrap();
     let inputs = vec![vector.clone(), vector.clone()];
     let outputs = vec![
@@ -26,8 +29,13 @@ fn value_call(width: u32) -> SolvePureCallTable {
             |builder, inputs, outputs| {
                 let first = builder.load(inputs[0], span(1))?;
                 let second = builder.load(inputs[1], span(2))?;
-                builder.store(outputs[0], second, span(3))?;
-                builder.store(outputs[1], first, span(4))
+                let (left, right) = if swap {
+                    (second, first)
+                } else {
+                    (first, second)
+                };
+                builder.store(outputs[0], left, span(3))?;
+                builder.store(outputs[1], right, span(4))
             },
         )?;
         Ok(())
@@ -215,4 +223,39 @@ fn compaction_keeps_the_offsets_between_call_operands() {
         panic!("the programs fuse into one segment");
     };
     assert_eq!(calls(segment.ops()), 1);
+}
+
+#[test]
+fn scalar_and_native_proofs_require_the_issuing_call_owner() {
+    let table = ordered_call(3, true);
+    let other = ordered_call(3, false);
+    let program = |table: &SolvePureCallTable, native: bool| {
+        let mut ops = call_then_copy(table.owners()[0].call_site(), 0, Some(0));
+        if native {
+            *ops.last_mut().unwrap() = LinearOp::StoreOutputRange {
+                start: 6,
+                count: 6,
+                stride: 1,
+            };
+        }
+        ops
+    };
+    for native in [false, true] {
+        let ops = program(&table, native);
+        let targets: Vec<_> = (20..20 + if native { 6 } else { 1 }).collect();
+        let proof = SharedValueSegments::derive(&[AssignmentProgram {
+            ops: &ops,
+            targets: &targets,
+        }]);
+        let verify = |table: &SolvePureCallTable| {
+            proof.check(&[AssignmentProgram {
+                ops: &program(table, native),
+                targets: &targets,
+            }])
+        };
+        verify(&table.clone()).unwrap();
+        assert!(verify(&other).is_err());
+        // Equal interfaces and the same wire index still belong to independent owners.
+        assert!(verify(&ordered_call(3, true)).is_err());
+    }
 }
