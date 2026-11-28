@@ -298,6 +298,30 @@ fn assertion_on_parameter(model: &mut SolveModel) {
     ]]);
 }
 
+/// A host which cannot check a changing assertion at accepted points must
+/// not mistake the broader C profile's admission for static event admission.
+#[test]
+fn runtime_parameter_event_admission_reuses_the_c_proof() {
+    for (operation, admitted) in [
+        (LinearOp::LoadP { dst: 0, index: 1 }, true),
+        (LinearOp::LoadP { dst: 0, index: 0 }, false),
+        (LinearOp::LoadTime { dst: 0 }, false),
+    ] {
+        let (mut model, input) = super::max_step_duration_local::delay_bearing_model_with_one_run();
+        model.problem.events.delays = SolveDelayPartition::default();
+        assertion_on_parameter(&mut model);
+        model.problem.events.action_conditions =
+            rows(vec![vec![operation, LinearOp::StoreOutput { src: 0 }]]);
+        let component = FmiComponent::construct(model, vec![input]).unwrap();
+        let result = component.runtime_view().validate_parameter_only_events();
+        assert_eq!(result.is_ok(), admitted);
+        if !admitted {
+            assert!(result.unwrap_err().to_string().contains("accepted-point"));
+        }
+        assert!(component.into_codegen_view().try_c().is_ok());
+    }
+}
+
 /// SPEC_0044 ME-PARAM-001: an assertion condition is a read that keeps a
 /// parameter settable; a parameter no program reads keeps its parameter
 /// variability too (MLS §4.5), since whether a program reads it does not
