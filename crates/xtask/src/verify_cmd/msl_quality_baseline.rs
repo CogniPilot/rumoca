@@ -963,6 +963,13 @@ fn resolve_workspace_path(root: &Path, path: &Path) -> PathBuf {
     }
 }
 
+/// The baseline a re-measurement judges against: the raw promoted asset, or,
+/// offline only, the checked-in baseline (said out loud).
+pub(super) fn promoted_baseline_or_offline_fallback(root: &Path) -> Result<PathBuf> {
+    Ok(download_msl_quality_baseline_asset(root)?
+        .unwrap_or_else(|| checked_in_msl_quality_baseline_path(root)))
+}
+
 /// Under GitHub Actions a promoted asset that cannot be read fails the run:
 /// falling back would judge the PR against another baseline than promotion
 /// does. Elsewhere the checked-in baseline is the local/offline fallback.

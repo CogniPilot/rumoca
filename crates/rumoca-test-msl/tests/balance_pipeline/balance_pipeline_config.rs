@@ -133,6 +133,13 @@ pub(crate) struct MslParityConfig {
     pub shard_index: Option<usize>,
     /// Total shard count for a sharded parity run (`--shard m/n` → `n`).
     pub shard_count: Option<usize>,
+    /// A re-measurement's one raised stage budget (rule B, step 5): that
+    /// stage's budget is multiplied by `factor`; every other stage keeps its
+    /// own.
+    pub(crate) raised_stage: Option<RaisedStage>,
+    /// Re-run a shard's comparator tail on its results after `verify
+    /// msl-remeasure` patched them (`test_msl_refresh_shard_parity`).
+    pub(crate) refresh_parity: Option<bool>,
     /// Fan-in directory holding each shard's `shard-*/msl_results.json`. When
     /// set, the merge-and-gate entry loads + concatenates those partials,
     /// recomputes the full-set aggregates, and runs the quality gate once on the
@@ -300,6 +307,15 @@ pub(crate) fn promoted_baseline_file() -> Option<PathBuf> {
         return Some(path.clone());
     }
     Some(msl_workspace_root().join(path))
+}
+
+/// One stage whose watchdog budget a re-measurement raises.
+#[derive(Debug, Clone, Copy, PartialEq, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct RaisedStage {
+    pub(crate) phase: rumoca_worker::WorkerProgressPhase,
+    /// At least 1 and at most 3: the stage's budget times the shard's speed.
+    pub(crate) factor: f64,
 }
 
 pub(crate) fn quality_baseline_file_override() -> Option<PathBuf> {

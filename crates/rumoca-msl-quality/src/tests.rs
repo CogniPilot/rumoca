@@ -534,3 +534,27 @@ fn losing_certification_on_an_untrusted_gauge_is_inconclusive_not_a_regression()
         Transition::Regressed(Regression::Uncertified)
     );
 }
+
+#[test]
+fn a_kill_is_inconclusive_until_re_measured_and_final_after() {
+    let simulated_before = simulated(BandLabel::High, 2);
+    let mut killed = failed(ModelStage::Initialized, "sim_timeout");
+    killed.stage_seconds.timeout_phase = Some("Sim".to_string());
+    assert_eq!(
+        one(simulated_before.clone(), killed.clone()),
+        Transition::Inconclusive("watchdog kill")
+    );
+    // Killed again with the stage's budget raised on the same runner.
+    killed.stage_seconds.remeasured = Some(Remeasurement {
+        stage: "Sim".to_string(),
+        factor: 2.46,
+        speed: Some(2.46),
+    });
+    assert_eq!(
+        one(simulated_before, killed),
+        Transition::Regressed(Regression::StageDropped {
+            from: ModelStage::Simulated,
+            to: ModelStage::Initialized,
+        })
+    );
+}

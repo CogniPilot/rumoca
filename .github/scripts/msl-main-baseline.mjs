@@ -174,8 +174,7 @@ export function renderMainComparison(binding, comparison, provenance) {
     'Main snapshot: Actions run ' + binding.runId + ', artifact ' + binding.artifactId + '.',
     'Source binding: ' + provenance + '.', '',
     comparison.losses.length ? '**🔴 Model regression: ' + comparison.losses.length + ' successful model/stage memberships lost.**'
-      : comparison.confirmations?.length ? '**Timeout confirmation completed: no unresolved model/stage loss. Initial measurements below are unchanged.**'
-        : '**No previously successful model/stage membership lost.**', '',
+      : '**No previously successful model/stage membership lost.**', '',
     '| Stage | Main | PR test merge | Δ |', '|---|---:|---:|---:|'];
   for (const [stage, counts] of Object.entries(comparison.counts)) {
     const delta = counts.current - counts.main;
@@ -185,21 +184,6 @@ export function renderMainComparison(binding, comparison, provenance) {
     lines.push('', '| Lost model | Stage | Current status |', '|---|---|---|');
     for (const loss of comparison.losses.slice(0, 20)) lines.push('| ' + code(loss.model) + ' | ' + loss.stage + ' | ' + code(loss.status) + ' |');
     lines.push('', 'Every loss is recorded in msl_main_comparison.json in the current run artifact. Gains never offset losses.');
-  }
-  if (comparison.confirmations?.length) {
-    lines.push('', '#### Timeout-loss confirmations', '',
-      'Models: ' + comparison.confirmations.filter(attempt => attempt.outcome === 'recovered').length
-        + ' recovered, ' + comparison.confirmations.filter(attempt => attempt.outcome !== 'recovered').length
-        + ' unconfirmed. Unconfirmed losses remain red.', '',
-      'One isolated confirmation per model, using unchanged CI budgets. Original rows and confirmation rows are retained in msl_main_comparison.json. This checks stage completion, not trace parity or speed.', '',
-      '| Model | Initial phase/status | Confirmation phase/status | Outcome |', '|---|---|---|---|');
-    const status = row => row ? row.phase_reached + '/' + (row.sim_status ?? row.error_code ?? 'none')
-      + ' (' + (row.sim_wall_seconds ?? row.compile_seconds ?? 'unrecorded') + ' s)' : 'no result';
-    for (const attempt of comparison.confirmations) lines.push('| ' + code(attempt.model) + ' | '
-      + code(status(attempt.original)) + ' | ' + code(status(attempt.row)) + ' | '
-      + code(attempt.outcome + (attempt.recoveredStages.length ? ': ' + attempt.recoveredStages.join(', ')
-        : ': ' + (attempt.reason ?? 'no completion evidence'))) + ' |');
-    lines.push('', 'The Main/PR/Δ table keeps the initial run counts. Recovered stages are listed separately; gains never cancel unresolved losses.');
   }
   lines.push('', 'Simulated means execution completed, not trace parity. The promoted quality-floor gate is separate.', '');
   return lines.join('\n');

@@ -19,6 +19,8 @@ use tempfile::tempdir;
 
 const SHARD_OMC_REFERENCE_FILE: &str = "omc_simulation_reference.json";
 const SHARD_TRACE_COMPARISON_FILE: &str = "sim_trace_comparison.json";
+/// The re-measurements `verify msl-remeasure` made on a shard.
+const REMEASURED_FILE: &str = "msl_remeasured.json";
 
 /// Concatenate per-shard summaries into one full-set summary, reusing the normal
 /// aggregate builder. Pure (no I/O), so the merge arithmetic is unit-testable.
@@ -1108,6 +1110,23 @@ fn write_pretty_json_file(path: &Path, payload: &Value) -> Result<(), String> {
     fs::write(path, json).map_err(|e| format!("merge-shards: cannot write {}: {e}", path.display()))
 }
 
+/// Every shard's `msl_remeasured.json` models, merged (a model is on one
+/// shard).
+fn merged_remeasurements(shard_dirs: &[PathBuf]) -> Result<Value, String> {
+    let mut merged = Map::new();
+    for shard_dir in shard_dirs {
+        let file = shard_dir.join(REMEASURED_FILE);
+        if !file.is_file() {
+            continue;
+        }
+        let payload = read_shard_json(shard_dir, REMEASURED_FILE)?;
+        if let Some(models) = payload.get("models").and_then(Value::as_object) {
+            merged.extend(models.clone());
+        }
+    }
+    Ok(Value::Object(merged))
+}
+
 fn shard_index(shard_dir: &Path) -> Result<u64, String> {
     shard_dir
         .file_name()
@@ -1153,7 +1172,7 @@ fn annotate_omc_timings(shard_dir: &Path, payload: &mut Value) -> Result<Option<
         .filter(|section| !section.is_null())
         .map(|section| {
             let mut section = section.clone();
-            let fresh = timing_run_of(&section) == own_run;
+            let fresh = rumoca_msl_quality::speed::timing_run_of(&section) == own_run;
             section["fresh"] = fresh.into();
             section
         });
@@ -1200,6 +1219,10 @@ fn merge_shard_parity_artifacts(dir: &Path, results_dir: &Path) -> Result<(), St
         root.insert(
             "calibration_by_shard".to_string(),
             Value::Object(calibration),
+        );
+        root.insert(
+            "remeasured".to_string(),
+            merged_remeasurements(&shard_dirs)?,
         );
     }
 
@@ -1256,6 +1279,29 @@ fn test_msl_merge_and_gate() {
         "Merged MSL quality gate passed ({} sim_ok / {} attempted; sim_ok is completion, never parity)",
         merged.sim_ok, merged.sim_attempted
     );
+}
+
+/// After `verify msl-remeasure` replaced re-measured rows in a shard's
+/// results, run the shard's own tail again (results write, OMC reference and
+/// trace comparison on resume, snapshot), so every file the merge reads
+/// agrees with the patched rows. Does nothing unless the parity config asks
+/// for it (`--refresh-parity`).
+#[cfg(feature = "msl-full-test")]
+#[test]
+fn test_msl_refresh_shard_parity() {
+    if parity_config().refresh_parity != Some(true) {
+        return;
+    }
+    let path = msl_results_dir().join("msl_results.json");
+    let raw = fs::read_to_string(&path)
+        .unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
+    let summary: MslSummary = serde_json::from_str(&raw)
+        .unwrap_or_else(|error| panic!("invalid {}: {error}", path.display()));
+    println!(
+        "Refreshing the comparator tail over {} re-measured results",
+        summary.model_results.len()
+    );
+    print_final_stats(&summary);
 }
 
 #[cfg(test)]

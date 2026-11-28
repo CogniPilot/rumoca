@@ -8,6 +8,7 @@ mod kani;
 mod msl_cargo_setup_timing;
 mod msl_local_run;
 mod msl_quality_baseline;
+mod msl_remeasure;
 mod msl_results_cleanup;
 mod parity_budgets;
 mod parity_comparator;
@@ -246,6 +247,15 @@ pub(crate) struct VerifyMslParityArgs {
     /// Used by the sharded MSL CI after all `--shard` jobs finish.
     #[arg(long, value_name = "DIR", conflicts_with = "shard")]
     merge_shards: Option<PathBuf>,
+    /// Re-measure with one stage's budget multiplied (`PHASE=FACTOR`, the
+    /// worker's phase name and 1..3, e.g. `Sim=2.46`); every other stage keeps
+    /// its own. Used by `verify msl-remeasure` on a killed stage.
+    #[arg(long, value_name = "PHASE=FACTOR", value_parser = msl_remeasure::parse_raised_stage)]
+    raise_stage: Option<String>,
+    /// Re-run a shard's comparator tail over results `verify msl-remeasure`
+    /// patched, so every file the merge reads agrees with them.
+    #[arg(long, conflicts_with = "merge_shards")]
+    refresh_parity: bool,
     /// Run a prebuilt `msl_tests` libtest binary (built once by Nix/crane and
     /// shared through CI) instead of recompiling the workspace. The gate does its
     /// normal config/baseline setup, then executes this binary directly — no
@@ -355,6 +365,19 @@ impl VerifyMslParityArgs {
             config.insert(
                 "merge_shards_dir".into(),
                 dir.to_string_lossy().into_owned().into(),
+            );
+        }
+        if self.refresh_parity {
+            config.insert("refresh_parity".into(), true.into());
+        }
+        if let Some((phase, factor)) = self
+            .raise_stage
+            .as_deref()
+            .and_then(|raw| msl_remeasure::raised_stage_parts(raw).ok())
+        {
+            config.insert(
+                "raised_stage".into(),
+                serde_json::json!({ "phase": phase, "factor": factor }),
             );
         }
         serde_json::Value::Object(config)
@@ -520,6 +543,9 @@ pub(crate) enum VerifyCommand {
     /// Generate the statement of every model whose mean channel error rose
     /// against the baseline (or delete it when none rose)
     MslAccuracyChanges(VerifyMslAccuracyChangesArgs),
+    /// Re-measure a shard's watchdog-killed stages on the same runner, with
+    /// only that stage's budget raised by the runner's speed
+    MslRemeasure(msl_remeasure::VerifyMslRemeasureArgs),
     /// Pre-landing gate: CI's blocking steps over a committed snapshot
     Gate(gate::VerifyGateArgs),
     /// Generate real flamegraph SVGs for the hottest compile and sim models from the latest MSL run
@@ -718,6 +744,7 @@ pub(crate) fn run(args: VerifyArgs, root: &Path) -> Result<()> {
         VerifyCommand::MslParity(args) => parity_sweep::run(root, &args, &mut run_msl_quality_gate),
         VerifyCommand::MslRatchet(args) => run_msl_ratchet(root, &args),
         VerifyCommand::MslAccuracyChanges(args) => run_msl_accuracy_changes(root, &args),
+        VerifyCommand::MslRemeasure(args) => msl_remeasure::run(root, &args),
         VerifyCommand::Gate(args) => gate::run(root, &args),
         VerifyCommand::MslHotspots => run_msl_hotspot_flamegraphs(root),
         VerifyCommand::Fuzz(args) => fuzz::run(&args, root),
@@ -1469,6 +1496,8 @@ fn run_msl_quality_gate(root: &Path, args: &VerifyMslParityArgs) -> Result<()> {
     }
     let test_target = if merge_only {
         "balance_pipeline::balance_pipeline_merge::test_msl_merge_and_gate"
+    } else if args.refresh_parity {
+        "balance_pipeline::balance_pipeline_merge::test_msl_refresh_shard_parity"
     } else {
         "balance_pipeline::balance_pipeline_core::test_msl_all"
     };

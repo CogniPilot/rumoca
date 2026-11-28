@@ -1582,12 +1582,45 @@ jobs:
             --budget-profile ci \
             --monitor-interval-secs 10
 
+      # Rule B, step 5: a stage the watchdog killed, which the promoted
+      # baseline completed, is re-run here on this same runner with only that
+      # stage's budget raised by the runner's measured speed (1x to 3x). A
+      # stage killed again is final; a runner whose speed cannot be trusted
+      # re-runs nothing, and its kills stay inconclusive. When rows changed,
+      # the shard's comparator tail runs again over them.
+      - name: Re-measure watchdog kills on this runner
+        run: |
+          set -euo pipefail
+          cargo xtask verify msl-remeasure --results-dir target/msl/results -- \
+            --prebuilt-test-binary "$PWD/result-msl-artifacts/bin/msl_tests" \
+            --prebuilt-model-worker "$PWD/result-msl-artifacts/bin/rumoca-worker" \
+            --prebuilt-sim-worker "$PWD/result-msl-artifacts/bin/rumoca-sim-worker" \
+            --stage-parallelism 1 \
+            --sim-parallelism 1 \
+            --sim-worker-memory-mb 2048 \
+            --sim-total-memory-mb 6144 \
+            --budget-profile ci
+          if jq -e '.models | length > 0' target/msl/results/msl_remeasured.json > /dev/null; then
+            cargo xtask verify msl-parity \
+              --shard ${{ matrix.shard }}/4 \
+              --refresh-parity \
+              --prebuilt-test-binary "$PWD/result-msl-artifacts/bin/msl_tests" \
+              --prebuilt-model-worker "$PWD/result-msl-artifacts/bin/rumoca-worker" \
+              --prebuilt-sim-worker "$PWD/result-msl-artifacts/bin/rumoca-sim-worker" \
+              --stage-parallelism 2 \
+              --sim-parallelism 2 \
+              --sim-worker-memory-mb 2048 \
+              --sim-total-memory-mb 6144 \
+              --budget-profile ci
+          fi
+
       - name: Upload shard results
         uses: actions/upload-artifact@v6
         with:
           name: shard-${{ matrix.shard }}
           path: |
             target/msl/results/msl_results.json
+            target/msl/results/msl_remeasured.json
             target/msl/results/omc_simulation_reference.json
             target/msl/results/sim_trace_comparison.json
             target/msl/results/msl_band_table.json
@@ -1771,43 +1804,6 @@ jobs:
             --results-dir target/msl/results \
             --baseline target/msl/pr-main-baseline/msl_quality_current.json
 
-      - name: Plan timeout-loss confirmations
-        id: timeout-confirmations
-        if: ${{ always() && github.event_name == 'pull_request' && steps.main-validated.outcome == 'success' }}
-        uses: actions/github-script@v8
-        env:
-          MAIN_BASELINE_SHA: ${{ steps.main-baseline.outputs.sha }}
-          MAIN_BASELINE_RUN_ID: ${{ steps.main-baseline.outputs.run-id }}
-        with:
-          script: |
-            const { pathToFileURL } = require('url');
-            const helper = await import(pathToFileURL(process.cwd() + '/.github/scripts/msl-main-baseline.mjs'));
-            const confirmer = await import(pathToFileURL(process.cwd() + '/.github/scripts/msl-timeout-confirmation.mjs'));
-            const baseline = helper.readMainBaseline('target/msl/pr-main-baseline', {
-              sha: process.env.MAIN_BASELINE_SHA, runId: process.env.MAIN_BASELINE_RUN_ID,
-            });
-            const current = helper.readFullSnapshot('target/msl/results', process.env.CI_SOURCE_SHA);
-            const comparison = helper.compareModels(baseline, current);
-            core.setOutput('needed', confirmer.timeoutLossModels(comparison, current).length > 0);
-
-      - name: Download OMC closure for timeout-loss confirmations
-        if: ${{ always() && steps.timeout-confirmations.outputs.needed == 'true' }}
-        uses: actions/download-artifact@v8
-        with:
-          name: openmodelica-cli-nix-closure
-          path: target/nix-cache
-
-      - name: Prepare OMC for timeout-loss confirmations
-        if: ${{ always() && steps.timeout-confirmations.outputs.needed == 'true' }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          zstd --decompress --stdout \
-            target/nix-cache/openmodelica-cli-closure.nar.zst | nix-store --import
-          nix build .#openmodelica-cli --out-link result-openmodelica
-          echo "$PWD/result-openmodelica/bin" >> "$GITHUB_PATH"
-          result-openmodelica/bin/omc --version
-
       - name: Check PR model losses against tested main
         if: ${{ always() && github.event_name == 'pull_request' && steps.main-validated.outcome == 'success' }}
         uses: actions/github-script@v8
@@ -1819,12 +1815,13 @@ jobs:
           script: |
             const { pathToFileURL } = require('url');
             const helper = await import(pathToFileURL(process.cwd() + '/.github/scripts/msl-main-baseline.mjs'));
-            const confirmer = await import(pathToFileURL(process.cwd() + '/.github/scripts/msl-timeout-confirmation.mjs'));
+            // A watchdog kill was re-measured on its own shard's runner before
+            // these results were uploaded (`verify msl-remeasure`), so a loss
+            // here is one that survived its re-measurement.
             try {
-              const comparison = await confirmer.confirmAndAnnotate({
+              const comparison = helper.compareAndAnnotate({
                 baselineDir: 'target/msl/pr-main-baseline', resultsDir: 'target/msl/results',
                 currentSha: process.env.CI_SOURCE_SHA,
-                binaryDir: process.cwd() + '/result-msl-artifacts/bin',
                 binding: { sha: process.env.MAIN_BASELINE_SHA, runId: process.env.MAIN_BASELINE_RUN_ID,
                   artifactId: process.env.MAIN_BASELINE_ARTIFACT_ID },
               });
@@ -2020,7 +2017,6 @@ jobs:
             target/msl/results/msl_quality_current.json
             target/msl/results/msl_main_snapshot.json
             target/msl/results/msl_main_comparison.json
-            target/msl/results/timeout-confirmations/
             target/msl/results/msl_band_table.json
             target/msl/results/msl_package_pass_rates.md
             target/msl/results/msl_package_trace_accuracy.md

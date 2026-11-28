@@ -20,6 +20,7 @@
 //! bounds, or a spread that says the runner changed speed mid-shard) is
 //! inconclusive, never an absolute judgement.
 
+use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 
 /// The calibration set: models whose OMC wall is a few seconds and mostly
@@ -208,6 +209,100 @@ impl SpeedGauge {
             })
             .unwrap_or_default();
         judged_speed(&mut ratios, shard)
+    }
+}
+
+/// The calibration timings of a (merged) reference file: a merged file's
+/// `calibration_by_shard`, or an unsharded run's own section as shard 0.
+pub fn calibration_timings(reference: &Value) -> Vec<OmcTiming> {
+    let own = reference
+        .get("calibration_timings")
+        .filter(|section| !section.is_null());
+    let sections: Vec<(u32, &Value, bool)> = match reference
+        .get("calibration_by_shard")
+        .and_then(Value::as_object)
+    {
+        Some(by_shard) => by_shard
+            .iter()
+            .filter_map(|(shard, section)| {
+                let fresh = section.get("fresh").and_then(Value::as_bool);
+                Some((shard.parse().ok()?, section, fresh.unwrap_or(false)))
+            })
+            .collect(),
+        None => own
+            .map(|section| {
+                let fresh = timing_run_of(section)
+                    == reference.get("timing_run").cloned().unwrap_or_default();
+                vec![(0, section, fresh)]
+            })
+            .unwrap_or_default(),
+    };
+    sections
+        .into_iter()
+        .flat_map(|(shard, section, fresh)| {
+            section
+                .get("models")
+                .and_then(Value::as_object)
+                .into_iter()
+                .flatten()
+                .filter(|(_, entry)| entry.get("status").and_then(Value::as_str) == Some("success"))
+                .filter_map(move |(model, entry)| {
+                    Some(OmcTiming {
+                        shard,
+                        model: model.clone(),
+                        wall_seconds: entry.get("omc_wall_seconds")?.as_f64()?,
+                        fresh,
+                    })
+                })
+        })
+        .collect()
+}
+
+/// The run provenance a timing context carries (null when none), from an OMC
+/// model entry or a calibration section.
+pub fn timing_run_of(entry: &Value) -> Value {
+    entry
+        .get("omc_timing_context")
+        .or_else(|| entry.get("context"))
+        .and_then(|context| context.get("run"))
+        .cloned()
+        .unwrap_or_default()
+}
+
+/// The calibration references the baseline stores, if any.
+fn stored_references(baseline: &Value) -> Result<Option<BTreeMap<String, f64>>, String> {
+    baseline
+        .get("omc_calibration_references")
+        .map(|references| {
+            serde_json::from_value(references.clone())
+                .map_err(|error| format!("omc_calibration_references: {error}"))
+        })
+        .transpose()
+}
+
+/// The frame this run is judged in: the baseline's stored references, which
+/// must be the pinned set, or, only when the baseline predates the frame, the
+/// frame this run sets (`Err` inside when it cannot set one: certification is
+/// then inconclusive). A baseline at or after the frame's gate version without
+/// references is refused.
+pub fn frame_references(
+    baseline: &Value,
+    timings: &[OmcTiming],
+) -> Result<Result<BTreeMap<String, f64>, String>, String> {
+    if let Some(references) = stored_references(baseline)? {
+        validate_references(&references)?;
+        return Ok(Ok(references));
+    }
+    match baseline.get("quality_gate_version").and_then(Value::as_u64) {
+        Some(version) if version < FRAME_GATE_VERSION => Ok(bootstrap_references(timings)),
+        Some(version) => Err(format!(
+            "the baseline (quality gate version {version}) has no omc_calibration_references; \
+             a baseline from version {FRAME_GATE_VERSION} on must carry its frame"
+        )),
+        None => Err(
+            "the baseline has no quality_gate_version to tell whether it predates the frame"
+                .to_string(),
+        ),
     }
 }
 

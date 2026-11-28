@@ -15,58 +15,8 @@
 //! references share it.
 
 use super::*;
-use rumoca_msl_quality::speed::{
-    FRAME_GATE_VERSION, OmcTiming, SpeedGauge, bootstrap_references, validate_references,
-};
-use rumoca_msl_quality::{BandLabel, ModelStates, TraceState};
-
-/// The calibration timings of a (merged) reference file: a merged file's
-/// `calibration_by_shard`, or an unsharded run's own section as shard 0.
-pub(super) fn calibration_timings(reference: &serde_json::Value) -> Vec<OmcTiming> {
-    let own = reference
-        .get("calibration_timings")
-        .filter(|section| !section.is_null());
-    let sections: Vec<(u32, &serde_json::Value, bool)> = match reference
-        .get("calibration_by_shard")
-        .and_then(serde_json::Value::as_object)
-    {
-        Some(by_shard) => by_shard
-            .iter()
-            .filter_map(|(shard, section)| {
-                let fresh = section.get("fresh").and_then(serde_json::Value::as_bool);
-                Some((shard.parse().ok()?, section, fresh.unwrap_or(false)))
-            })
-            .collect(),
-        None => own
-            .map(|section| {
-                let fresh = timing_run_of(section)
-                    == reference.get("timing_run").cloned().unwrap_or_default();
-                vec![(0, section, fresh)]
-            })
-            .unwrap_or_default(),
-    };
-    sections
-        .into_iter()
-        .flat_map(|(shard, section, fresh)| {
-            section
-                .get("models")
-                .and_then(serde_json::Value::as_object)
-                .into_iter()
-                .flatten()
-                .filter(|(_, entry)| {
-                    entry.get("status").and_then(serde_json::Value::as_str) == Some("success")
-                })
-                .filter_map(move |(model, entry)| {
-                    Some(OmcTiming {
-                        shard,
-                        model: model.clone(),
-                        wall_seconds: entry.get("omc_wall_seconds")?.as_f64()?,
-                        fresh,
-                    })
-                })
-        })
-        .collect()
-}
+use rumoca_msl_quality::speed::{SpeedGauge, calibration_timings, frame_references};
+use rumoca_msl_quality::{BandLabel, ModelStates, Remeasurement, TraceState};
 
 /// Each OMC model's shard in a (merged) reference file (0 when unsharded).
 pub(super) fn model_shards(reference: &serde_json::Value) -> BTreeMap<String, u32> {
@@ -86,54 +36,23 @@ pub(super) fn model_shards(reference: &serde_json::Value) -> BTreeMap<String, u3
         .collect()
 }
 
-/// The run provenance a timing context carries (null when none), from an OMC
-/// model entry or a calibration section.
-pub(in super::super) fn timing_run_of(entry: &serde_json::Value) -> serde_json::Value {
-    entry
-        .get("omc_timing_context")
-        .or_else(|| entry.get("context"))
-        .and_then(|context| context.get("run"))
-        .cloned()
-        .unwrap_or_default()
-}
-
-/// The calibration references the baseline stores, if any.
-fn stored_references(baseline: &serde_json::Value) -> io::Result<Option<BTreeMap<String, f64>>> {
-    baseline
-        .get("omc_calibration_references")
-        .map(|references| {
-            serde_json::from_value(references.clone())
-                .map_err(|error| io::Error::other(format!("omc_calibration_references: {error}")))
-        })
-        .transpose()
-}
-
-/// The frame this run is judged in: the baseline's stored references, which
-/// must be the pinned set, or, only when the baseline predates the frame, the
-/// frame this run sets (`Err` inside when it cannot set one: certification is
-/// then inconclusive). A baseline at or after the frame's gate version without
-/// references is refused.
-pub(super) fn frame_references(
-    baseline: &serde_json::Value,
-    timings: &[OmcTiming],
-) -> io::Result<Result<BTreeMap<String, f64>, String>> {
-    if let Some(references) = stored_references(baseline)? {
-        validate_references(&references).map_err(io::Error::other)?;
-        return Ok(Ok(references));
+/// Mark each re-measured model's stage times with its re-measurement (the
+/// merged reference's `remeasured`), so a stage killed again is final.
+pub(super) fn apply_remeasurements(
+    states: &mut ModelStates,
+    reference: &serde_json::Value,
+) -> io::Result<()> {
+    let Some(remeasured) = reference.get("remeasured") else {
+        return Ok(());
+    };
+    let remeasured: BTreeMap<String, Remeasurement> = serde_json::from_value(remeasured.clone())
+        .map_err(|error| io::Error::other(format!("remeasured: {error}")))?;
+    for (model, remeasurement) in remeasured {
+        if let Some(state) = states.get_mut(&model) {
+            state.stage_seconds.remeasured = Some(remeasurement);
+        }
     }
-    match baseline
-        .get("quality_gate_version")
-        .and_then(serde_json::Value::as_u64)
-    {
-        Some(version) if version < FRAME_GATE_VERSION => Ok(bootstrap_references(timings)),
-        Some(version) => Err(io::Error::other(format!(
-            "the baseline (quality gate version {version}) has no omc_calibration_references; \
-             a baseline from version {FRAME_GATE_VERSION} on must carry its frame"
-        ))),
-        None => Err(io::Error::other(
-            "the baseline has no quality_gate_version to tell whether it predates the frame",
-        )),
-    }
+    Ok(())
 }
 
 /// Re-judge `states`' certification under rule B, with the gauge of the
@@ -238,6 +157,7 @@ pub(super) fn insert_normalized_certification(
         }
     };
     let reference = read_json(&omc_simulation_reference_path())?;
+    apply_remeasurements(&mut states, &reference)?;
     if let Some(windows) = reference.get("shard_timing_windows") {
         for window in windows.as_array().into_iter().flatten() {
             println!(
@@ -249,7 +169,7 @@ pub(super) fn insert_normalized_certification(
     }
     let baseline = read_json(&promoted_baseline_file().unwrap_or_else(msl_quality_baseline_path))?;
     let timings = calibration_timings(&reference);
-    let references = frame_references(&baseline, &timings)?;
+    let references = frame_references(&baseline, &timings).map_err(io::Error::other)?;
     let gauge = references
         .as_ref()
         .map(|references| SpeedGauge::new(&timings, references));
@@ -292,7 +212,9 @@ pub(super) fn insert_normalized_certification(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rumoca_msl_quality::speed::CALIBRATION_MODELS;
+    use rumoca_msl_quality::speed::{
+        CALIBRATION_MODELS, FRAME_GATE_VERSION, OmcTiming, bootstrap_references,
+    };
     use rumoca_msl_quality::{ModelStage, ModelState, StageSeconds};
 
     /// Budgets of CI: 45 s per phase, 45 s for the run.
@@ -567,5 +489,23 @@ mod tests {
             reason.contains("cannot set the frame") && reason.ends_with("re-run the shard jobs"),
             "{reason}"
         );
+    }
+
+    #[test]
+    fn a_re_measurement_from_the_merged_reference_marks_the_state() {
+        let mut states = ModelStates::from([("Killed".to_string(), strict_high())]);
+        let reference = serde_json::json!({ "remeasured": {
+            "Killed": { "stage": "Sim", "factor": 2.46, "speed": 2.46 },
+            "Elsewhere": { "stage": "Sim", "factor": 3.0 },
+        } });
+        apply_remeasurements(&mut states, &reference).unwrap();
+        let remeasured = states["Killed"].stage_seconds.remeasured.as_ref().unwrap();
+        assert_eq!(
+            (remeasured.stage.as_str(), remeasured.factor),
+            ("Sim", 2.46)
+        );
+        let typo =
+            serde_json::json!({ "remeasured": { "Killed": { "stage": "Sim", "factr": 2.0 } } });
+        assert!(apply_remeasurements(&mut states, &typo).is_err());
     }
 }

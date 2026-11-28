@@ -32,7 +32,6 @@ use model_states::*;
 pub(super) use parity_measurement::*;
 use per_model_gate::*;
 pub(super) use reference_stage::*;
-pub(super) use rule_b::timing_run_of;
 use rule_b::*;
 use runtime_cohort::*;
 use schema_migrations::*;

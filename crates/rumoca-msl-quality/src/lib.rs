@@ -224,6 +224,37 @@ pub enum TraceState {
     Unscored(UnscoredCause),
 }
 
+/// The stage a model reached when the watchdog killed `phase` (the worker's
+/// name for it): a compile phase fails at itself; a kill while solving,
+/// building the simulator or initializing leaves it compiled; a kill while
+/// simulating leaves it initialized. `None` for a phase that is not a stage.
+pub fn stage_at_kill(phase: &str) -> Option<ModelStage> {
+    Some(match phase {
+        "Instantiate" => ModelStage::FailedAt(CompilePhase::Instantiate),
+        "Typecheck" => ModelStage::FailedAt(CompilePhase::Typecheck),
+        "Flatten" => ModelStage::FailedAt(CompilePhase::Flatten),
+        "ToDae" => ModelStage::FailedAt(CompilePhase::ToDae),
+        "Solve" | "SimBuild" | "IC" => ModelStage::Compiled,
+        "Sim" => ModelStage::Initialized,
+        _ => return None,
+    })
+}
+
+/// A watchdog-killed stage re-run on the same runner with its budget
+/// multiplied by `factor` (the shard's speed, at least 1x and at most 3x);
+/// every other stage kept its own.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Remeasurement {
+    /// The killed stage, by the worker's name for it.
+    pub stage: String,
+    pub factor: f64,
+    /// The shard's speed, or `None` when no frame was set yet (the first
+    /// crossing): the factor is then the cap.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub speed: Option<f64>,
+}
+
 /// Elapsed time of each watchdog stage, the times its budgets are judged on.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct StageSeconds {
@@ -239,6 +270,10 @@ pub struct StageSeconds {
     /// that type and refuses a name it does not know.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeout_phase: Option<String>,
+    /// The re-measurement of a stage the watchdog killed, on the same runner
+    /// with that stage's budget raised: a kill then is final.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remeasured: Option<Remeasurement>,
     /// The shard speed the stage times were divided by (rule B), when the
     /// gauge was trusted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -316,7 +351,8 @@ impl ReviewedChanges {
 pub enum Regression {
     /// It is no longer a sim target, and no reviewed boundary removes it.
     LeftTargets,
-    /// It stopped at an earlier stage, not on a watchdog kill.
+    /// It stopped at an earlier stage: not on a watchdog kill, or killed
+    /// again when re-measured with the stage's budget raised.
     StageDropped { from: ModelStage, to: ModelStage },
     /// It is scored in both, at a lower band.
     BandDropped { from: BandLabel, to: BandLabel },
@@ -464,7 +500,8 @@ fn transition(
     reviewed: &ReviewedChanges,
 ) -> Transition {
     if current.stage < previous.stage {
-        return if current.stage_seconds.timeout_phase.is_some() {
+        let killed = current.stage_seconds.timeout_phase.is_some();
+        return if killed && current.stage_seconds.remeasured.is_none() {
             Transition::Inconclusive("watchdog kill")
         } else {
             Transition::Regressed(Regression::StageDropped {
