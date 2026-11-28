@@ -13,7 +13,7 @@
 //! frame at the median of this run's shard speeds.
 
 use super::*;
-use rumoca_msl_quality::snapshot::{crossed_links, previous_states};
+use rumoca_msl_quality::snapshot::{crossed_links, has_old_side, previous_states};
 use rumoca_msl_quality::speed::{OmcTiming, SpeedGauge};
 use rumoca_msl_quality::{BandLabel, ModelStates, TraceState};
 
@@ -69,13 +69,14 @@ fn old_side(current: &serde_json::Value) -> io::Result<Option<(ModelStates, bool
     let path = promoted_baseline_file().unwrap_or_else(msl_quality_baseline_path);
     let baseline: serde_json::Value = serde_json::from_slice(&fs::read(&path)?)
         .map_err(|error| io::Error::other(format!("{}: {error}", path.display())))?;
-    let crossed = crossed_links(current, &baseline);
-    let from_evidence = baseline.get("model_states").is_none();
-    match previous_states(&baseline, &crossed, &msl_workspace_root()) {
-        Ok(states) => Ok(Some((states, from_evidence))),
-        Err(_) if from_evidence => Ok(None),
-        Err(error) => Err(io::Error::other(error)),
+    let crossed = crossed_links(current, &baseline).map_err(io::Error::other)?;
+    if !has_old_side(&baseline, &crossed) {
+        return Ok(None);
     }
+    let from_evidence = baseline.get("model_states").is_none();
+    previous_states(&baseline, &crossed, &msl_workspace_root())
+        .map(|states| Some((states, from_evidence)))
+        .map_err(io::Error::other)
 }
 
 /// Re-judge `states`' certification under rule B and store each model's

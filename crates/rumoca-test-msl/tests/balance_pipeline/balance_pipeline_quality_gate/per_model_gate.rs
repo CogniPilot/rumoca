@@ -12,7 +12,7 @@
 //! and exception-file checks still apply.
 
 use super::*;
-use rumoca_msl_quality::snapshot::{crossed_links, judge_snapshot};
+use rumoca_msl_quality::snapshot::{crossed_links, has_old_side, judge_snapshot};
 use rumoca_msl_quality::{ACCURACY_STATEMENT_FILE, PerModelVerdict, sha256_hex};
 
 fn read_json(path: &Path, what: &str) -> io::Result<(Vec<u8>, serde_json::Value)> {
@@ -51,15 +51,11 @@ pub(super) fn per_model_verdict_at(
 ) -> io::Result<Option<PerModelVerdict>> {
     let (baseline_bytes, baseline) = read_json(baseline_path, "quality baseline")?;
     let (_, current) = read_json(current_path, "quality snapshot")?;
-    let crossed = crossed_links(&current, &baseline);
-    let pins_evidence = crossed
-        .iter()
-        .any(|link| link.get("evidence_model_states").is_some());
-    let has_states = |snapshot: &serde_json::Value| snapshot.get("model_states").is_some();
-    if !has_states(&baseline) && !pins_evidence {
+    let crossed = crossed_links(&current, &baseline).map_err(io::Error::other)?;
+    if !has_old_side(&baseline, &crossed) {
         return Ok(None);
     }
-    if !has_states(&current) {
+    if current.get("model_states").is_none() {
         return Err(io::Error::other(format!(
             "{} records no model_states, but the baseline side does",
             current_path.display()

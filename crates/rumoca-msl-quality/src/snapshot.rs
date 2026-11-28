@@ -27,20 +27,45 @@ pub fn states_at(snapshot: &Value, name: &str) -> Result<Option<ModelStates>, St
 
 /// The links of `current`'s reference boundary chain that a judgment against
 /// `baseline` crosses: those reaching a quality gate version above the
-/// baseline's.
-pub fn crossed_links<'a>(current: &'a Value, baseline: &Value) -> Vec<&'a Value> {
-    let version = |value: &Value, key: &str| value.get(key).and_then(Value::as_u64);
-    let from = version(baseline, "quality_gate_version").unwrap_or(0);
+/// baseline's. A snapshot or link without its version is refused: read as
+/// zero, it would cross every link.
+pub fn crossed_links<'a>(current: &'a Value, baseline: &Value) -> Result<Vec<&'a Value>, String> {
+    let version = |value: &Value, key: &str, what: &str| {
+        value
+            .get(key)
+            .and_then(Value::as_u64)
+            .ok_or_else(|| format!("{what} has no {key}"))
+    };
+    let from = version(baseline, "quality_gate_version", "the baseline")?;
+    let to = version(current, "quality_gate_version", "the current snapshot")?;
+    if from > to {
+        return Err(format!(
+            "the baseline's quality gate version {from} is newer than the run's {to}"
+        ));
+    }
     let mut crossed = Vec::new();
     let mut link = current.get("reference_boundary_migration");
-    while let Some(boundary) = link.filter(|link| link.is_object()) {
-        if version(boundary, "to_quality_gate_version").unwrap_or(0) <= from {
+    while from < to
+        && let Some(boundary) = link.filter(|link| link.is_object())
+    {
+        if version(boundary, "to_quality_gate_version", "a reference boundary")? <= from {
             break;
         }
         crossed.push(boundary);
         link = boundary.get("previous");
     }
-    crossed
+    Ok(crossed)
+}
+
+/// Whether the old side has states to judge against: the baseline's own, or
+/// evidence a crossed boundary pins. Only a baseline without either has none;
+/// a pinned evidence file that cannot be read or does not match its pin is an
+/// error for [`previous_states`], never "no old side".
+pub fn has_old_side(baseline: &Value, crossed: &[&Value]) -> bool {
+    baseline.get("model_states").is_some()
+        || crossed
+            .iter()
+            .any(|link| link.get("evidence_model_states").is_some())
 }
 
 /// The old side's states: the baseline's own, or the evidence a crossed
@@ -117,4 +142,65 @@ pub fn measured_accuracy_change(
         .ok_or("the current snapshot records no model_states")?;
     let before = previous_states(baseline, crossed, evidence_root)?;
     Ok(accuracy_change(&before, &after))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn chain() -> Value {
+        json!({
+            "to_quality_gate_version": 15,
+            "previous": { "to_quality_gate_version": 14, "previous": { "to_quality_gate_version": 13 } },
+        })
+    }
+
+    #[test]
+    fn only_the_links_above_the_baseline_are_crossed() {
+        let current =
+            json!({ "quality_gate_version": 15, "reference_boundary_migration": chain() });
+        let crossed = crossed_links(&current, &json!({ "quality_gate_version": 13 })).unwrap();
+        assert_eq!(crossed.len(), 2);
+        let same = crossed_links(&current, &json!({ "quality_gate_version": 15 })).unwrap();
+        assert!(same.is_empty());
+    }
+
+    #[test]
+    fn a_missing_version_is_refused_instead_of_crossing_every_link() {
+        let current =
+            json!({ "quality_gate_version": 15, "reference_boundary_migration": chain() });
+        let error = crossed_links(&current, &json!({})).unwrap_err();
+        assert!(
+            error.contains("baseline has no quality_gate_version"),
+            "{error}"
+        );
+        let unversioned = json!({ "reference_boundary_migration": chain() });
+        assert!(crossed_links(&unversioned, &json!({ "quality_gate_version": 13 })).is_err());
+        let broken = json!({
+            "quality_gate_version": 15,
+            "reference_boundary_migration": { "previous": {} },
+        });
+        let error = crossed_links(&broken, &json!({ "quality_gate_version": 13 })).unwrap_err();
+        assert!(error.contains("reference boundary has no"), "{error}");
+        let newer = crossed_links(&current, &json!({ "quality_gate_version": 16 })).unwrap_err();
+        assert!(newer.contains("newer"), "{newer}");
+    }
+
+    #[test]
+    fn tampered_evidence_is_an_error_not_no_old_side() {
+        let dir = std::env::temp_dir().join(format!("msl-evidence-tamper-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("evidence.json"), "{}").unwrap();
+        let baseline = json!({ "quality_gate_version": 14 });
+        let link = json!({
+            "to_quality_gate_version": 15,
+            "evidence_model_states": { "file": "evidence.json", "sha256": "0".repeat(64) },
+        });
+        assert!(has_old_side(&baseline, &[&link]));
+        let error = previous_states(&baseline, &[&link], &dir).unwrap_err();
+        assert!(error.contains("the reviewed boundary pins"), "{error}");
+        assert!(!has_old_side(&baseline, &[]));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
