@@ -90,6 +90,15 @@ pub fn deserialize_solve_model<'de, D>(deserializer: D) -> Result<solve::SolveMo
 where
     D: serde::Deserializer<'de>,
 {
+    deserialize_validated_solve_model(deserializer).map(solve::ValidatedSolveModel::into_model)
+}
+
+pub(super) fn deserialize_validated_solve_model<'de, D>(
+    deserializer: D,
+) -> Result<solve::ValidatedSolveModel, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
     let wire = {
         let _parse = rumoca_core::browser_profile::Span::new("parse_component_model");
         SolveModelWire::deserialize(deserializer)?
@@ -98,7 +107,9 @@ where
     replay_solve_model(wire).map_err(serde::de::Error::custom)
 }
 
-fn replay_solve_model(wire: SolveModelWire) -> Result<solve::SolveModel, SolveModelWireError> {
+fn replay_solve_model(
+    wire: SolveModelWire,
+) -> Result<solve::ValidatedSolveModel, SolveModelWireError> {
     let SolveModelWire {
         schema_version,
         pure_calls,
@@ -148,10 +159,8 @@ fn replay_solve_model(wire: SolveModelWire) -> Result<solve::SolveModel, SolveMo
         external_tables,
         visible_projection,
     };
-    model
-        .validate()
-        .map_err(|error| SolveModelWireError::Root(error.to_string()))?;
-    Ok(model)
+    solve::ValidatedSolveModel::new(model)
+        .map_err(|error| SolveModelWireError::Root(error.to_string()))
 }
 
 struct CorrelationView<'model> {
