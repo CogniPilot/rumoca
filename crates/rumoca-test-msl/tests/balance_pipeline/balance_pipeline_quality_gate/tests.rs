@@ -1705,11 +1705,11 @@ fn checked_quality_baseline_has_versioned_oracle_policy_migration_and_tensor_kpi
         baseline.phase_budgets,
         PhaseBudgets::new(20.0, 45.0).expect("immutable CI evidence budgets")
     );
-    assert_eq!(baseline.flatten_models, 542);
+    assert_eq!(baseline.flatten_models, 547);
     assert_eq!(baseline.partial_models, 13);
     assert_eq!(baseline.partial_model_names, reviewed_partial_model_names());
     assert_eq!(baseline.tensor_preservation.report_errors, 0);
-    assert_eq!(baseline.certified_strict_high_models.len(), 303);
+    assert_eq!(baseline.certified_strict_high_models.len(), 331);
     assert_eq!(baseline.unexcepted_non_high_models.len(), 1);
     assert_eq!(
         baseline.trace_exceptions_sha256.as_deref(),
@@ -1733,7 +1733,7 @@ fn checked_quality_baseline_has_versioned_oracle_policy_migration_and_tensor_kpi
             .map(|trace| trace.agreement_high),
         Some(baseline.certified_strict_high_models.len() + baseline.timing_margin_models.len())
     );
-    assert_eq!(baseline.timing_margin_models.len(), 4);
+    assert_eq!(baseline.timing_margin_models.len(), 3);
 
     let migration = baseline
         .metric_schema_migration

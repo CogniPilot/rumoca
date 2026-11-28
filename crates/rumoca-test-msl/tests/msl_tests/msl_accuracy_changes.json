@@ -1,0 +1,556 @@
+{
+  "schema_version": 1,
+  "baseline_sha256": "e37d51a9b27b526ea9ed4946b59bdf3911845373cfc70ed3ba3ca2f304088c2a",
+  "rose": [
+    {
+      "model": "Modelica.Blocks.Examples.DemonstrateContinuousSignalExtrema",
+      "before": 0.0010502605896068268,
+      "after": 0.0010502607435240643
+    },
+    {
+      "model": "Modelica.Blocks.Examples.Filter",
+      "before": 4.179108544429719e-7,
+      "after": 4.17910854547935e-7
+    },
+    {
+      "model": "Modelica.Blocks.Examples.FilterWithRiseTime",
+      "before": 4.561414025429798e-7,
+      "after": 4.56141402567484e-7
+    },
+    {
+      "model": "Modelica.Blocks.Examples.InverseModel",
+      "before": 8.974574767610095e-7,
+      "after": 9.84146751146873e-7
+    },
+    {
+      "model": "Modelica.Blocks.Examples.Modulation",
+      "before": 0.00003004520071504447,
+      "after": 0.000040382832462968514
+    },
+    {
+      "model": "Modelica.Blocks.Examples.SlewRateLimiter",
+      "before": 8.724235327118546e-7,
+      "after": 8.732278766157986e-7
+    },
+    {
+      "model": "Modelica.Clocked.Examples.CascadeControlledDrive.Continuous",
+      "before": 4.78576345205754e-6,
+      "after": 4.990638393509503e-6
+    },
+    {
+      "model": "Modelica.Clocked.Examples.SimpleControlledDrive.Continuous",
+      "before": 8.60767189475771e-6,
+      "after": 8.647661813153549e-6
+    },
+    {
+      "model": "Modelica.Electrical.Analog.Examples.CauerLowPassAnalog",
+      "before": 0.000015781752595729345,
+      "after": 0.00001898967456035037
+    },
+    {
+      "model": "Modelica.Electrical.Analog.Examples.CauerLowPassOPV",
+      "before": 0.000010841674254795112,
+      "after": 0.000013047731652884998
+    },
+    {
+      "model": "Modelica.Electrical.Analog.Examples.CauerLowPassSC",
+      "before": 0.007273968206281273,
+      "after": 0.007273968206358248
+    },
+    {
+      "model": "Modelica.Electrical.Analog.Examples.CompareTransformers",
+      "before": 6.94896880510151e-7,
+      "after": 7.301249888854061e-7
+    },
+    {
+      "model": "Modelica.Electrical.Analog.Examples.DemonstrateLightning",
+      "before": 3.23432850418096e-8,
+      "after": 3.333443735730037e-8
+    },
+    {
+      "model": "Modelica.Electrical.Analog.Examples.GenerationOfFMUs",
+      "before": 2.704762748109495e-6,
+      "after": 3.2272971436513394e-6
+    },
+    {
+      "model": "Modelica.Electrical.Analog.Examples.HeatingRectifier",
+      "before": 3.3916163730466858e-6,
+      "after": 3.431143014111367e-6
+    },
+    {
+      "model": "Modelica.Electrical.Analog.Examples.IdealTriacCircuit",
+      "before": 2.643851560284856e-7,
+      "after": 2.6438984264378025e-7
+    },
+    {
+      "model": "Modelica.Electrical.Analog.Examples.Lines.CompareLineTrunks",
+      "before": 0.000370939293292223,
+      "after": 0.0004406823465178857
+    },
+    {
+      "model": "Modelica.Electrical.Analog.Examples.Lines.SmoothStep",
+      "before": 0.0003809781257393841,
+      "after": 0.0005422506706573086
+    },
+    {
+      "model": "Modelica.Electrical.Analog.Examples.NandGate",
+      "before": 2.433822737670601e-6,
+      "after": 2.464158293664495e-6
+    },
+    {
+      "model": "Modelica.Electrical.Analog.Examples.OpAmps.LCOscillator",
+      "before": 0.0006116619132405223,
+      "after": 0.0006116619133568479
+    },
+    {
+      "model": "Modelica.Electrical.Analog.Examples.Rectifier",
+      "before": 3.069682032112605e-6,
+      "after": 3.1867529319280027e-6
+    },
+    {
+      "model": "Modelica.Electrical.Analog.Examples.ResonanceCircuits",
+      "before": 5.46990768213387e-7,
+      "after": 6.572943032339611e-7
+    },
+    {
+      "model": "Modelica.Electrical.Analog.Examples.SeriesResonance",
+      "before": 5.62648006052922e-6,
+      "after": 5.964666863950617e-6
+    },
+    {
+      "model": "Modelica.Electrical.Analog.Examples.ShowSaturatingInductor",
+      "before": 2.3688122633712907e-6,
+      "after": 2.423091295964372e-6
+    },
+    {
+      "model": "Modelica.Electrical.Analog.Examples.ThyristorBehaviourTest",
+      "before": 0.003086542156500448,
+      "after": 0.003086546999060076
+    },
+    {
+      "model": "Modelica.Electrical.Batteries.Examples.BatteryDischargeCharge",
+      "before": 3.227048944849181e-7,
+      "after": 3.2997199179225946e-7
+    },
+    {
+      "model": "Modelica.Electrical.Batteries.Examples.CCCV_Cell",
+      "before": 1.8873530641845252e-6,
+      "after": 1.945694216923346e-6
+    },
+    {
+      "model": "Modelica.Electrical.Batteries.Examples.CCCV_CellRC",
+      "before": 6.215332105466496e-6,
+      "after": 6.276600519974192e-6
+    },
+    {
+      "model": "Modelica.Electrical.Batteries.Examples.CCCVcharging",
+      "before": 1.546588556494597e-6,
+      "after": 1.6236603176253974e-6
+    },
+    {
+      "model": "Modelica.Electrical.Machines.Examples.DCMachines.DCEE_Start",
+      "before": 0.00031145189965904005,
+      "after": 0.00031988271597397066
+    },
+    {
+      "model": "Modelica.Electrical.Machines.Examples.DCMachines.DCPM_Cooling",
+      "before": 1.9666052644307704e-6,
+      "after": 2.1494055470584686e-6
+    },
+    {
+      "model": "Modelica.Electrical.Machines.Examples.DCMachines.DCPM_Start",
+      "before": 4.769485350994988e-7,
+      "after": 5.953740113227055e-7
+    },
+    {
+      "model": "Modelica.Electrical.Machines.Examples.DCMachines.DCPM_Temperature",
+      "before": 2.4838810411719458e-6,
+      "after": 2.5494064469025094e-6
+    },
+    {
+      "model": "Modelica.Electrical.Machines.Examples.DCMachines.DCPM_withLosses",
+      "before": 5.160056020252441e-7,
+      "after": 5.658376779197728e-7
+    },
+    {
+      "model": "Modelica.Electrical.Machines.Examples.DCMachines.DCSE_Start",
+      "before": 1.9733034112831894e-6,
+      "after": 2.0447388442008836e-6
+    },
+    {
+      "model": "Modelica.Electrical.Machines.Examples.DCMachines.DC_CompareCharacteristics",
+      "before": 1.9104084032317173e-6,
+      "after": 1.9723789458967005e-6
+    },
+    {
+      "model": "Modelica.Electrical.Machines.Examples.InductionMachines.IMC_Inverter",
+      "before": 2.746587224436749e-7,
+      "after": 3.0345357181119415e-7
+    },
+    {
+      "model": "Modelica.Electrical.Machines.Examples.InductionMachines.IMC_Steinmetz",
+      "before": 0.00018494105595309363,
+      "after": 0.00018502890136102583
+    },
+    {
+      "model": "Modelica.Electrical.Machines.Examples.InductionMachines.IMC_YD",
+      "before": 0.005186241797069903,
+      "after": 0.00518743698672307
+    },
+    {
+      "model": "Modelica.Electrical.Machines.Examples.InductionMachines.IMC_withLosses",
+      "before": 0.003490646506421207,
+      "after": 0.0034907628053722044
+    },
+    {
+      "model": "Modelica.Electrical.Machines.Examples.SynchronousMachines.SMEE_Rectifier",
+      "before": 9.79342272872922e-6,
+      "after": 9.893678285717032e-6
+    },
+    {
+      "model": "Modelica.Electrical.Machines.Examples.SynchronousMachines.SMPM_ResistiveBraking",
+      "before": 1.1326023651164782e-6,
+      "after": 1.8598295193755342e-6
+    },
+    {
+      "model": "Modelica.Electrical.Machines.Examples.SynchronousMachines.SMR_Inverter",
+      "before": 3.5011669977452217e-7,
+      "after": 3.5816368176037336e-7
+    },
+    {
+      "model": "Modelica.Electrical.Polyphase.Examples.Rectifier",
+      "before": 2.2516123496440076e-6,
+      "after": 2.3914985800918156e-6
+    },
+    {
+      "model": "Modelica.Electrical.Polyphase.Examples.TransformerYY",
+      "before": 1.9320751145441795e-7,
+      "after": 1.9673580556765218e-7
+    },
+    {
+      "model": "Modelica.Electrical.PowerConverters.Examples.ACDC.Rectifier1Pulse.Thyristor1Pulse_R_Characteristic",
+      "before": 2.867431208129686e-7,
+      "after": 2.996229831125233e-7
+    },
+    {
+      "model": "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierBridge2Pulse.ThyristorBridge2Pulse_DC_Drive",
+      "before": 7.057770963066861e-6,
+      "after": 8.094090115921001e-6
+    },
+    {
+      "model": "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierBridge2Pulse.ThyristorBridge2Pulse_R",
+      "before": 3.325810200843366e-7,
+      "after": 3.5615582317849596e-7
+    },
+    {
+      "model": "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierBridge2Pulse.ThyristorBridge2Pulse_RL",
+      "before": 3.382638473157459e-7,
+      "after": 4.290948232054965e-7
+    },
+    {
+      "model": "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierBridge2Pulse.ThyristorBridge2Pulse_RLV",
+      "before": 2.439236657430606e-7,
+      "after": 3.253267188384138e-7
+    },
+    {
+      "model": "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierBridge2mPulse.ThyristorBridge2mPulse_RLV_Characteristic",
+      "before": 0.00003315318713526088,
+      "after": 0.00003315830196704565
+    },
+    {
+      "model": "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierCenterTap2Pulse.ThyristorCenterTap2Pulse_R",
+      "before": 3.6662131616372336e-7,
+      "after": 3.926093690488335e-7
+    },
+    {
+      "model": "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierCenterTap2Pulse.ThyristorCenterTap2Pulse_RL",
+      "before": 3.6755880374288166e-7,
+      "after": 4.6757683038562117e-7
+    },
+    {
+      "model": "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierCenterTap2Pulse.ThyristorCenterTap2Pulse_RLV",
+      "before": 2.7063314316145173e-7,
+      "after": 3.608055987991414e-7
+    },
+    {
+      "model": "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierCenterTap2mPulse.DiodeCenterTap2mPulse",
+      "before": 0.0014455202160722036,
+      "after": 0.001470671048520901
+    },
+    {
+      "model": "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierCenterTap2mPulse.ThyristorCenterTap2mPulse_R",
+      "before": 5.694344973101061e-8,
+      "after": 5.912708156062402e-8
+    },
+    {
+      "model": "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierCenterTap2mPulse.ThyristorCenterTap2mPulse_RL",
+      "before": 5.473874308486728e-7,
+      "after": 5.504304762534952e-7
+    },
+    {
+      "model": "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierCenterTapmPulse.DiodeCenterTapmPulse",
+      "before": 8.644493946426734e-8,
+      "after": 1.041291830149129e-7
+    },
+    {
+      "model": "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierCenterTapmPulse.ThyristorCenterTapmPulse_R",
+      "before": 1.5837054827449766e-7,
+      "after": 1.5955979964548185e-7
+    },
+    {
+      "model": "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierCenterTapmPulse.ThyristorCenterTapmPulse_RL",
+      "before": 6.526392211016967e-8,
+      "after": 6.605990206237082e-8
+    },
+    {
+      "model": "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierCenterTapmPulse.ThyristorCenterTapmPulse_RLV",
+      "before": 6.212321972552851e-8,
+      "after": 6.375565451230296e-8
+    },
+    {
+      "model": "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierCenterTapmPulse.ThyristorCenterTapmPulse_RLV_Characteristic",
+      "before": 9.258820118309024e-8,
+      "after": 9.293565065750309e-8
+    },
+    {
+      "model": "Modelica.Electrical.PowerConverters.Examples.DCAC.SinglePhaseTwoLevel.SinglePhaseTwoLevel_R",
+      "before": 0.00045708800399321144,
+      "after": 0.0004600646739203538
+    },
+    {
+      "model": "Modelica.Electrical.PowerConverters.Examples.DCAC.SinglePhaseTwoLevel.SinglePhaseTwoLevel_RL",
+      "before": 0.0002659174474003662,
+      "after": 0.00026792674722828585
+    },
+    {
+      "model": "Modelica.Electrical.PowerConverters.Examples.DCDC.ChopperBuckBoost.ChopperBuckBoost_DutyCycle",
+      "before": 0.0001567232699688949,
+      "after": 0.00015682449421554692
+    },
+    {
+      "model": "Modelica.Electrical.PowerConverters.Examples.DCDC.ChopperStepDown.ChopperStepDown_R",
+      "before": 0.000016765115115493868,
+      "after": 0.000016798425588332697
+    },
+    {
+      "model": "Modelica.Electrical.PowerConverters.Examples.DCDC.ChopperStepDown.ChopperStepDown_RL",
+      "before": 0.000020390035544554228,
+      "after": 0.00002039582485168242
+    },
+    {
+      "model": "Modelica.Electrical.PowerConverters.Examples.DCDC.ChopperStepUp.ChopperStepUp_R",
+      "before": 3.819949232727234e-6,
+      "after": 3.81994923335576e-6
+    },
+    {
+      "model": "Modelica.Electrical.QuasiStatic.SinglePhase.Examples.Rectifier",
+      "before": 2.7208411091191617e-6,
+      "after": 2.801484595868046e-6
+    },
+    {
+      "model": "Modelica.Electrical.Spice3.Examples.CoupledInductors",
+      "before": 0.0001222117815013419,
+      "after": 0.0001226207684798052
+    },
+    {
+      "model": "Modelica.Fluid.Examples.AST_BatchPlant.Test.OneTank",
+      "before": 0.012703869110561249,
+      "after": 0.012708241589729176
+    },
+    {
+      "model": "Modelica.Fluid.Examples.AST_BatchPlant.Test.TankWithEmptyingPipe1",
+      "before": 0.00282893626319528,
+      "after": 0.0031600070199288097
+    },
+    {
+      "model": "Modelica.Fluid.Examples.AST_BatchPlant.Test.TanksWithEmptyingPipe1",
+      "before": 0.002201407856844819,
+      "after": 0.0024262971468807454
+    },
+    {
+      "model": "Modelica.Fluid.Examples.ControlledTankSystem.ControlledTanks",
+      "before": 0.0008617889630180396,
+      "after": 0.0009264512683267765
+    },
+    {
+      "model": "Modelica.Fluid.Examples.Tanks.EmptyTanks",
+      "before": 0.0027511264802485,
+      "after": 0.0034285372778675794
+    },
+    {
+      "model": "Modelica.Fluid.Examples.Tanks.ThreeTanks",
+      "before": 0.0010157623126447524,
+      "after": 0.002321564026201538
+    },
+    {
+      "model": "Modelica.Fluid.Examples.TraceSubstances.RoomCO2",
+      "before": 0.0001663472931428478,
+      "after": 0.00034972190410413655
+    },
+    {
+      "model": "Modelica.Magnetic.FluxTubes.Examples.BasicExamples.SaturatedInductor",
+      "before": 0.00004950860499532053,
+      "after": 0.000051176271769546665
+    },
+    {
+      "model": "Modelica.Magnetic.FluxTubes.Examples.MovingCoilActuator.ArmatureStroke",
+      "before": 0.00085422421174129,
+      "after": 0.0009914418664843136
+    },
+    {
+      "model": "Modelica.Magnetic.QuasiStatic.FluxTubes.Examples.NonLinearInductor",
+      "before": 1.655876985247318e-6,
+      "after": 1.6788513361825267e-6
+    },
+    {
+      "model": "Modelica.Mechanics.MultiBody.Examples.Constraints.SphericalConstraint",
+      "before": 4.307706126008375e-6,
+      "after": 7.359412109993132e-6
+    },
+    {
+      "model": "Modelica.Mechanics.MultiBody.Examples.Elementary.DoublePendulum",
+      "before": 1.799292414521468e-6,
+      "after": 3.4761346426461597e-6
+    },
+    {
+      "model": "Modelica.Mechanics.MultiBody.Examples.Elementary.PointGravityWithPointMasses2",
+      "before": 0.016581159117613264,
+      "after": 0.016596830958948296
+    },
+    {
+      "model": "Modelica.Mechanics.MultiBody.Examples.Loops.Engine1a",
+      "before": 0.00006014068824167033,
+      "after": 0.00006241735101357851
+    },
+    {
+      "model": "Modelica.Mechanics.MultiBody.Examples.Loops.Engine1b",
+      "before": 0.000026286709244780455,
+      "after": 0.000030058255208348116
+    },
+    {
+      "model": "Modelica.Mechanics.MultiBody.Examples.Loops.Engine1b_analytic",
+      "before": 0.00002432935324125686,
+      "after": 0.000027797905778096545
+    },
+    {
+      "model": "Modelica.Mechanics.MultiBody.Examples.Loops.Fourbar1",
+      "before": 0.00003544926093937983,
+      "after": 0.00004056578166996581
+    },
+    {
+      "model": "Modelica.Mechanics.MultiBody.Examples.Loops.Fourbar2",
+      "before": 0.00002364155234691548,
+      "after": 0.0000238633705243687
+    },
+    {
+      "model": "Modelica.Mechanics.MultiBody.Examples.Loops.Fourbar_analytic",
+      "before": 0.000018342857704945406,
+      "after": 0.00001851382768250423
+    },
+    {
+      "model": "Modelica.Mechanics.MultiBody.Examples.Rotational3DEffects.ActuatedDrive",
+      "before": 1.4361639893061046e-6,
+      "after": 1.4362698362369682e-6
+    },
+    {
+      "model": "Modelica.Mechanics.MultiBody.Examples.Rotational3DEffects.MovingActuatedDrive",
+      "before": 3.207969528286263e-7,
+      "after": 3.3024337360081146e-7
+    },
+    {
+      "model": "Modelica.Mechanics.Rotational.Examples.Backlash",
+      "before": 0.000021565891282147767,
+      "after": 0.000022452838641329102
+    },
+    {
+      "model": "Modelica.Mechanics.Rotational.Examples.EddyCurrentBrake",
+      "before": 2.5473075549054094e-6,
+      "after": 2.8906503817941447e-6
+    },
+    {
+      "model": "Modelica.Mechanics.Rotational.Examples.ElasticBearing",
+      "before": 0.0000327519403320693,
+      "after": 0.000033937859580727225
+    },
+    {
+      "model": "Modelica.Mechanics.Rotational.Examples.First",
+      "before": 0.00005053629691007696,
+      "after": 0.000052770675814665004
+    },
+    {
+      "model": "Modelica.Mechanics.Rotational.Examples.FirstGrounded",
+      "before": 0.00004915047084096511,
+      "after": 0.00005132529953135114
+    },
+    {
+      "model": "Modelica.Mechanics.Rotational.Examples.RollingWheel",
+      "before": 5.570560121615134e-7,
+      "after": 5.610891606686802e-7
+    },
+    {
+      "model": "Modelica.Mechanics.Translational.Examples.EddyCurrentBrake",
+      "before": 2.5473075549054094e-6,
+      "after": 2.8906503817941447e-6
+    },
+    {
+      "model": "Modelica.Mechanics.Translational.Examples.ElastoGap",
+      "before": 1.8579626084456578e-6,
+      "after": 1.8670094018150492e-6
+    },
+    {
+      "model": "Modelica.Mechanics.Translational.Examples.InitialConditions",
+      "before": 0.000012177786336616428,
+      "after": 0.000013355649168363963
+    },
+    {
+      "model": "Modelica.Mechanics.Translational.Examples.Sensors",
+      "before": 9.094134745493093e-6,
+      "after": 9.566466274510286e-6
+    },
+    {
+      "model": "Modelica.Mechanics.Translational.Examples.Vehicle",
+      "before": 3.8449287220372457e-7,
+      "after": 3.8507606450888667e-7
+    },
+    {
+      "model": "Modelica.Mechanics.Translational.Examples.WhyArrows",
+      "before": 4.0820134848265836e-7,
+      "after": 4.082245363205471e-7
+    },
+    {
+      "model": "Modelica.Media.Examples.IdealGasH2O",
+      "before": 4.1451697953611457e-16,
+      "after": 4.916299177317657e-11
+    },
+    {
+      "model": "Modelica.Media.Examples.MoistAir",
+      "before": 8.728422489864367e-16,
+      "after": 1.098271726310586e-15
+    },
+    {
+      "model": "Modelica.Thermal.FluidHeatFlow.Examples.IndirectCooling",
+      "before": 7.108593699215787e-6,
+      "after": 7.347947434705928e-6
+    },
+    {
+      "model": "Modelica.Thermal.FluidHeatFlow.Examples.ParallelCooling",
+      "before": 0.000012247619908477672,
+      "after": 0.000012639909506383874
+    },
+    {
+      "model": "Modelica.Thermal.FluidHeatFlow.Examples.PumpAndValve",
+      "before": 6.785172727909747e-6,
+      "after": 6.877414533927994e-6
+    },
+    {
+      "model": "Modelica.Thermal.FluidHeatFlow.Examples.PumpDropOut",
+      "before": 8.73100256446392e-6,
+      "after": 8.905221303454671e-6
+    },
+    {
+      "model": "Modelica.Thermal.FluidHeatFlow.Examples.SimpleCooling",
+      "before": 8.845547771161947e-6,
+      "after": 9.66362167505604e-6
+    }
+  ]
+}

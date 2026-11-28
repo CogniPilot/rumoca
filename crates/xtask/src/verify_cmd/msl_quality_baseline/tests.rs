@@ -950,3 +950,53 @@ fn severe_channels_are_deducted_once_as_part_of_the_deviation_channels() {
     .to_string();
     assert!(error.contains("severe being a subset"), "{error}");
 }
+
+/// The released v14 asset, vendored byte for byte (it predates per-model
+/// states, so its side of the crossing comes from the pinned evidence).
+const RELEASED_V14_ASSET: &str = "src/verify_cmd/msl_quality_baseline/fixtures/promoted-v14.json";
+const RELEASED_V14_ASSET_SHA256: &str =
+    "e37d51a9b27b526ea9ed4946b59bdf3911845373cfc70ed3ba3ca2f304088c2a";
+
+/// The released v14 asset crosses into the checked-in v15 baseline as a
+/// reviewed migration, along the resolver's own path: the asset's header, its
+/// model stages from the pinned crossing evidence, then the baseline choice.
+/// TwoTanks is newly scored there and its reviewed channels are deducted.
+#[test]
+fn the_released_v14_asset_crosses_into_the_checked_v15_baseline() {
+    use sha2::{Digest, Sha256};
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let asset = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(RELEASED_V14_ASSET);
+    let bytes = fs::read(&asset).expect("vendored v14 asset");
+    assert_eq!(
+        format!("{:x}", Sha256::digest(&bytes)),
+        RELEASED_V14_ASSET_SHA256,
+        "the vendored file is the released v14 asset"
+    );
+    let checked_in = super::checked_in_msl_quality_baseline_path(&root);
+    let checked = load_baseline_header(&checked_in).expect("checked-in v15 baseline");
+    let promoted = super::with_old_side_states(
+        &root,
+        &asset,
+        super::load_promoted_baseline_header(&asset).expect("v14 asset header"),
+        &checked_in,
+    )
+    .expect("the v14 side from the pinned crossing evidence");
+    assert_eq!(
+        choose_baseline(&promoted, &checked).expect("a reviewed crossing"),
+        BaselineChoice::CheckedInMigration
+    );
+
+    // Had TwoTanks scored high before, its deviation now is a regression that
+    // its roster addition must not hide.
+    let mut scored_before = promoted;
+    scored_before
+        .model_states
+        .as_mut()
+        .and_then(|states| states.get_mut(REVIEWED_ADDITION))
+        .expect("the crossing evidence names TwoTanks")
+        .trace = rumoca_msl_quality::TraceState::Scored(rumoca_msl_quality::BandLabel::High);
+    let error = choose_baseline(&scored_before, &checked)
+        .expect_err("a model that was high and is now a deviation")
+        .to_string();
+    assert!(error.contains(REVIEWED_ADDITION), "{error}");
+}
