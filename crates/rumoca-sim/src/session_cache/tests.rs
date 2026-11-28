@@ -358,3 +358,25 @@ fn invalid_custom_value_preserves_the_existing_prepared_session() {
     assert!(reused.preparation_reused());
     assert!((drive(&mut reused) - 1.5).abs() < 1e-10);
 }
+
+#[test]
+fn startup_reuse_prepared_component_replay_starts_an_independent_instance_with_exact_inputs() {
+    use rumoca_eval_solve::fmi_wire::{deserialize_fmi_component, retained_fmi_component_wire};
+    let model = dae();
+    let mut inputs = options();
+    inputs.initial_inputs[0].1 = 3.5;
+    let component = SimulationSession::prepare_component(&model, &inputs).unwrap();
+    let root = component.replay_root().expect("warning-free preparation");
+    let bytes = serde_json::to_vec(&retained_fmi_component_wire(&root).unwrap()).unwrap();
+    let restored =
+        deserialize_fmi_component(&mut serde_json::Deserializer::from_slice(&bytes)).unwrap();
+    let mut original = SimulationSession::new(&model, inputs.clone()).unwrap();
+    let mut replay = SimulationSession::from_prepared_component(restored, inputs).unwrap();
+    original.advance_to(0.25).unwrap();
+    assert_eq!(replay.time(), 0.0);
+    assert_eq!(replay.get("u").unwrap(), Some(3.5));
+    replay.advance_to(0.25).unwrap();
+    assert_eq!(original.get("x").unwrap(), replay.get("x").unwrap());
+    original.set_input("u", 1.0).unwrap();
+    assert_eq!(replay.get("u").unwrap(), Some(3.5));
+}

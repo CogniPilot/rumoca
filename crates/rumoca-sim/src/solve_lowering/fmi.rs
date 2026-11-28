@@ -7,16 +7,13 @@
 //! facade rather than depending on a phase crate.
 
 use rumoca_ir_dae as dae;
-#[cfg(feature = "fmi")]
 use rumoca_ir_solve::fmi::FmiComponent;
 
 use super::diagnostics::SimulationDiagnosticError;
 #[cfg(feature = "fmi")]
 use super::entry::{lower_correlated_for_fmi_export, lower_correlated_for_host_driven_inputs};
 
-/// Consume a still-correlated phase lowering into the sole runtime artifact,
-/// constructing any optional execution backend while the checked Solve view is
-/// still borrowed from that aggregate.
+/// Finish the correlated phase lowering and admit the component to the requested backend.
 #[cfg(any(feature = "solver-diffsol", feature = "solver-rk45"))]
 pub(crate) fn finish_runtime_fmi_artifact(
     lowered: rumoca_phase_solve::LoweredSolveModel<'_>,
@@ -28,16 +25,24 @@ pub(crate) fn finish_runtime_fmi_artifact(
     ),
     SimulationDiagnosticError,
 > {
+    admit_runtime_component(finish_component(lowered)?, opts)
+}
+
+#[cfg(any(feature = "solver-diffsol", feature = "solver-rk45"))]
+pub(crate) fn admit_runtime_component(
+    component: FmiComponent,
+    opts: &rumoca_solver::SimOptions,
+) -> Result<
+    (
+        rumoca_solver::fmi_me::MeModelArtifact,
+        Option<rumoca_solver::fmi_me::MeExecutionBackend>,
+    ),
+    SimulationDiagnosticError,
+> {
+    let model = component.runtime_view().model();
     let execution_backend =
-        crate::native_execution::admitted_native_execution_backend(opts, lowered.model())?;
-    let receipt = crate::native_execution::execution_receipt(opts, lowered.model());
-    let component = rumoca_phase_solve::fmi::finish_fmi_component(lowered).map_err(|error| {
-        let span = error.span();
-        SimulationDiagnosticError::RuntimePreparation {
-            message: error.to_string(),
-            span,
-        }
-    })?;
+        crate::native_execution::admitted_native_execution_backend(opts, model)?;
+    let receipt = crate::native_execution::execution_receipt(opts, model);
     Ok((
         rumoca_solver::fmi_me::MeModelArtifact::new(component).with_execution_receipt(receipt),
         execution_backend,
@@ -103,7 +108,6 @@ fn lower_fmi_export_component_for(
     finish_component(lowered)
 }
 
-#[cfg(feature = "fmi")]
 pub(crate) fn finish_component(
     lowered: rumoca_phase_solve::LoweredSolveModel<'_>,
 ) -> Result<FmiComponent, SimulationDiagnosticError> {

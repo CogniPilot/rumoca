@@ -58,6 +58,13 @@ accepts the backend-owned concrete configuration and derives its cache
 identity from that validated value. Absence and an explicitly supplied
 default are distinct requests; callers do not supply cache keys.
 
+Native embedding hosts can retain the checked component returned by
+`SimulationSession::prepare_component`. Store its retained FMI wire with the
+compiler build, source dependency identity and exact lowering inputs. Decode
+it through `deserialize_fmi_component` and pass it to
+`SimulationSession::from_prepared_component` with the matching options. Each
+call instantiates its own backend, clock, inputs and integrator history.
+
 ## Passive Numerical Observation
 
 `simulate_with_numerical_observation` selects the same numerical path as

@@ -16,6 +16,25 @@ pub struct SimulationSession {
     inner: SimulationSessionInner,
 }
 
+/// A fresh checked FMI component and the source-diagnostic outcome of its lowering.
+pub struct PreparedSimulationComponent {
+    component: rumoca_ir_solve::fmi::FmiComponent,
+    replayable: bool,
+}
+
+impl PreparedSimulationComponent {
+    /// Retain an immutable wire root only if replay can reproduce preparation without
+    /// suppressing source diagnostics from state selection or event guards.
+    pub fn replay_root(&self) -> Option<rumoca_ir_solve::RetainedAssertionRoot> {
+        self.replayable
+            .then(|| self.component.runtime_view().retain_assertion_root())
+    }
+
+    pub fn into_component(self) -> rumoca_ir_solve::fmi::FmiComponent {
+        self.component
+    }
+}
+
 enum SimulationSessionInner {
     #[cfg(feature = "solver-diffsol")]
     Diffsol(Box<crate::diffsol::SimulationSession>),
@@ -58,11 +77,52 @@ impl SimulationSession {
         opts: rumoca_solver::SimOptions,
     ) -> Result<Self, SimulationDiagnosticError> {
         crate::backend_options::validate(&opts)?;
+        let artifact = crate::solve_lowering::lower_runtime_fmi_artifact(dae_model, &opts)?;
+        Self::from_runtime_artifact(artifact, opts)
+    }
+
+    /// Construct the immutable component for this DAE and its exact initialization options.
+    /// The returned component holds no numerical session history.
+    pub fn prepare_component(
+        dae: &dae::Dae,
+        options: &rumoca_solver::SimOptions,
+    ) -> Result<PreparedSimulationComponent, SimulationDiagnosticError> {
+        crate::backend_options::validate(options)?;
+        let lowered =
+            crate::solve_lowering::lower_correlated_for_simulation_with_overrides(dae, options)?;
+        let replayable = lowered.withheld_state_preferences().is_empty()
+            && lowered
+                .model()
+                .problem
+                .continuous
+                .unlocalizable_guards
+                .is_empty();
+        Ok(PreparedSimulationComponent {
+            component: crate::solve_lowering::finish_component(lowered)?,
+            replayable,
+        })
+    }
+
+    /// Start a fresh solver from a checked component prepared with the same initialization
+    /// inputs, parameters and state starts. Persistent callers must verify their artifact key.
+    pub fn from_prepared_component(
+        component: rumoca_ir_solve::fmi::FmiComponent,
+        options: rumoca_solver::SimOptions,
+    ) -> Result<Self, SimulationDiagnosticError> {
+        crate::backend_options::validate(&options)?;
+        let artifact = crate::solve_lowering::admit_runtime_component(component, &options)?;
+        Self::from_runtime_artifact(artifact, options)
+    }
+
+    fn from_runtime_artifact(
+        artifact: RuntimeArtifact,
+        opts: rumoca_solver::SimOptions,
+    ) -> Result<Self, SimulationDiagnosticError> {
         match opts.solver_mode {
-            SimSolverMode::Auto => new_auto_session(dae_model, opts),
-            SimSolverMode::Bdf => new_bdf_session(dae_model, opts),
+            SimSolverMode::Auto => new_auto_session(artifact, opts),
+            SimSolverMode::Bdf => new_bdf_session(artifact, opts),
             SimSolverMode::RkLike | SimSolverMode::VelImplicit | SimSolverMode::FixedStep => {
-                new_rk_like_session(dae_model, opts)
+                new_rk_like_session(artifact, opts)
             }
         }
     }
@@ -279,26 +339,15 @@ scheduled_executor_items! {
     }
 }
 
-/// Lower the DAE and apply simulation overrides exactly once before handing the
-/// solve model to the selected simulation solver backend.
-fn lower_for_simulation_session(
-    dae_model: &dae::Dae,
-    opts: &rumoca_solver::SimOptions,
-) -> Result<
-    (
-        rumoca_solver::fmi_me::MeModelArtifact,
-        Option<rumoca_solver::fmi_me::MeExecutionBackend>,
-    ),
-    SimulationDiagnosticError,
-> {
-    crate::solve_lowering::lower_runtime_fmi_artifact(dae_model, opts)
-}
+type RuntimeArtifact = (
+    rumoca_solver::fmi_me::MeModelArtifact,
+    Option<rumoca_solver::fmi_me::MeExecutionBackend>,
+);
 
 fn new_auto_session(
-    dae_model: &dae::Dae,
+    (artifact, execution_backend): RuntimeArtifact,
     opts: rumoca_solver::SimOptions,
 ) -> Result<SimulationSession, SimulationDiagnosticError> {
-    let (artifact, execution_backend) = lower_for_simulation_session(dae_model, &opts)?;
     #[cfg(all(feature = "solver-diffsol", feature = "solver-rk45"))]
     {
         match crate::diffsol::select_auto_integrator(&artifact, &opts, execution_backend.clone())
@@ -344,12 +393,11 @@ fn new_auto_session(
 }
 
 fn new_bdf_session(
-    dae_model: &dae::Dae,
+    (artifact, execution_backend): RuntimeArtifact,
     opts: rumoca_solver::SimOptions,
 ) -> Result<SimulationSession, SimulationDiagnosticError> {
     #[cfg(feature = "solver-diffsol")]
     {
-        let (artifact, execution_backend) = lower_for_simulation_session(dae_model, &opts)?;
         crate::diffsol::SimulationSession::from_artifact(artifact, opts, execution_backend).map(
             |session| SimulationSession {
                 inner: SimulationSessionInner::Diffsol(Box::new(session)),
@@ -358,7 +406,7 @@ fn new_bdf_session(
     }
     #[cfg(not(feature = "solver-diffsol"))]
     {
-        let _ = (dae_model, opts);
+        let _ = (artifact, execution_backend, opts);
         Err(SimulationDiagnosticError::Solver(
             "bdf solver requested, but this build does not include the diffsol backend".to_string(),
         ))
@@ -366,10 +414,9 @@ fn new_bdf_session(
 }
 
 fn new_rk_like_session(
-    dae_model: &dae::Dae,
+    (artifact, execution_backend): RuntimeArtifact,
     opts: rumoca_solver::SimOptions,
 ) -> Result<SimulationSession, SimulationDiagnosticError> {
-    let (artifact, execution_backend) = lower_for_simulation_session(dae_model, &opts)?;
     #[cfg(feature = "solver-rk45")]
     {
         crate::rk45::SimulationSession::from_artifact(artifact, opts, execution_backend).map(

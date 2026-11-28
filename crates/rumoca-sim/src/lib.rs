@@ -154,7 +154,7 @@ pub use session_protocol::{
     SessionServeExit, serve_session,
 };
 #[cfg(any(feature = "solver-diffsol", feature = "solver-rk45"))]
-pub use simulation_session::{SessionState, SimulationSession};
+pub use simulation_session::{PreparedSimulationComponent, SessionState, SimulationSession};
 scheduled_executor_items! {
     pub(crate) use simulation_session_api::SimulationSessionApi;
 }
