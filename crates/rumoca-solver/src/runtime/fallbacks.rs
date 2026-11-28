@@ -213,15 +213,53 @@ impl ProjectionFallbackReport {
     }
 }
 
+/// Canonical projection block indices are dense. Retain their counts by index;
+/// materialize the public ordered report only when it is requested.
+#[derive(Default)]
+struct ProjectionDiagnostics {
+    blocks: Vec<Option<ProjectionFallbackCounts>>,
+    complete_plan: Option<ProjectionFallbackCounts>,
+    active: Vec<(ProjectionSite, bool)>,
+    pending: Vec<ProjectionSite>,
+}
+
+impl ProjectionDiagnostics {
+    fn count_mut(&mut self, site: ProjectionSite) -> &mut ProjectionFallbackCounts {
+        match site {
+            ProjectionSite::Block(index) => {
+                if self.blocks.len() <= index {
+                    self.blocks.resize(index + 1, None);
+                }
+                self.blocks[index].get_or_insert_default()
+            }
+            ProjectionSite::CompletePlan => self.complete_plan.get_or_insert_default(),
+        }
+    }
+
+    fn report(&self) -> BTreeMap<ProjectionSite, ProjectionFallbackCounts> {
+        self.blocks
+            .iter()
+            .enumerate()
+            .filter_map(|(index, counts)| {
+                counts.map(|counts| (ProjectionSite::Block(index), counts))
+            })
+            .chain(
+                self.complete_plan
+                    .map(|counts| (ProjectionSite::CompletePlan, counts)),
+            )
+            .collect()
+    }
+
+    fn reset(&mut self) {
+        self.blocks.clear();
+        self.complete_plan = None;
+        self.active.clear();
+        self.pending.clear();
+    }
+}
+
 thread_local! {
-    static COUNTS: RefCell<BTreeMap<ProjectionSite, ProjectionFallbackCounts>> =
-        const { RefCell::new(BTreeMap::new()) };
-    /// The projection calls in progress, innermost last, each with whether it
-    /// has fallen back.
-    static ACTIVE: RefCell<Vec<(ProjectionSite, bool)>> = const { RefCell::new(Vec::new()) };
-    /// Sites whose fallback came ahead of their next call (a seed rescue
-    /// before its block's projection); that call has already fallen back.
-    static PENDING: RefCell<Vec<ProjectionSite>> = const { RefCell::new(Vec::new()) };
+    static DIAGNOSTICS: RefCell<ProjectionDiagnostics> = RefCell::new(ProjectionDiagnostics::default());
     static SURFACES: RefCell<BTreeMap<usize, u64>> = const { RefCell::new(BTreeMap::new()) };
     static SLIDING: RefCell<BTreeMap<usize, u64>> = const { RefCell::new(BTreeMap::new()) };
 }
@@ -231,16 +269,14 @@ thread_local! {
 #[must_use]
 pub fn projection_fallbacks() -> ProjectionFallbackReport {
     ProjectionFallbackReport {
-        sites: COUNTS.with(|counts| counts.borrow().clone()),
+        sites: DIAGNOSTICS.with(|diagnostics| diagnostics.borrow().report()),
         relation_surfaces: SURFACES.with(|surfaces| surfaces.borrow().clone()),
         sliding_modes: SLIDING.with(|sliding| sliding.borrow().clone()),
     }
 }
 
 pub fn reset_projection_fallbacks() {
-    COUNTS.with(|counts| counts.borrow_mut().clear());
-    ACTIVE.with(|active| active.borrow_mut().clear());
-    PENDING.with(|pending| pending.borrow_mut().clear());
+    DIAGNOSTICS.with(|diagnostics| diagnostics.borrow_mut().reset());
     SURFACES.with(|surfaces| surfaces.borrow_mut().clear());
     SLIDING.with(|sliding| sliding.borrow_mut().clear());
 }
@@ -251,55 +287,49 @@ pub(crate) struct ProjectionCall(());
 
 impl Drop for ProjectionCall {
     fn drop(&mut self) {
-        ACTIVE.with(|active| active.borrow_mut().pop());
+        DIAGNOSTICS.with(|diagnostics| diagnostics.borrow_mut().active.pop());
     }
 }
 
 /// Begin one projection call at `site`, a block of `rows` rows.
 pub(crate) fn begin_call(site: ProjectionSite, rows: usize) -> ProjectionCall {
-    COUNTS.with(|counts| {
-        let mut counts = counts.borrow_mut();
-        let entry = counts.entry(site).or_default();
+    DIAGNOSTICS.with(|diagnostics| {
+        let mut diagnostics = diagnostics.borrow_mut();
+        let entry = diagnostics.count_mut(site);
         entry.rows = rows;
         entry.calls += 1;
-    });
-    let pending = PENDING.with(|pending| {
-        let mut pending = pending.borrow_mut();
-        let position = pending
+        let pending = diagnostics
+            .pending
             .iter()
-            .position(|pending_site| *pending_site == site);
-        position
-            .map(|position| pending.swap_remove(position))
-            .is_some()
+            .position(|pending| *pending == site)
+            .map(|position| diagnostics.pending.swap_remove(position))
+            .is_some();
+        diagnostics.active.push((site, pending));
     });
-    ACTIVE.with(|active| active.borrow_mut().push((site, pending)));
     ProjectionCall(())
 }
 
 /// Count one fallback at `site`: once more for its kind, and once for the
 /// call in progress at that site unless that call already fell back.
 pub(crate) fn note_fallback(site: ProjectionSite, fallback: ProjectionFallback) {
-    let new_call = ACTIVE.with(|active| {
-        let mut active = active.borrow_mut();
-        match active
+    DIAGNOSTICS.with(|diagnostics| {
+        let mut diagnostics = diagnostics.borrow_mut();
+        let new_call = match diagnostics
+            .active
             .iter_mut()
             .rev()
             .find(|(active_site, _)| *active_site == site)
         {
             Some((_, fell_back)) => !std::mem::replace(fell_back, true),
-            None => PENDING.with(|pending| {
-                let mut pending = pending.borrow_mut();
-                let fresh = !pending.contains(&site);
+            None => {
+                let fresh = !diagnostics.pending.contains(&site);
                 if fresh {
-                    pending.push(site);
+                    diagnostics.pending.push(site);
                 }
                 fresh
-            }),
-        }
-    });
-    COUNTS.with(|counts| {
-        let mut counts = counts.borrow_mut();
-        let entry = counts.entry(site).or_default();
+            }
+        };
+        let entry = diagnostics.count_mut(site);
         entry.fallbacks[fallback.index()] += 1;
         entry.fallback_calls += u64::from(new_call);
     });
@@ -307,15 +337,11 @@ pub(crate) fn note_fallback(site: ProjectionSite, fallback: ProjectionFallback) 
 
 /// Count one torn line-search step halving at the innermost call in progress.
 pub(crate) fn note_torn_step_halving() {
-    let Some(site) = ACTIVE.with(|active| active.borrow().last().map(|(site, _)| *site)) else {
-        return;
-    };
-    COUNTS.with(|counts| {
-        counts
-            .borrow_mut()
-            .entry(site)
-            .or_default()
-            .torn_step_halvings += 1;
+    DIAGNOSTICS.with(|diagnostics| {
+        let mut diagnostics = diagnostics.borrow_mut();
+        if let Some((site, _)) = diagnostics.active.last().copied() {
+            diagnostics.count_mut(site).torn_step_halvings += 1;
+        }
     });
 }
 
@@ -430,6 +456,32 @@ mod tests {
         let counts = projection_fallbacks().sites[&site];
         assert_eq!((counts.calls, counts.fallback_calls), (1, 1));
         assert_eq!(counts.total(), 2);
+    }
+
+    #[test]
+    fn indexed_counts_preserve_sparse_sites_and_nested_calls() {
+        reset_projection_fallbacks();
+        let outer = begin_call(ProjectionSite::Block(7), 3);
+        {
+            let _inner = begin_call(ProjectionSite::CompletePlan, 0);
+            note_fallback(ProjectionSite::Block(7), ProjectionFallback::SeedRescue);
+            note_torn_step_halving();
+        }
+        note_fallback(ProjectionSite::Block(7), ProjectionFallback::TornToDense);
+        drop(outer);
+        let report = projection_fallbacks();
+        assert_eq!(
+            report.sites.keys().copied().collect::<Vec<_>>(),
+            [ProjectionSite::Block(7), ProjectionSite::CompletePlan]
+        );
+        assert_eq!(report.sites[&ProjectionSite::Block(7)].fallback_calls, 1);
+        assert_eq!(report.sites[&ProjectionSite::Block(7)].total(), 2);
+        assert_eq!(
+            report.sites[&ProjectionSite::CompletePlan].torn_step_halvings,
+            1
+        );
+        reset_projection_fallbacks();
+        assert!(projection_fallbacks().sites.is_empty());
     }
 
     #[test]
