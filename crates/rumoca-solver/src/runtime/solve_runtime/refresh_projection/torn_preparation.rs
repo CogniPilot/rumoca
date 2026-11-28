@@ -193,6 +193,11 @@ impl ScalarExecutionView<'_> {
                 residual_outputs: composite.residual_outputs.into_boxed_slice(),
             })
         });
-        Some(PreparedTornSweepEntry { sweep, compiled })
+        Some(PreparedTornSweepEntry {
+            sweep,
+            compiled,
+            #[cfg(debug_assertions)]
+            reference_y: RefCell::default(),
+        })
     }
 }

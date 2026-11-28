@@ -114,8 +114,8 @@ fn source_program_outputs(
     index: usize,
 ) -> Result<usize, RuntimeSolveError> {
     source
-        .program(index)
-        .map(solve::ScalarProgramBlock::program_output_count)
+        .program_output_ordinals(index)
+        .map(|ordinals| ordinals.len())
         .ok_or_else(|| {
             RuntimeSolveError::solve_ir("selected program is outside its complete source")
         })
