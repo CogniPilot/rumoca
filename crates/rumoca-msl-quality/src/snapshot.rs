@@ -26,9 +26,12 @@ pub fn states_at(snapshot: &Value, name: &str) -> Result<Option<ModelStates>, St
 }
 
 /// The links of `current`'s reference boundary chain that a judgment against
-/// `baseline` crosses: those reaching a quality gate version above the
-/// baseline's. A snapshot or link without its version is refused: read as
-/// zero, it would cross every link.
+/// `baseline` crosses: from the run's version down to the baseline's. The
+/// chain must be unbroken: the head reaches the run's version, each link
+/// starts where the next one ends, and the last crossed link starts at the
+/// baseline's version. A snapshot or link without its version is refused:
+/// read as zero, it would cross every link; and a truncated chain could skip
+/// the link that pins the evidence.
 pub fn crossed_links<'a>(current: &'a Value, baseline: &Value) -> Result<Vec<&'a Value>, String> {
     let version = |value: &Value, key: &str, what: &str| {
         value
@@ -44,14 +47,34 @@ pub fn crossed_links<'a>(current: &'a Value, baseline: &Value) -> Result<Vec<&'a
         ));
     }
     let mut crossed = Vec::new();
+    let mut reached = to;
     let mut link = current.get("reference_boundary_migration");
-    while from < to
-        && let Some(boundary) = link.filter(|link| link.is_object())
-    {
-        if version(boundary, "to_quality_gate_version", "a reference boundary")? <= from {
-            break;
+    while reached > from {
+        let Some(boundary) = link.filter(|link| link.is_object()) else {
+            return Err(format!(
+                "the reference boundary chain stops at version {reached}, above the baseline's {from}"
+            ));
+        };
+        let link_to = version(boundary, "to_quality_gate_version", "a reference boundary")?;
+        let link_from = version(
+            boundary,
+            "from_quality_gate_version",
+            "a reference boundary",
+        )?;
+        if link_to != reached || link_from >= link_to {
+            return Err(format!(
+                "the reference boundary chain is broken: a link {link_from} -> {link_to} where \
+                 one reaching {reached} belongs"
+            ));
+        }
+        if link_from < from {
+            return Err(format!(
+                "the reference boundary chain skips the baseline's version {from} \
+                 (link {link_from} -> {link_to})"
+            ));
         }
         crossed.push(boundary);
+        reached = link_from;
         link = boundary.get("previous");
     }
     Ok(crossed)
@@ -149,11 +172,16 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    fn link(from: u64, to: u64, previous: Option<Value>) -> Value {
+        let mut link = json!({ "from_quality_gate_version": from, "to_quality_gate_version": to });
+        if let Some(previous) = previous {
+            link["previous"] = previous;
+        }
+        link
+    }
+
     fn chain() -> Value {
-        json!({
-            "to_quality_gate_version": 15,
-            "previous": { "to_quality_gate_version": 14, "previous": { "to_quality_gate_version": 13 } },
-        })
+        link(14, 15, Some(link(13, 14, Some(link(12, 13, None)))))
     }
 
     #[test]
@@ -177,11 +205,12 @@ mod tests {
         );
         let unversioned = json!({ "reference_boundary_migration": chain() });
         assert!(crossed_links(&unversioned, &json!({ "quality_gate_version": 13 })).is_err());
-        let broken = json!({
+        let unversioned_link = json!({
             "quality_gate_version": 15,
             "reference_boundary_migration": { "previous": {} },
         });
-        let error = crossed_links(&broken, &json!({ "quality_gate_version": 13 })).unwrap_err();
+        let error =
+            crossed_links(&unversioned_link, &json!({ "quality_gate_version": 13 })).unwrap_err();
         assert!(error.contains("reference boundary has no"), "{error}");
         let newer = crossed_links(&current, &json!({ "quality_gate_version": 16 })).unwrap_err();
         assert!(newer.contains("newer"), "{newer}");
@@ -202,5 +231,43 @@ mod tests {
         assert!(error.contains("the reviewed boundary pins"), "{error}");
         assert!(!has_old_side(&baseline, &[]));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_broken_or_truncated_chain_is_refused() {
+        let at = |chain: Value| json!({ "quality_gate_version": 15, "reference_boundary_migration": chain });
+        let baseline = json!({ "quality_gate_version": 13 });
+        // Truncated: the chain ends at 14, above the baseline's 13.
+        let error = crossed_links(&at(link(14, 15, None)), &baseline).unwrap_err();
+        assert!(error.contains("stops at version 14"), "{error}");
+        // A gap: 15 <- 14, then a link ending at 12.
+        let gap = link(14, 15, Some(link(11, 12, None)));
+        assert!(
+            crossed_links(&at(gap), &baseline)
+                .unwrap_err()
+                .contains("broken")
+        );
+        // A head that does not reach the run's version.
+        assert!(
+            crossed_links(&at(link(13, 14, None)), &baseline)
+                .unwrap_err()
+                .contains("broken")
+        );
+        // A link that jumps over the baseline's version.
+        let jump = link(12, 15, None);
+        assert!(
+            crossed_links(&at(jump), &baseline)
+                .unwrap_err()
+                .contains("skips")
+        );
+        // No chain at all, with versions to cross.
+        let none = json!({ "quality_gate_version": 15 });
+        assert!(crossed_links(&none, &baseline).is_err());
+        // Nothing to cross needs no chain.
+        assert!(
+            crossed_links(&none, &json!({ "quality_gate_version": 15 }))
+                .unwrap()
+                .is_empty()
+        );
     }
 }

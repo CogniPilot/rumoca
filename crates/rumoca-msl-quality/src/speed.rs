@@ -20,7 +20,7 @@
 //! bounds, or a spread that says the runner changed speed mid-shard) is
 //! inconclusive, never an absolute judgement.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// The calibration set: models whose OMC wall is a few seconds and mostly
 /// simulation (not process start and C compile, which scale with the disk and
@@ -67,7 +67,15 @@ pub const CALIBRATION_MODELS: &[&str] = &[
     "Modelica.Thermal.HeatTransfer.Examples.Motor",
 ];
 
-/// The fewest fresh same-shard OMC timings a gauge is read from.
+/// The quality gate version that introduced the frame: a baseline older than
+/// it has no calibration references, and only then does a run set the frame.
+/// A baseline at or after it without them is refused, so a lost field can
+/// never re-set the frame on whichever runner ran today.
+pub const FRAME_GATE_VERSION: u64 = 15;
+
+/// The fewest fresh same-shard OMC timings a gauge is read from. With 36
+/// calibration models, seven failed calibration timings on one shard make its
+/// gauge inconclusive (fail closed, re-run the shard job).
 pub const MIN_FRESH_TIMINGS: usize = 30;
 /// The slowest and fastest runner a gauge is trusted for, relative to the frame.
 pub const SPEED_BOUNDS: (f64, f64) = (1.0 / 3.0, 3.0);
@@ -88,23 +96,75 @@ fn usable(seconds: f64) -> bool {
     seconds.is_finite() && seconds > 0.0
 }
 
-/// The frame a run without stored references sets: each calibration model's
-/// median fresh wall over the shards, so the frame's nominal runner is the
-/// run's median one, not any one shard's.
-pub fn bootstrap_references(timings: &[OmcTiming]) -> BTreeMap<String, f64> {
+/// The frame a run sets when its baseline predates it: each calibration
+/// model's median fresh wall over the shards, so the frame's nominal runner is
+/// the run's median one, not any one shard's. Every pinned model must have
+/// been timed fresh on every shard, or no frame is set: a frame missing a
+/// model would hold less headroom over [`MIN_FRESH_TIMINGS`] forever.
+pub fn bootstrap_references(timings: &[OmcTiming]) -> Result<BTreeMap<String, f64>, String> {
+    let shards = timings
+        .iter()
+        .map(|timing| timing.shard)
+        .collect::<BTreeSet<_>>();
+    if shards.is_empty() {
+        return Err("no calibration timings to set the frame from".to_string());
+    }
     let mut walls: BTreeMap<&str, Vec<f64>> = BTreeMap::new();
-    for timing in timings {
-        if timing.fresh && usable(timing.wall_seconds) {
-            walls
-                .entry(&timing.model)
-                .or_default()
-                .push(timing.wall_seconds);
+    let mut missing = Vec::new();
+    for &shard in &shards {
+        for &model in CALIBRATION_MODELS {
+            match timings.iter().find(|timing| {
+                timing.shard == shard
+                    && timing.model == model
+                    && timing.fresh
+                    && usable(timing.wall_seconds)
+            }) {
+                Some(timing) => walls.entry(model).or_default().push(timing.wall_seconds),
+                None => missing.push(format!("{model} on shard {shard}")),
+            }
         }
     }
-    walls
+    if !missing.is_empty() {
+        return Err(format!(
+            "cannot set the frame: {} calibration timings are missing or stale ({}{})",
+            missing.len(),
+            missing
+                .iter()
+                .take(3)
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(", "),
+            if missing.len() > 3 { ", ..." } else { "" }
+        ));
+    }
+    Ok(walls
         .into_iter()
         .map(|(model, mut walls)| (model.to_string(), median(&mut walls)))
-        .collect()
+        .collect())
+}
+
+/// Stored references must be exactly the pinned calibration set, each a
+/// usable wall: changing the set is a reviewed frame migration, not drift.
+pub fn validate_references(references: &BTreeMap<String, f64>) -> Result<(), String> {
+    let pinned = CALIBRATION_MODELS.iter().copied().collect::<BTreeSet<_>>();
+    let stored = references
+        .keys()
+        .map(String::as_str)
+        .collect::<BTreeSet<_>>();
+    let unpinned = stored.difference(&pinned).count();
+    let unstored = pinned.difference(&stored).count();
+    if unpinned + unstored > 0 {
+        return Err(format!(
+            "the stored calibration references are not the pinned set ({unpinned} not pinned, \
+             {unstored} missing); changing the set is a reviewed frame migration"
+        ));
+    }
+    match references.iter().find(|(_, wall)| !usable(**wall)) {
+        Some((model, wall)) => Err(format!(
+            "calibration reference {model} = {wall} is unusable"
+        )),
+        None => Ok(()),
+    }
 }
 
 /// This run's calibration timings against the frame's references.
@@ -228,7 +288,7 @@ mod tests {
         // set by this run (no stored references).
         let mut timings = shard(1, 1.0, walls);
         timings.extend(shard(2, 2.3, walls));
-        let reference = bootstrap_references(&timings);
+        let reference = bootstrap_references(&timings).unwrap();
         let gauge = SpeedGauge::new(&timings, &reference);
         let (fast, slow) = (
             gauge.speed_for("Judged", 1).unwrap(),
@@ -244,7 +304,7 @@ mod tests {
     #[test]
     fn stored_references_fix_the_frame_for_later_runs() {
         // References set by an earlier run; this run's shard 3 is 2.46x slower.
-        let reference = bootstrap_references(&shard(1, 1.0, walls));
+        let reference = bootstrap_references(&shard(1, 1.0, walls)).unwrap();
         let timings = shard(3, 2.46, walls);
         let gauge = SpeedGauge::new(&timings, &reference);
         let speed = gauge.speed_for("CauerLowPassSC", 3).unwrap();
@@ -256,7 +316,7 @@ mod tests {
 
     #[test]
     fn a_gauge_it_cannot_trust_is_inconclusive() {
-        let reference = bootstrap_references(&shard(1, 1.0, walls));
+        let reference = bootstrap_references(&shard(1, 1.0, walls)).unwrap();
         // Too few fresh timings: all but 29 cached.
         let mut stale = shard(1, 1.0, walls);
         stale
@@ -288,5 +348,48 @@ mod tests {
                 .speed_for("Judged", 1)
                 .is_err()
         );
+    }
+
+    #[test]
+    fn a_frame_is_set_only_from_every_pinned_model_on_every_shard() {
+        let mut timings = shard(1, 1.0, walls);
+        timings.extend(shard(2, 2.0, walls));
+        assert!(bootstrap_references(&timings).is_ok());
+        // One pinned model failed on shard 2: no frame.
+        let model = CALIBRATION_MODELS[5];
+        let partial = timings
+            .iter()
+            .filter(|timing| !(timing.shard == 2 && timing.model == model))
+            .cloned()
+            .collect::<Vec<_>>();
+        let error = bootstrap_references(&partial).unwrap_err();
+        assert!(
+            error.contains("1 calibration timings are missing") && error.contains("shard 2"),
+            "{error}"
+        );
+        assert!(bootstrap_references(&[]).is_err());
+    }
+
+    #[test]
+    fn stored_references_must_be_the_pinned_set() {
+        let references = bootstrap_references(&shard(1, 1.0, walls)).unwrap();
+        assert_eq!(validate_references(&references), Ok(()));
+        let mut short = references.clone();
+        short.remove(CALIBRATION_MODELS[0]);
+        assert!(
+            validate_references(&short)
+                .unwrap_err()
+                .contains("1 missing")
+        );
+        let mut extra = references.clone();
+        extra.insert("Unpinned".to_string(), 3.0);
+        assert!(
+            validate_references(&extra)
+                .unwrap_err()
+                .contains("1 not pinned")
+        );
+        let mut bad = references;
+        bad.insert(CALIBRATION_MODELS[0].to_string(), 0.0);
+        assert!(validate_references(&bad).unwrap_err().contains("unusable"));
     }
 }

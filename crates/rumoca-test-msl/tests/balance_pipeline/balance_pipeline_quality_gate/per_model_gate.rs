@@ -235,6 +235,7 @@ mod tests {
         files.write("baseline.json", &baseline);
         let mut current = snapshot(Some(json!({ "A": simulated(1.0) })));
         current["reference_boundary_migration"] = json!({
+            "from_quality_gate_version": 14,
             "to_quality_gate_version": 15,
             "reviewed_changes": { "removed_targets": ["Gone"] },
         });
@@ -272,6 +273,7 @@ mod tests {
         files.write("baseline.json", &baseline);
         let mut current = snapshot(Some(json!({ "A": simulated(1.0) })));
         current["reference_boundary_migration"] = json!({
+            "from_quality_gate_version": 14,
             "to_quality_gate_version": 15,
             "evidence_model_states": { "file": "evidence.json", "sha256": sha },
         });

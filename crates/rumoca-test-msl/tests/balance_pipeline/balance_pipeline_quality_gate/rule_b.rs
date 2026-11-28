@@ -15,7 +15,9 @@
 //! references share it.
 
 use super::*;
-use rumoca_msl_quality::speed::{OmcTiming, SpeedGauge, bootstrap_references};
+use rumoca_msl_quality::speed::{
+    FRAME_GATE_VERSION, OmcTiming, SpeedGauge, bootstrap_references, validate_references,
+};
 use rumoca_msl_quality::{BandLabel, ModelStates, TraceState};
 
 /// The calibration timings of a (merged) reference file: a merged file's
@@ -106,11 +108,40 @@ fn stored_references(baseline: &serde_json::Value) -> io::Result<Option<BTreeMap
         .transpose()
 }
 
-/// Re-judge `states`' certification under rule B against `references`.
+/// The frame this run is judged in: the baseline's stored references, which
+/// must be the pinned set, or, only when the baseline predates the frame, the
+/// frame this run sets (`Err` inside when it cannot set one: certification is
+/// then inconclusive). A baseline at or after the frame's gate version without
+/// references is refused.
+pub(super) fn frame_references(
+    baseline: &serde_json::Value,
+    timings: &[OmcTiming],
+) -> io::Result<Result<BTreeMap<String, f64>, String>> {
+    if let Some(references) = stored_references(baseline)? {
+        validate_references(&references).map_err(io::Error::other)?;
+        return Ok(Ok(references));
+    }
+    match baseline
+        .get("quality_gate_version")
+        .and_then(serde_json::Value::as_u64)
+    {
+        Some(version) if version < FRAME_GATE_VERSION => Ok(bootstrap_references(timings)),
+        Some(version) => Err(io::Error::other(format!(
+            "the baseline (quality gate version {version}) has no omc_calibration_references; \
+             a baseline from version {FRAME_GATE_VERSION} on must carry its frame"
+        ))),
+        None => Err(io::Error::other(
+            "the baseline has no quality_gate_version to tell whether it predates the frame",
+        )),
+    }
+}
+
+/// Re-judge `states`' certification under rule B, with the gauge of the
+/// frame, or the reason there is none.
 pub(super) fn normalize_certification(
     states: &mut ModelStates,
     results: &[MslModelResult],
-    gauge: &SpeedGauge,
+    gauge: Result<&SpeedGauge, &str>,
     shards: &BTreeMap<String, u32>,
     budgets: PhaseBudgets,
 ) {
@@ -122,11 +153,12 @@ pub(super) fn normalize_certification(
         if state.trace != TraceState::Scored(BandLabel::High) {
             continue;
         }
-        let speed = match shards.get(model) {
-            Some(&shard) => gauge
+        let speed = match (gauge, shards.get(model)) {
+            (Err(why), _) => Err(format!("{why}; re-run the shard jobs")),
+            (Ok(gauge), Some(&shard)) => gauge
                 .speed_for(model, shard)
                 .map_err(|why| format!("{why}; re-run the shard job")),
-            None => Err(format!("{model} has no OMC timing to place it on a shard")),
+            (Ok(_), None) => Err(format!("{model} has no OMC timing to place it on a shard")),
         };
         match speed {
             Ok(speed) => {
@@ -217,15 +249,14 @@ pub(super) fn insert_normalized_certification(
     }
     let baseline = read_json(&promoted_baseline_file().unwrap_or_else(msl_quality_baseline_path))?;
     let timings = calibration_timings(&reference);
-    let references = match stored_references(&baseline)? {
-        Some(references) => references,
-        None => bootstrap_references(&timings),
-    };
-    let gauge = SpeedGauge::new(&timings, &references);
+    let references = frame_references(&baseline, &timings)?;
+    let gauge = references
+        .as_ref()
+        .map(|references| SpeedGauge::new(&timings, references));
     normalize_certification(
         &mut states,
         &summary.model_results,
-        &gauge,
+        gauge.as_ref().map_err(|why| why.as_str()),
         &model_shards(&reference),
         budgets,
     );
@@ -247,10 +278,14 @@ pub(super) fn insert_normalized_certification(
         "timing_margin_models".to_string(),
         to_value(serde_json::to_value(&held))?,
     );
-    root.insert(
-        "omc_calibration_references".to_string(),
-        to_value(serde_json::to_value(&references))?,
-    );
+    // No frame, no references: a snapshot that could not set its frame does
+    // not pass one on.
+    if let Ok(references) = &references {
+        root.insert(
+            "omc_calibration_references".to_string(),
+            to_value(serde_json::to_value(references))?,
+        );
+    }
     Ok(())
 }
 
@@ -307,19 +342,14 @@ mod tests {
         shards: &[(&str, u32)],
     ) {
         let shards = shards.iter().map(|(m, s)| (m.to_string(), *s)).collect();
-        normalize_certification(
-            states,
-            results,
-            &SpeedGauge::new(timings, references),
-            &shards,
-            budgets(),
-        );
+        let gauge = SpeedGauge::new(timings, references);
+        normalize_certification(states, results, Ok(&gauge), &shards, budgets());
     }
 
     #[test]
     fn a_slow_runner_no_longer_uncertifies_a_model() {
         // CauerLowPassSC on a runner 2.46x the frame's: 42.9 s reads 17.4 s.
-        let references = bootstrap_references(&calibrated(1, 1.0));
+        let references = bootstrap_references(&calibrated(1, 1.0)).unwrap();
         let mut states = ModelStates::from([("Cauer".to_string(), strict_high())]);
         judged(
             &mut states,
@@ -339,7 +369,7 @@ mod tests {
 
     #[test]
     fn a_genuine_slowdown_on_a_nominal_runner_still_uncertifies() {
-        let references = bootstrap_references(&calibrated(1, 1.0));
+        let references = bootstrap_references(&calibrated(1, 1.0)).unwrap();
         let timings = calibrated(1, 1.0);
         let run = |seconds: f64| {
             let mut states = ModelStates::from([("M".to_string(), strict_high())]);
@@ -371,7 +401,7 @@ mod tests {
 
     #[test]
     fn an_untrusted_gauge_is_inconclusive_and_says_what_to_do() {
-        let references = bootstrap_references(&calibrated(1, 1.0));
+        let references = bootstrap_references(&calibrated(1, 1.0)).unwrap();
         let mut stale = calibrated(3, 2.46);
         stale.iter_mut().for_each(|timing| timing.fresh = false);
         let mut states = ModelStates::from([("Cauer".to_string(), strict_high())]);
@@ -399,7 +429,7 @@ mod tests {
         // same model the same way.
         let mut timings = calibrated(1, 1.0);
         timings.extend(calibrated(2, 2.3));
-        let references = bootstrap_references(&timings);
+        let references = bootstrap_references(&timings).unwrap();
         let certify = |references: &BTreeMap<String, f64>| {
             let mut states = ModelStates::from([("M".to_string(), strict_high())]);
             judged(
@@ -456,7 +486,7 @@ mod tests {
 
     #[test]
     fn the_rosters_are_the_states_certification() {
-        let references = bootstrap_references(&calibrated(1, 1.0));
+        let references = bootstrap_references(&calibrated(1, 1.0)).unwrap();
         let mut states = ModelStates::from([
             ("Cauer".to_string(), strict_high()),
             ("Slow".to_string(), strict_high()),
@@ -482,5 +512,60 @@ mod tests {
         assert!((slow.speed.unwrap() - 2.46).abs() < 1e-9);
         assert!((slow.budget_share - 80.0 / slow.speed.unwrap() / 45.0).abs() < 1e-12);
         assert_eq!(certified.len() + held.len(), 2);
+    }
+
+    #[test]
+    fn only_a_baseline_older_than_the_frame_may_set_one() {
+        let timings = calibrated(1, 1.0);
+        let at = |version: u64| serde_json::json!({ "quality_gate_version": version });
+        // The first crossing into rule B sets the frame from this run.
+        assert!(
+            frame_references(&at(FRAME_GATE_VERSION - 1), &timings)
+                .unwrap()
+                .is_ok()
+        );
+        // A rule-B baseline that lost its references is refused.
+        let error = frame_references(&at(FRAME_GATE_VERSION), &timings).unwrap_err();
+        assert!(
+            error.to_string().contains("must carry its frame"),
+            "{error}"
+        );
+        assert!(frame_references(&serde_json::json!({}), &timings).is_err());
+        // Stored references are used as they are, if they are the pinned set.
+        let references = bootstrap_references(&timings).unwrap();
+        let mut stored = at(FRAME_GATE_VERSION);
+        stored["omc_calibration_references"] = serde_json::to_value(&references).unwrap();
+        assert_eq!(
+            frame_references(&stored, &[]).unwrap(),
+            Ok(references.clone())
+        );
+        let mut drifted = references;
+        drifted.remove(CALIBRATION_MODELS[0]);
+        stored["omc_calibration_references"] = serde_json::to_value(&drifted).unwrap();
+        assert!(frame_references(&stored, &[]).is_err());
+    }
+
+    #[test]
+    fn a_frame_that_cannot_be_set_leaves_certification_inconclusive() {
+        let mut timings = calibrated(1, 1.0);
+        timings.retain(|timing| timing.model != CALIBRATION_MODELS[0]);
+        let at = serde_json::json!({ "quality_gate_version": FRAME_GATE_VERSION - 1 });
+        let why = frame_references(&at, &timings).unwrap().unwrap_err();
+        let mut states = ModelStates::from([("M".to_string(), strict_high())]);
+        let shards = BTreeMap::from([("M".to_string(), 1)]);
+        normalize_certification(
+            &mut states,
+            &[result("M", 1.0)],
+            Err(&why),
+            &shards,
+            budgets(),
+        );
+        let state = &states["M"];
+        assert!(!state.certified);
+        let reason = state.stage_seconds.timing_inconclusive.as_deref().unwrap();
+        assert!(
+            reason.contains("cannot set the frame") && reason.ends_with("re-run the shard jobs"),
+            "{reason}"
+        );
     }
 }
