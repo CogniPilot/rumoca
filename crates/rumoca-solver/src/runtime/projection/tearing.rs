@@ -99,6 +99,7 @@ pub(super) fn project_torn_algebraic_block<M: ImplicitProjectionModel>(
     }
 
     let mut step_scales: Option<Vec<f64>> = None;
+    let mut previous_trial_base = None;
     for _ in 0..TORN_OUTER_MAX_ITERS {
         // After an exact Newton step, the step's own row scales license the
         // residual check at the new point: it settles an uncertified refresh
@@ -122,6 +123,7 @@ pub(super) fn project_torn_algebraic_block<M: ImplicitProjectionModel>(
             &variable_scales,
             tol,
             certify_coordinates,
+            previous_trial_base.as_ref().unwrap_or(&snapshot),
         );
         match step.inspect_err(|_| snapshot.restore(tearing, y))? {
             TornStep::Settled => {
@@ -131,7 +133,8 @@ pub(super) fn project_torn_algebraic_block<M: ImplicitProjectionModel>(
                     settled: true,
                 }));
             }
-            TornStep::Advanced(next, scales) => {
+            TornStep::Advanced(next, scales, base) => {
+                previous_trial_base = Some(base);
                 residual = next;
                 step_scales = Some(scales);
             }
@@ -167,9 +170,9 @@ fn settles_on_step_scales(
 enum TornStep {
     /// The reduced residual meets tolerance; the block is solved.
     Settled,
-    /// An exact Newton step was accepted; carries the reduced residual at the
-    /// new point and the row scales of the Jacobian the step solved.
-    Advanced(Vec<f64>, Vec<f64>),
+    /// An exact Newton step was accepted; carries its residual, row scales and the
+    /// pre-sweep causal values for the next certification.
+    Advanced(Vec<f64>, Vec<f64>, TornValues),
     /// The torn solve cannot proceed; the caller falls back to the dense solve.
     Decline,
 }
@@ -190,6 +193,7 @@ fn advance_torn_newton<M: ImplicitProjectionModel>(
     variable_scales: &[f64],
     tol: f64,
     certify_coordinates: bool,
+    previous_sweep_base: &TornValues,
 ) -> Result<TornStep, RuntimeSolveError> {
     let tearing = block.tearing;
     // A residual that is exactly zero rowwise satisfies every positive scaled
@@ -247,12 +251,19 @@ fn advance_torn_newton<M: ImplicitProjectionModel>(
                     delta.as_slice(),
                     tol,
                 )
-                && causal_correction_converged(model, y, (p, t), tearing, &step)?))
+                && causal_correction_converged(
+                    model,
+                    y,
+                    (p, t),
+                    tearing,
+                    &step,
+                    previous_sweep_base,
+                )?))
     {
         return Ok(TornStep::Settled);
     }
     match line_search(model, y, p, t, tearing, step)? {
-        Some(next) => Ok(TornStep::Advanced(next, row_scales)),
+        Some(next) => Ok(TornStep::Advanced(next, row_scales, base)),
         None => Ok(TornStep::Decline),
     }
 }
@@ -304,12 +315,13 @@ fn solve_causal_step<M: ImplicitProjectionModel + ?Sized>(
     if y_index >= y.len() {
         return Ok(false);
     }
+    let exact = model.implicit_target_assignment_is_exact(row, y_index);
     debug_assert!(
-        model.implicit_target_assignment_is_exact(row, y_index),
+        exact,
         "causal back-substitution requires an exact explicit assignment; \
          a non-exact step must be promoted to a tear variable at prepare time"
     );
-    if !model.implicit_target_assignment_is_exact(row, y_index) {
+    if !exact {
         return Ok(false);
     }
     match model.isolation_value(row, y_index, y, p, t)? {
@@ -525,8 +537,15 @@ fn causal_correction_converged<M: ImplicitProjectionModel>(
     (p, t): (&[f64], f64),
     tearing: &solve::BlockTearing,
     step: &LineSearchStep<'_>,
+    previous_sweep_base: &TornValues,
 ) -> Result<bool, RuntimeSolveError> {
     if tearing.causal_steps.is_empty() {
+        return Ok(true);
+    }
+    // The preceding sweep already evaluated this finite, converged residual.
+    // Only tear and causal coordinates can differ between these two trials.
+    // Compare the actual rounded candidate, including the sign of zero.
+    if step.before.is_finite() && previous_sweep_base.matches_candidate(step) {
         return Ok(true);
     }
     let accepted = line_search_step(model, y, p, t, tearing, step)?.is_some();
@@ -618,6 +637,17 @@ impl TornValues {
 
     fn causal(&self, step: usize) -> f64 {
         self.values[self.tears + step]
+    }
+
+    fn matches_candidate(&self, step: &LineSearchStep<'_>) -> bool {
+        step.delta.iter().enumerate().all(|(index, &delta)| {
+            let current = step.base.tear(index);
+            let candidate = current + step.alpha * delta;
+            candidate.is_finite() && candidate.to_bits() == current.to_bits()
+        }) && self.values[self.tears..]
+            .iter()
+            .zip(&step.base.values[step.base.tears..])
+            .all(|(before, now)| before.to_bits() == now.to_bits())
     }
 
     fn restore(&self, tearing: &solve::BlockTearing, y: &mut [f64]) {

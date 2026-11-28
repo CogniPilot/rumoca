@@ -6,6 +6,7 @@ struct ParallelResistances {
     resistance: f64,
     offset: f64,
     equation_scale: f64,
+    sweeps: std::cell::Cell<usize>,
     plan: solve::AlgebraicProjectionPlan,
 }
 
@@ -15,6 +16,7 @@ impl ParallelResistances {
             resistance,
             offset,
             equation_scale,
+            sweeps: std::cell::Cell::new(0),
             plan: solve::AlgebraicProjectionPlan {
                 blocks: (vec![solve::AlgebraicProjectionBlock {
                     rows: vec![0, 1, 2],
@@ -44,6 +46,18 @@ impl ParallelResistances {
 }
 
 impl ImplicitProjectionModel for ParallelResistances {
+    fn torn_block_sweep(
+        &self,
+        tearing: &solve::BlockTearing,
+        y: &mut [f64],
+        p: &[f64],
+        t: f64,
+        out: &mut Vec<f64>,
+    ) -> Result<bool, RuntimeSolveError> {
+        self.sweeps.set(self.sweeps.get() + 1);
+        tearing::per_row_torn_block_sweep(self, tearing, y, p, t, out)
+    }
+
     fn eval_residual(
         &self,
         y: &[f64],
@@ -195,4 +209,31 @@ fn well_conditioned_torn_block_still_settles_without_dense_recovery() {
     assert!(update.settled);
     assert!((y[0] - 10.1).abs() < 1e-8);
     assert!(y[1..].iter().all(|current| (current - 0.05).abs() < 1e-8));
+}
+
+#[test]
+fn certification_reuses_only_an_identical_sweep() {
+    let model = ParallelResistances::new(2.0, 0.0, 1.0);
+    let tearing = model.plan.blocks.scalar_blocks()[0]
+        .tearing
+        .as_ref()
+        .unwrap();
+    for (initial_current, expected_sweeps) in [(0.05, 1), (0.0, 2)] {
+        model.sweeps.set(0);
+        let mut y = [0.1, initial_current, initial_current];
+        let update = tearing::project_torn_algebraic_block(
+            &model,
+            &mut y,
+            &[],
+            0.0,
+            TornBlock { index: 0, tearing },
+            1e-8,
+            true,
+        )
+        .unwrap()
+        .unwrap();
+        assert!(update.settled);
+        assert_eq!(y.map(f64::to_bits), [0.1_f64, 0.05, 0.05].map(f64::to_bits));
+        assert_eq!(model.sweeps.get(), expected_sweeps);
+    }
 }
