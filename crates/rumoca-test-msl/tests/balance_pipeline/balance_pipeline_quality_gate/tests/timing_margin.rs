@@ -46,6 +46,8 @@ fn timing_margin_models_leave_the_trace_floors() {
         TimingMarginEntry {
             phase: "Sim".to_string(),
             budget_share: 0.8,
+            speed: None,
+            inconclusive: None,
         },
     );
     let parity_with = |agreement_high: usize| {
@@ -89,6 +91,8 @@ fn timing_margin_roster_is_disjoint_and_counted() {
     let entry = TimingMarginEntry {
         phase: "Sim".to_string(),
         budget_share: 0.9,
+        speed: None,
+        inconclusive: None,
     };
     baseline
         .timing_margin_models
@@ -125,6 +129,8 @@ fn timing_margin_models_leave_the_completion_and_accounting_floors() {
         TimingMarginEntry {
             phase: "Sim".to_string(),
             budget_share: 0.8,
+            speed: None,
+            inconclusive: None,
         },
     );
     let allowed_drop = stage_count_allowed_drop(10);

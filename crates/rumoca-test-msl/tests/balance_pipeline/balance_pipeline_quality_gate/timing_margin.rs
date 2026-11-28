@@ -21,6 +21,12 @@ pub(super) const CERTIFICATION_TIMING_MARGIN: f64 = 0.5;
 pub(super) struct TimingMarginEntry {
     pub(super) phase: String,
     pub(super) budget_share: f64,
+    /// The shard speed the share is normalized by (rule B).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) speed: Option<f64>,
+    /// Why the speed gauge was not trusted; the share is then absolute.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) inconclusive: Option<String>,
 }
 
 /// The phase budgets of the evidence run: every worker phase has the model
@@ -125,6 +131,8 @@ impl PhaseBudgets {
             Some(TimingMarginEntry {
                 phase: phase.to_string(),
                 budget_share: seconds? / speed / budget,
+                speed: None,
+                inconclusive: None,
             })
         })
         .max_by(|lhs, rhs| lhs.budget_share.total_cmp(&rhs.budget_share))

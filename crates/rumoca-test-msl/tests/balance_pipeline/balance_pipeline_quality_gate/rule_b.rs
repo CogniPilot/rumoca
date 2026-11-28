@@ -149,6 +149,48 @@ pub(super) fn normalize_certification(
     }
 }
 
+/// The certified roster and the timing-margin roster, derived from the
+/// states: one definition of certified for the snapshot, whichever path reads
+/// it. Every strict-high model is in exactly one.
+pub(super) fn rosters_from_states(
+    states: &ModelStates,
+    results: &[MslModelResult],
+    budgets: PhaseBudgets,
+) -> (IndexSet<String>, IndexMap<String, TimingMarginEntry>) {
+    let results = results
+        .iter()
+        .map(|result| (result.model_name.as_str(), result))
+        .collect::<HashMap<_, _>>();
+    let mut certified = IndexSet::new();
+    let mut held = IndexMap::new();
+    for (model, state) in states {
+        if state.trace != TraceState::Scored(BandLabel::High) {
+            continue;
+        }
+        if state.certified {
+            certified.insert(model.clone());
+            continue;
+        }
+        let timing = &state.stage_seconds;
+        let worst = results
+            .get(model.as_str())
+            .and_then(|result| budgets.worst_share_at(result, timing.speed.unwrap_or(1.0)));
+        let (phase, budget_share) = worst.map_or(("unmeasured".to_string(), 0.0), |worst| {
+            (worst.phase, worst.budget_share)
+        });
+        held.insert(
+            model.clone(),
+            TimingMarginEntry {
+                phase,
+                budget_share,
+                speed: timing.speed,
+                inconclusive: timing.timing_inconclusive.clone(),
+            },
+        );
+    }
+    (certified, held)
+}
+
 /// Apply rule B to the `model_states` just written into `root`.
 pub(super) fn insert_normalized_certification(
     root: &mut serde_json::Map<String, serde_json::Value>,
@@ -167,6 +209,15 @@ pub(super) fn insert_normalized_certification(
         Err(error) if error.kind() == io::ErrorKind::NotFound => serde_json::Value::Null,
         Err(error) => return Err(error),
     };
+    if let Some(windows) = reference.get("shard_timing_windows") {
+        for window in windows.as_array().into_iter().flatten() {
+            println!(
+                "MSL rule B: shard {} rumoca {} .. OMC {}: gap {} s",
+                window["shard"], window["rumoca"], window["omc"], window["gap_seconds"]
+            );
+        }
+        root.insert("shard_timing_windows".to_string(), windows.clone());
+    }
     let current = serde_json::Value::Object(root.clone());
     let old = old_side(&current)?;
     normalize_certification(
@@ -175,6 +226,18 @@ pub(super) fn insert_normalized_certification(
         &omc_timings(&reference),
         old.as_ref().map(|(states, evidence)| (states, *evidence)),
         budgets,
+    );
+    let (certified, held) = rosters_from_states(&states, &summary.model_results, budgets);
+    let to_value = |value: serde_json::Result<serde_json::Value>| {
+        value.map_err(|error| io::Error::other(format!("failed to serialize a roster: {error}")))
+    };
+    root.insert(
+        "certified_strict_high_models".to_string(),
+        to_value(serde_json::to_value(&certified))?,
+    );
+    root.insert(
+        "timing_margin_models".to_string(),
+        to_value(serde_json::to_value(&held))?,
     );
     let value = serde_json::to_value(states)
         .map_err(|error| io::Error::other(format!("failed to serialize model states: {error}")))?;
@@ -342,5 +405,38 @@ mod tests {
         assert_eq!(timings.len(), 3);
         assert_eq!(timings["A"].shard, 3);
         assert!(timings["A"].fresh && timings["B"].fresh && !timings["C"].fresh);
+    }
+
+    #[test]
+    fn the_rosters_are_the_states_certification() {
+        let (mut timings, old) = shard_of(3, 2.46, 40, "Cauer");
+        let mut slow = timings["Cauer"];
+        slow.wall_seconds = 1.0;
+        timings.insert("Slow".to_string(), slow);
+        let mut states = ModelStates::from([
+            ("Cauer".to_string(), strict_high()),
+            ("Slow".to_string(), strict_high()),
+        ]);
+        let results = [result("Cauer", 42.9), result("Slow", 80.0)];
+        normalize_certification(
+            &mut states,
+            &results,
+            &timings,
+            Some((&old, false)),
+            budgets(),
+        );
+        let (certified, held) = rosters_from_states(&states, &results, budgets());
+        let expected = states
+            .iter()
+            .filter(|(_, state)| state.certified)
+            .map(|(model, _)| model.clone())
+            .collect::<IndexSet<_>>();
+        assert_eq!(certified, expected);
+        assert_eq!(certified, IndexSet::from(["Cauer".to_string()]));
+        let slow = &held["Slow"];
+        assert_eq!(slow.phase, "Sim");
+        assert_eq!(slow.speed, Some(2.46));
+        assert!((slow.budget_share - 80.0 / 2.46 / 45.0).abs() < 1e-12);
+        assert_eq!(certified.len() + held.len(), 2);
     }
 }

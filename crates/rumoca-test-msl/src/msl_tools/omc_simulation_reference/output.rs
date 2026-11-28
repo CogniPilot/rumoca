@@ -570,6 +570,9 @@ pub(super) fn build_sim_output_payload(
         "simulation_success_rate_percent": round3(metrics.success_rate),
         "pipeline_progress": pipeline_progress,
         "elapsed_seconds": round3(context.elapsed_seconds),
+        // OMC's timing window, set beside rumoca's in the report: rule B's
+        // speed gauge and rumoca's stage times come from different minutes.
+        "timing_window": timing_window_ending_now(context.elapsed_seconds),
         "timing": timing,
         "runtime_comparison": runtime_comparison,
         "trace_comparison": trace_comparison,
@@ -762,6 +765,15 @@ fn print_omc_assertion_snapshot(state: &SimRunState) {
 
 /// The host these references were timed on: its CPU counts and, on a CI
 /// runner, the runner image and environment.
+/// The unix-seconds window that ends now and lasted `seconds`.
+fn timing_window_ending_now(seconds: f64) -> Value {
+    let Ok(now) = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) else {
+        return Value::Null;
+    };
+    let now = now.as_secs_f64();
+    json!({ "started_unix_seconds": now - seconds, "finished_unix_seconds": now })
+}
+
 /// The CI run and runner this process takes OMC timings on, or null outside
 /// CI. A model's timing is fresh for a shard when its context carries the
 /// shard's own provenance; a cached or resumed timing carries another.

@@ -540,6 +540,32 @@ struct MslPhaseTimings {
     render_and_write_seconds: f64,
     summarize_seconds: f64,
     core_pipeline_seconds: f64,
+    /// The unix seconds the core pipeline started and finished: rumoca's
+    /// timing window, set beside OMC's in the report (rule B's residual risk:
+    /// the two windows are not the same minutes).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    window: Option<TimingWindow>,
+}
+
+/// A process phase's wall-clock window, in unix seconds.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+struct TimingWindow {
+    started_unix_seconds: f64,
+    finished_unix_seconds: f64,
+}
+
+impl TimingWindow {
+    /// The window that ends now and lasted `seconds`.
+    fn ending_now(seconds: f64) -> Option<Self> {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .ok()?
+            .as_secs_f64();
+        Some(Self {
+            started_unix_seconds: now - seconds,
+            finished_unix_seconds: now,
+        })
+    }
 }
 
 #[test]

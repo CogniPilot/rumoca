@@ -1108,18 +1108,46 @@ fn write_pretty_json_file(path: &Path, payload: &Value) -> Result<(), String> {
     fs::write(path, json).map_err(|e| format!("merge-shards: cannot write {}: {e}", path.display()))
 }
 
+fn shard_index(shard_dir: &Path) -> Result<u64, String> {
+    shard_dir
+        .file_name()
+        .and_then(|name| name.to_str())
+        .and_then(|name| name.strip_prefix("shard-"))
+        .and_then(|index| index.parse::<u64>().ok())
+        .ok_or_else(|| format!("merge-shards: {} is not shard-<n>", shard_dir.display()))
+}
+
+/// Each shard's rumoca and OMC timing windows and the gap between them
+/// (OMC's start less rumoca's finish; negative when they overlap): rule B's
+/// gauge reads OMC's minutes and judges rumoca's, so the report says how far
+/// apart they were.
+fn shard_timing_windows(shards: &[(u64, Option<&Value>, Option<&Value>)]) -> Value {
+    let at = |window: Option<&Value>, key: &str| window.and_then(|w| w.get(key)?.as_f64());
+    Value::Array(
+        shards
+            .iter()
+            .map(|&(shard, rumoca, omc)| {
+                let gap = at(omc, "started_unix_seconds")
+                    .zip(at(rumoca, "finished_unix_seconds"))
+                    .map(|(started, finished)| started - finished);
+                json!({
+                    "shard": shard,
+                    "rumoca": rumoca.cloned(),
+                    "omc": omc.cloned(),
+                    "gap_seconds": gap,
+                })
+            })
+            .collect(),
+    )
+}
+
 /// Mark each OMC model of a shard's reference with its `shard` index and
 /// whether its timing is `timing_fresh` (taken on this shard's own run and
 /// runner, not cached or resumed): the merged file no longer says which shard
 /// a model ran on, and rule B's speed gauge reads only a shard's own fresh
 /// timings.
 fn annotate_omc_timings(shard_dir: &Path, payload: &mut Value) -> Result<(), String> {
-    let shard = shard_dir
-        .file_name()
-        .and_then(|name| name.to_str())
-        .and_then(|name| name.strip_prefix("shard-"))
-        .and_then(|index| index.parse::<u64>().ok())
-        .ok_or_else(|| format!("merge-shards: {} is not shard-<n>", shard_dir.display()))?;
+    let shard = shard_index(shard_dir)?;
     let own_run = payload.get("timing_run").cloned().unwrap_or_default();
     let Some(models) = payload.get_mut("models").and_then(Value::as_object_mut) else {
         return Ok(());
@@ -1146,7 +1174,24 @@ fn merge_shard_parity_artifacts(dir: &Path, results_dir: &Path) -> Result<(), St
     let trace_summary = build_flat_trace_summary(&omc_payloads, &trace_models)?;
     let merged_trace =
         merge_trace_comparison_payloads(&trace_payloads, trace_models, &trace_summary)?;
-    let merged_omc = merge_omc_reference_payloads(&omc_payloads, omc_models, &trace_summary)?;
+    let mut merged_omc = merge_omc_reference_payloads(&omc_payloads, omc_models, &trace_summary)?;
+    let result_payloads = load_shard_json_payloads(&shard_dirs, "msl_results.json")?;
+    let mut shards = Vec::with_capacity(shard_dirs.len());
+    for ((shard_dir, omc), results) in shard_dirs.iter().zip(&omc_payloads).zip(&result_payloads) {
+        shards.push((
+            shard_index(shard_dir)?,
+            results
+                .get("timings")
+                .and_then(|timings| timings.get("window")),
+            omc.get("timing_window"),
+        ));
+    }
+    if let Some(root) = merged_omc.as_object_mut() {
+        root.insert(
+            "shard_timing_windows".to_string(),
+            shard_timing_windows(&shards),
+        );
+    }
 
     write_pretty_json_file(&results_dir.join(SHARD_OMC_REFERENCE_FILE), &merged_omc)?;
     write_pretty_json_file(
@@ -1570,4 +1615,14 @@ fn merged_runtime_stats_count_exactly_the_models_with_a_runtime_ratio() {
             "{bucket}"
         );
     }
+}
+
+#[test]
+fn each_shard_reports_its_two_timing_windows_and_their_gap() {
+    let rumoca = json!({ "started_unix_seconds": 100.0, "finished_unix_seconds": 400.0 });
+    let omc = json!({ "started_unix_seconds": 460.0, "finished_unix_seconds": 900.0 });
+    let windows = shard_timing_windows(&[(3, Some(&rumoca), Some(&omc)), (4, None, Some(&omc))]);
+    assert_eq!(windows[0]["shard"], 3);
+    assert_eq!(windows[0]["gap_seconds"], 60.0);
+    assert_eq!(windows[1]["gap_seconds"], Value::Null);
 }
