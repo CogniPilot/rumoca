@@ -1240,3 +1240,28 @@ fn fixture_paths(root: &std::path::Path) -> MslPaths {
         rumoca_trace_dir: root.join("sim_traces").join("rumoca"),
     }
 }
+
+#[test]
+fn a_timing_carries_its_run_and_runner_in_ci_and_none_locally() {
+    let ci = |name: &str| {
+        match name {
+            "GITHUB_RUN_ID" => Some("46055840822"),
+            "GITHUB_RUN_ATTEMPT" => Some("2"),
+            "RUNNER_NAME" => Some("GitHub Actions 1000"),
+            _ => None,
+        }
+        .map(str::to_string)
+    };
+    assert_eq!(
+        output::run_provenance_from(ci),
+        serde_json::json!({
+            "run_id": "46055840822",
+            "run_attempt": "2",
+            "runner": "GitHub Actions 1000",
+        })
+    );
+    assert_eq!(
+        output::run_provenance_from(|_| None),
+        serde_json::Value::Null
+    );
+}

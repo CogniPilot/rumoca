@@ -844,11 +844,13 @@ fn run_session_pending(
     };
 
     // Each timing collected here carries the context it was taken under, so a
-    // cached timing from another worker count or host is recognisable later.
+    // cached timing from another worker count, host, run or runner is
+    // recognisable later.
     let context = serde_json::json!({
         "workers": workers,
         "omc_threads": args.omc_threads,
         "host": output::host_description(),
+        "run": output::run_provenance(),
     });
     let mut completed = 0usize;
     run_session_pool(&models, &config, &job, |idx, outcome| {

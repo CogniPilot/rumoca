@@ -556,6 +556,9 @@ pub(super) fn build_sim_output_payload(
         // OMC version + MSL source fingerprint; a later run re-runs OMC when this
         // changes (see `omc_reference_cache_key`).
         "cache_key": context.cache_key,
+        // The provenance fresh timings in `models` carry (rule B's speed gauge
+        // uses only those).
+        "timing_run": run_provenance(),
         "target_selection": target_selection,
         "stop_time": args.stop_time,
         "use_experiment_stop_time": args.use_experiment_stop_time,
@@ -759,6 +762,24 @@ fn print_omc_assertion_snapshot(state: &SimRunState) {
 
 /// The host these references were timed on: its CPU counts and, on a CI
 /// runner, the runner image and environment.
+/// The CI run and runner this process takes OMC timings on, or null outside
+/// CI. A model's timing is fresh for a shard when its context carries the
+/// shard's own provenance; a cached or resumed timing carries another.
+pub(super) fn run_provenance() -> Value {
+    run_provenance_from(|name| std::env::var(name).ok())
+}
+
+pub(super) fn run_provenance_from(get: impl Fn(&str) -> Option<String>) -> Value {
+    let Some(run_id) = get("GITHUB_RUN_ID").filter(|id| !id.is_empty()) else {
+        return Value::Null;
+    };
+    json!({
+        "run_id": run_id,
+        "run_attempt": get("GITHUB_RUN_ATTEMPT"),
+        "runner": get("RUNNER_NAME"),
+    })
+}
+
 pub(super) fn host_description() -> Value {
     json!({
         "logical_cpus": std::thread::available_parallelism().map(usize::from).ok(),
