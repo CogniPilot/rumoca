@@ -17,6 +17,13 @@ in the shared runtime layer, and solver backends are thin adapters.
 | `rumoca-transport-udp`, `rumoca-transport-websocket` | External coupling and viewer transport |
 | `rumoca-web` | Browser viewer assets |
 
+## Native Compilation Reuse
+
+`native_compilation::NativeCompilationCache::during` scopes Cranelift's
+incremental compilation to a host-owned memory budget. Queued functions inherit
+that scope on the parallel compiler threads. Each module applies relocations
+from its own context. Completed scopes report fresh compilations and hits.
+
 ## Shared Responsibilities
 
 These belong in the shared runtime/solver API layer, never duplicated in a
