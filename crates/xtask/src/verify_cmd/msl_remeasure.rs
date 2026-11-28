@@ -44,7 +44,7 @@ pub(crate) struct VerifyMslRemeasureArgs {
     /// Why tested main has no results (its CI completed without a usable
     /// snapshot): candidates then come from the promoted baseline alone, and
     /// the reason is recorded
-    #[arg(long)]
+    #[arg(long, value_parser = clap::builder::NonEmptyStringValueParser::new())]
     tested_main_unavailable: Option<String>,
     /// Re-measure at most this many models; the rest stay inconclusive
     #[arg(long, default_value_t = 4)]
@@ -554,5 +554,12 @@ mod tests {
         ])
         .expect_err("both old-side inputs refuse");
         assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
+    }
+
+    #[test]
+    fn an_empty_unavailable_reason_is_refused() {
+        let error = parse(&["--tested-main-unavailable", ""])
+            .expect_err("an unavailable main must say why");
+        assert_eq!(error.kind(), clap::error::ErrorKind::InvalidValue);
     }
 }
