@@ -820,9 +820,23 @@ fn roster_key(model: &Value) -> String {
 
 /// The roster additions of the current snapshot's reference boundaries that
 /// lie above the baseline's quality gate version.
-fn crossed_roster_additions(current: &Value, baseline: &Value) -> Result<BTreeSet<String>> {
+pub(super) fn crossed_roster_additions(
+    current: &Value,
+    baseline: &Value,
+) -> Result<BTreeSet<String>> {
+    Ok(crossed_roster_addition_entries(current, baseline)?
+        .into_keys()
+        .collect())
+}
+
+/// The same crossed roster additions, each with its whole reviewed entry
+/// (cause, facts, owner and reviewed channel counts).
+pub(super) fn crossed_roster_addition_entries<'a>(
+    current: &'a Value,
+    baseline: &Value,
+) -> Result<std::collections::BTreeMap<String, &'a Value>> {
     let baseline_version = integer_at(baseline, &["quality_gate_version"], "baseline snapshot")?;
-    let mut models = BTreeSet::new();
+    let mut models = std::collections::BTreeMap::new();
     let mut boundary = current
         .get("reference_boundary_migration")
         .filter(|link| truthy(link));
@@ -833,9 +847,10 @@ fn crossed_roster_additions(current: &Value, baseline: &Value) -> Result<BTreeSe
         }
         if let Some(additions) = link.get("roster_additions").and_then(Value::as_array) {
             for addition in additions {
-                models.insert(roster_key(
-                    addition.get("model_name").unwrap_or(&Value::Null),
-                ));
+                models.insert(
+                    roster_key(addition.get("model_name").unwrap_or(&Value::Null)),
+                    addition,
+                );
             }
         }
         boundary = link.get("previous").filter(|link| truthy(link));

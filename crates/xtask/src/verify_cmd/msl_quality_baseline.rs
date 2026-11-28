@@ -1,5 +1,6 @@
 mod budget_metadata;
 mod cohort;
+pub(super) mod per_model_migration;
 pub(super) mod ratchet;
 pub(super) mod reference_boundary;
 #[cfg(test)]
@@ -14,6 +15,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use super::VerifyMslParityArgs;
+use per_model_migration::{ensure_initialization_not_lost, with_old_side_states};
 use reference_boundary::{ReferenceBoundaryMigration, validate_reference_boundary_migration};
 
 const MSL_QUALITY_BASELINE_ASSET_URL: &str = "https://github.com/CogniPilot/rumoca/releases/download/msl-quality-baseline/msl_quality_baseline.json";
@@ -106,6 +108,11 @@ struct MslQualityBaselineHeader {
     trace_accuracy_stats: TraceAccuracyStats,
     #[serde(flatten)]
     cohort: cohort::CohortEvidence,
+    /// Each model's stage, when the baseline records them. For a promoted
+    /// asset that predates them, [`with_old_side_states`] fills them from the
+    /// crossing's pinned evidence.
+    #[serde(default)]
+    model_states: Option<rumoca_msl_quality::ModelStates>,
 }
 
 impl MslQualityBaselineHeader {
@@ -313,7 +320,12 @@ pub(super) fn resolve_msl_quality_baseline(
     if !args.no_remote_quality_baseline
         && let Some(promoted) = download_msl_quality_baseline_asset(root)?
     {
-        let promoted_header = load_promoted_baseline_header(&promoted)?;
+        let promoted_header = with_old_side_states(
+            root,
+            &promoted,
+            load_promoted_baseline_header(&promoted)?,
+            &checked_in,
+        )?;
         let selected = match choose_baseline(&promoted_header, &checked_in_header)? {
             BaselineChoice::Promoted => budget_metadata::selected_promoted_baseline(
                 root,
@@ -706,14 +718,10 @@ fn validate_migration_metric_integrity(
             promoted.initial_unbalanced_models,
             checked_in.initial_unbalanced_models,
         ),
-        (
-            "initial-condition solver failures",
-            promoted.ic_solver_fail,
-            checked_in.ic_solver_fail,
-        ),
     ] {
         ensure_not_raised(label, promoted_value, checked_in_value)?;
     }
+    ensure_initialization_not_lost(promoted, checked_in)?;
 
     if !omc_context_changed && !trace_is_migrated {
         validate_omc_dependent_metric_integrity(promoted, checked_in)?;
@@ -804,7 +812,7 @@ fn validate_omc_dependent_metric_integrity(
             .models_compared
             .saturating_sub(checked_trace.models_with_severe_channel),
     )?;
-    validate_omc_error_metric_integrity(promoted_trace, checked_trace)?;
+    per_model_migration::ensure_trace_error_not_raised(promoted, checked_in)?;
     validate_cohort_metric_integrity(promoted, checked_in)
 }
 

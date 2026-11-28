@@ -2,7 +2,8 @@ use super::{
     super::VerifyMslParityArgs, BaselineChoice, CompilerContractMigrationHeader,
     DistributionMedian, InitialConditionStats, MetricSchemaMigration, MslQualityBaselineHeader,
     OmcContextMigration, PartialClassificationMigration, PromotedBaselineBridge, RuntimeRatioStats,
-    StateSelectionStats, TraceAccuracyStats, choose_baseline, load_baseline_header,
+    StateSelectionStats, TraceAccuracyStats, choose_baseline, ensure_initialization_not_lost,
+    load_baseline_header, per_model_migration::ensure_trace_error_not_raised,
     require_promoted_asset, reviewed_affected_partial_models, reviewed_partial_model_names,
     validate_context_migration, validate_metric_schema_migration,
     validate_partial_classification_migration, validate_promoted_baseline_bridge,
@@ -78,6 +79,7 @@ fn header(omc_version: &str) -> MslQualityBaselineHeader {
             },
         },
         cohort: Default::default(),
+        model_states: None,
     }
 }
 
@@ -578,4 +580,373 @@ fn a_failed_asset_download_fails_in_ci_and_is_announced_offline() {
     });
     assert_eq!(found.unwrap(), Some(asset));
     assert!(quiet.is_empty());
+}
+
+/// A (model, stage, outcome) row.
+type StageRow<'a> = (&'a str, &'a str, Option<&'a str>);
+
+/// Model stages from (model, stage, outcome) rows, in the snapshot's form.
+fn stages(rows: &[StageRow<'_>]) -> rumoca_msl_quality::ModelStates {
+    let states = rows
+        .iter()
+        .map(|(model, stage, outcome)| {
+            let trace = if *stage == "simulated" {
+                json!({ "scored": "high" })
+            } else {
+                json!({ "unscored": "not_simulated" })
+            };
+            let mut state = json!({
+                "stage": stage, "trace": trace, "compared_channels": 0,
+                "certified": false, "roster": false, "stage_seconds": {}
+            });
+            if let Some(outcome) = outcome {
+                state["outcome"] = json!(outcome);
+            }
+            ((*model).to_string(), state)
+        })
+        .collect::<serde_json::Map<_, _>>();
+    serde_json::from_value(serde_json::Value::Object(states)).expect("model states")
+}
+
+fn ic_sides(
+    before: (usize, &[StageRow<'_>]),
+    after: (usize, &[StageRow<'_>]),
+) -> (MslQualityBaselineHeader, MslQualityBaselineHeader) {
+    let mut promoted = header("a96aa1a-cmake");
+    promoted.ic_solver_fail = before.0;
+    promoted.model_states = Some(stages(before.1));
+    let mut checked_in = header("a96aa1a-cmake");
+    checked_in.ic_solver_fail = after.0;
+    checked_in.model_states = Some(stages(after.1));
+    (promoted, checked_in)
+}
+
+#[test]
+fn more_initialization_failures_pass_when_each_model_got_further_or_flipped() {
+    // A timed out before and now reaches initialization and fails it; B failed
+    // initialization and now times out (the same never-initialized model, the
+    // other way); C is newly measured; D simulated on both sides.
+    let (promoted, checked_in) = ic_sides(
+        (
+            1,
+            &[
+                ("A", "compiled", Some("sim_timeout")),
+                ("B", "compiled", Some("ic_solver_fail")),
+                ("D", "simulated", None),
+            ],
+        ),
+        (
+            2,
+            &[
+                ("A", "compiled", Some("ic_solver_fail")),
+                ("B", "compiled", Some("sim_timeout")),
+                ("C", "compiled", Some("ic_solver_fail")),
+                ("D", "simulated", None),
+            ],
+        ),
+    );
+    ensure_initialization_not_lost(&promoted, &checked_in)
+        .expect("no model that initialized before stopped initializing");
+}
+
+#[test]
+fn a_model_that_stops_initializing_is_refused_by_name() {
+    for before in ["initialized", "simulated"] {
+        let (promoted, checked_in) = ic_sides(
+            (0, &[("Lost", before, None), ("Kept", "simulated", None)]),
+            (
+                1,
+                &[
+                    ("Lost", "compiled", Some("ic_solver_fail")),
+                    ("Kept", "simulated", None),
+                ],
+            ),
+        );
+        let error = ensure_initialization_not_lost(&promoted, &checked_in)
+            .expect_err("an initialized model lost its initialization")
+            .to_string();
+        assert!(error.contains("Lost") && !error.contains("Kept"), "{error}");
+    }
+}
+
+#[test]
+fn a_model_that_initialized_and_is_missing_from_the_candidate_is_refused() {
+    let (promoted, checked_in) = ic_sides(
+        (
+            0,
+            &[("Gone", "simulated", None), ("Kept", "simulated", None)],
+        ),
+        (
+            1,
+            &[
+                ("Kept", "simulated", None),
+                ("New", "compiled", Some("ic_solver_fail")),
+            ],
+        ),
+    );
+    let error = ensure_initialization_not_lost(&promoted, &checked_in)
+        .expect_err("a model that initialized cannot vanish")
+        .to_string();
+    assert!(error.contains("Gone") && !error.contains("Kept"), "{error}");
+}
+
+#[test]
+fn without_model_stages_on_both_sides_the_count_may_not_rise() {
+    let (mut promoted, checked_in) = ic_sides(
+        (1, &[("A", "compiled", Some("sim_timeout"))]),
+        (2, &[("A", "compiled", Some("ic_solver_fail"))]),
+    );
+    promoted.model_states = None;
+    let error = ensure_initialization_not_lost(&promoted, &checked_in)
+        .expect_err("a count-only side judges counts")
+        .to_string();
+    assert!(
+        error.contains("raises unrelated initial-condition solver failures"),
+        "{error}"
+    );
+    let (promoted, mut fewer) = ic_sides((2, &[]), (2, &[]));
+    fewer.model_states = None;
+    ensure_initialization_not_lost(&promoted, &fewer).expect("an equal count is no rise");
+}
+
+const REVIEWED_ADDITION: &str = "Modelica.Fluid.Examples.AST_BatchPlant.Test.TwoTanks";
+
+/// A side of a v14 -> v15 crossing whose models carry (band, violation mass);
+/// a band of `None` is unscored. Totals are summed from the rows.
+fn trace_side(version: u64, rows: &[(&str, Option<&str>, f64)]) -> MslQualityBaselineHeader {
+    let mut side = header("a96aa1a-cmake");
+    side.quality_gate_version = version;
+    let states = rows
+        .iter()
+        .map(|(model, band, mass)| {
+            let state = match band {
+                Some(band) => json!({
+                    "stage": "simulated", "trace": { "scored": band }, "compared_channels": 85,
+                    "trace_violation_mass": mass, "certified": false, "roster": false,
+                    "stage_seconds": {}
+                }),
+                None => json!({
+                    "stage": "compiled", "outcome": "sim_timeout",
+                    "trace": { "unscored": "not_simulated" }, "compared_channels": 0,
+                    "certified": false, "roster": false, "stage_seconds": {}
+                }),
+            };
+            ((*model).to_string(), state)
+        })
+        .collect::<serde_json::Map<_, _>>();
+    side.model_states =
+        Some(serde_json::from_value(serde_json::Value::Object(states)).expect("model states"));
+    let non_high = rows
+        .iter()
+        .filter(|(_, band, _)| band.is_some_and(|band| band != "high"))
+        .count();
+    let trace = &mut side.trace_accuracy_stats;
+    trace.agreement_deviation = rows
+        .iter()
+        .filter(|(_, band, _)| *band == Some("deviation"))
+        .count();
+    trace.models_with_any_channel_deviation = non_high;
+    trace.bad_channels_total = 11 * non_high;
+    trace.severe_channels_total = 0;
+    trace.violation_mass_total = rows.iter().map(|(_, _, mass)| mass).sum();
+    side
+}
+
+#[test]
+fn a_reviewed_roster_addition_is_deducted_from_the_trace_totals() {
+    let promoted = trace_side(
+        14,
+        &[(REVIEWED_ADDITION, None, 0.0), ("X", Some("high"), 0.0)],
+    );
+    let mut checked_in = trace_side(
+        15,
+        &[
+            (REVIEWED_ADDITION, Some("deviation"), 4.6),
+            ("X", Some("high"), 0.0),
+        ],
+    );
+    // On 80ffcb58 all 11 of its deviation channels are severe: deducted once each.
+    checked_in.trace_accuracy_stats.severe_channels_total = 11;
+    ensure_trace_error_not_raised(&promoted, &checked_in)
+        .expect("the reviewed addition accounts for the whole rise");
+}
+
+#[test]
+fn a_second_model_that_worsens_is_refused_beside_the_reviewed_addition() {
+    let promoted = trace_side(
+        14,
+        &[
+            (REVIEWED_ADDITION, None, 0.0),
+            ("Y", Some("high"), 0.0),
+            ("Z", Some("deviation"), 1.0),
+        ],
+    );
+    for (worse, band, mass) in [("Y", "deviation", 1.0), ("Z", "deviation", 2.0)] {
+        let mut rows = vec![
+            (REVIEWED_ADDITION, Some("deviation"), 4.6),
+            ("Y", Some("high"), 0.0),
+            ("Z", Some("deviation"), 1.0),
+        ];
+        let row = rows.iter_mut().find(|row| row.0 == worse).expect("row");
+        *row = (worse, Some(band), mass);
+        let error = ensure_trace_error_not_raised(&promoted, &trace_side(15, &rows))
+            .expect_err("an unlisted model got worse")
+            .to_string();
+        assert!(
+            error.contains(worse) && !error.contains(REVIEWED_ADDITION),
+            "{error}"
+        );
+    }
+}
+
+#[test]
+fn a_newly_scored_model_outside_the_reviewed_additions_counts_as_a_rise() {
+    let promoted = trace_side(14, &[("W", None, 0.0)]);
+    let checked_in = trace_side(15, &[("W", Some("deviation"), 0.5)]);
+    let error = ensure_trace_error_not_raised(&promoted, &checked_in)
+        .expect_err("only a reviewed boundary adds to the roster")
+        .to_string();
+    assert!(error.contains('W'), "{error}");
+}
+
+#[test]
+fn without_model_stages_the_trace_totals_may_not_rise() {
+    let mut promoted = trace_side(14, &[(REVIEWED_ADDITION, None, 0.0)]);
+    promoted.model_states = None;
+    let checked_in = trace_side(15, &[(REVIEWED_ADDITION, Some("deviation"), 4.6)]);
+    let error = ensure_trace_error_not_raised(&promoted, &checked_in)
+        .expect_err("a count-only side judges counts")
+        .to_string();
+    assert!(error.contains("trace deviation models"), "{error}");
+}
+
+#[test]
+fn a_count_only_promoted_side_takes_its_model_stages_from_the_pinned_crossing_evidence() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let dir = tempfile::tempdir().expect("tempdir");
+    let checked_in = dir.path().join("checked_in.json");
+    fs::write(
+        &checked_in,
+        super::reference_boundary::reviewed_chain_snapshot()
+            .expect("reviewed chain")
+            .to_string(),
+    )
+    .expect("write checked-in");
+    let promoted_path = dir.path().join("promoted.json");
+    for (version, crosses) in [(14, true), (15, false)] {
+        fs::write(
+            &promoted_path,
+            json!({ "quality_gate_version": version }).to_string(),
+        )
+        .expect("write promoted");
+        let mut promoted = header("a96aa1a-cmake");
+        promoted.quality_gate_version = version;
+        let filled = super::with_old_side_states(&root, &promoted_path, promoted, &checked_in)
+            .expect("old side");
+        let states = filled.model_states;
+        assert_eq!(states.is_some(), crosses, "version {version}");
+        if let Some(states) = states {
+            let leakage = states
+                .iter()
+                .find(|(model, _)| model.ends_with("IMC_DOL_CommonLeakage"))
+                .expect("pinned evidence names the model")
+                .1;
+            assert_eq!(leakage.stage, rumoca_msl_quality::ModelStage::Compiled);
+            assert_eq!(leakage.outcome.as_deref(), Some("sim_timeout"));
+        }
+    }
+}
+
+#[test]
+fn a_reviewed_addition_deducts_exactly_its_reviewed_channels() {
+    let promoted = trace_side(14, &[(REVIEWED_ADDITION, None, 0.0)]);
+    let mut checked_in = trace_side(15, &[(REVIEWED_ADDITION, Some("deviation"), 4.6)]);
+    checked_in.trace_accuracy_stats.severe_channels_total = 11;
+    checked_in.trace_accuracy_stats.bad_channels_total = 12;
+    let error = ensure_trace_error_not_raised(&promoted, &checked_in)
+        .expect_err("one bad channel more than the reviewed 11")
+        .to_string();
+    assert!(error.contains("trace bad channels"), "{error}");
+    checked_in.trace_accuracy_stats.bad_channels_total = 11;
+    checked_in.trace_accuracy_stats.severe_channels_total = 12;
+    let error = ensure_trace_error_not_raised(&promoted, &checked_in)
+        .expect_err("a severe channel beyond the reviewed 11")
+        .to_string();
+    assert!(error.contains("trace severe channels"), "{error}");
+}
+
+#[test]
+fn reviewed_channel_counts_must_exist_and_fit_the_compared_channels() {
+    let error = super::per_model_migration::reviewed_channels(
+        "M",
+        &json!({ "model_name": "M", "cause": "c", "facts": ["f"], "owner": "o" }),
+    )
+    .expect_err("an addition without counts cannot be deducted")
+    .to_string();
+    assert!(error.contains("deviation_channels"), "{error}");
+    let promoted = trace_side(14, &[(REVIEWED_ADDITION, None, 0.0)]);
+    let mut checked_in = trace_side(15, &[(REVIEWED_ADDITION, Some("deviation"), 4.6)]);
+    if let Some(states) = checked_in.model_states.as_mut() {
+        states
+            .get_mut(REVIEWED_ADDITION)
+            .expect("the addition")
+            .compared_channels = 5;
+    }
+    let error = ensure_trace_error_not_raised(&promoted, &checked_in)
+        .expect_err("11 reviewed channels do not fit 5 compared")
+        .to_string();
+    assert!(error.contains("do not fit"), "{error}");
+}
+
+#[test]
+fn severe_channels_are_deducted_once_as_part_of_the_deviation_channels() {
+    // An addition with 5 deviation channels, 2 of them severe: the bad total
+    // falls by 5 and the severe total by 2, never the severe ones twice.
+    let entry = json!({
+        "model_name": "S", "cause": "c", "facts": ["f"], "owner": "o",
+        "deviation_channels": 5, "severe_channels": 2
+    });
+    let reviewed = std::collections::BTreeMap::from([("S".to_string(), &entry)]);
+    let before = trace_side(14, &[("S", None, 0.0)]);
+    let mut after = trace_side(15, &[("S", Some("deviation"), 3.0)]);
+    after.trace_accuracy_stats.bad_channels_total = 5;
+    after.trace_accuracy_stats.severe_channels_total = 2;
+    let sides = |after: &MslQualityBaselineHeader| {
+        super::per_model_migration::judge_trace_errors(
+            (
+                &before.trace_accuracy_stats,
+                before.model_states.as_ref().expect("stages"),
+            ),
+            (
+                &after.trace_accuracy_stats,
+                after.model_states.as_ref().expect("stages"),
+            ),
+            &reviewed,
+        )
+    };
+    sides(&after).expect("5 bad and 2 severe channels are the reviewed ones");
+    after.trace_accuracy_stats.bad_channels_total = 7;
+    let error = sides(&after)
+        .expect_err("two bad channels beyond the reviewed five")
+        .to_string();
+    assert!(error.contains("trace bad channels"), "{error}");
+    let too_severe = json!({
+        "model_name": "S", "cause": "c", "facts": ["f"], "owner": "o",
+        "deviation_channels": 2, "severe_channels": 3
+    });
+    let reviewed = std::collections::BTreeMap::from([("S".to_string(), &too_severe)]);
+    let error = super::per_model_migration::judge_trace_errors(
+        (
+            &before.trace_accuracy_stats,
+            before.model_states.as_ref().expect("stages"),
+        ),
+        (
+            &after.trace_accuracy_stats,
+            after.model_states.as_ref().expect("stages"),
+        ),
+        &reviewed,
+    )
+    .expect_err("severe channels are a subset of the deviation channels")
+    .to_string();
+    assert!(error.contains("severe being a subset"), "{error}");
 }

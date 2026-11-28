@@ -188,7 +188,9 @@
           "the diffsol revision 80ffcb58 raised it 1.63 x (3.1e-5 to 5.0e-5 K); other Modelica.Fluid tank models moved the same way (EmptyTanks 1.68 x, ControlledTanks 1.27 x), while the corpus median is unchanged",
           "previously excluded as comparator_limitation near_zero_channel_scaling; scored since that exclusion was retired"
         ],
-        "owner": "solver accuracy lane (BDF integration error on Modelica.Fluid tank energy balances)"
+        "owner": "solver accuracy lane (BDF integration error on Modelica.Fluid tank energy balances)",
+        "deviation_channels": 11,
+        "severe_channels": 11
       }
     ],
     "evidence_model_states": {

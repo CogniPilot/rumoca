@@ -6,6 +6,7 @@ mod compiler_contract_migration;
 mod model_states;
 mod parity_measurement;
 mod per_model_gate;
+mod reference_boundary_types;
 mod reference_stage;
 mod rule_b;
 mod runtime_cohort;
@@ -31,6 +32,9 @@ use indexmap::{IndexMap, IndexSet};
 use model_states::*;
 pub(super) use parity_measurement::*;
 use per_model_gate::*;
+pub(super) use reference_boundary_types::{
+    MslMetricSchemaMigration, MslReferenceBoundaryMigration, MslRosterAddition,
+};
 pub(super) use reference_stage::*;
 use rule_b::*;
 use runtime_cohort::*;
@@ -236,52 +240,6 @@ pub(super) struct MslTensorPreservationBaseline {
     scalarized_family_rows: usize,
     report_errors: usize,
     preservation_percent: Option<f64>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub(super) struct MslMetricSchemaMigration {
-    from_quality_gate_version: u32,
-    to_quality_gate_version: u32,
-    change: String,
-    strict_high_before: usize,
-    strict_high_after: usize,
-    policy_excluded_after: usize,
-    excluded_strict_high_before: usize,
-    excluded_non_high_before: usize,
-    exclusions_file: String,
-    exclusions_sha256: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub(super) struct MslReferenceBoundaryMigration {
-    #[serde(flatten)]
-    metric: MslMetricSchemaMigration,
-    evidence_git_commit: String,
-    evidence_run: String,
-    policy_excluded_before: usize,
-    /// Models this boundary adds to the unexcepted non-high roster, each
-    /// naming its open defect (SPEC_0050).
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    roster_additions: Vec<MslRosterAddition>,
-    /// The pinned old-side model states of a crossing from a baseline that predates them.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    evidence_model_states: Option<serde_json::Value>,
-    /// What this boundary allows to change per model (`rumoca_msl_quality::ReviewedChanges`).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    reviewed_changes: Option<serde_json::Value>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    previous: Option<Box<MslReferenceBoundaryMigration>>,
-}
-
-/// A reviewed roster addition: a completion that is neither strict-high nor
-/// covered by a typed exception because of an open Rumoca defect, which the
-/// roster names instead of an exception row hiding it.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub(super) struct MslRosterAddition {
-    model_name: String,
-    cause: String,
-    facts: Vec<String>,
-    owner: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

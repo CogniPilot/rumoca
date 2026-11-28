@@ -184,7 +184,27 @@ pub(super) fn logical_sample_roster_addition() -> MslRosterAddition {
                 .to_string(),
         ],
         owner: "kernel lane (root/time-event coincidence rule, SPEC_0044 ME-EVENT-004)".to_string(),
+        deviation_channels: None,
+        severe_channels: None,
     }
+}
+
+#[test]
+fn a_roster_additions_reviewed_channel_counts_survive_parse_and_serialize() {
+    let text = include_str!("../../msl_tests/msl_reference_boundaries.json");
+    let chain = parse_reference_boundary_chain(text).expect("the checked-in chain parses");
+    let written = serde_json::to_value(&chain).expect("the chain serializes");
+    let additions = written["roster_additions"]
+        .as_array()
+        .expect("head roster additions");
+    let two_tanks = additions
+        .iter()
+        .find(|addition| {
+            addition["model_name"] == "Modelica.Fluid.Examples.AST_BatchPlant.Test.TwoTanks"
+        })
+        .expect("the head boundary adds TwoTanks");
+    assert_eq!(two_tanks["deviation_channels"], 11);
+    assert_eq!(two_tanks["severe_channels"], 11);
 }
 
 #[test]
