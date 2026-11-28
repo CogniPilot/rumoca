@@ -577,6 +577,7 @@ pub(super) fn build_sim_output_payload(
         "runtime_comparison": runtime_comparison,
         "trace_comparison": trace_comparison,
         "omc_assertion_failures": omc_assertion_failures,
+        "calibration_timings": state.calibration_timings,
         "models": state.all_results,
     })
 }

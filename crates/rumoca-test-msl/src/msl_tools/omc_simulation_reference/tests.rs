@@ -172,6 +172,7 @@ fn select_models_preserves_generated_target_file_order() {
         target_models_file: None,
         trace_exclusions_file: None,
         rumoca_sim_ok_only: false,
+        calibration_pass: false,
     };
     let paths = MslPaths {
         repo_root: repo_root.clone(),
@@ -898,6 +899,7 @@ fn load_trace_exclusions_reads_each_entrys_own_reason() {
         target_models_file: None,
         trace_exclusions_file: Some(exclusions_file),
         rumoca_sim_ok_only: false,
+        calibration_pass: false,
     };
     let paths = MslPaths::current();
     let exclusions = load_trace_exclusions(&args, &paths).expect("load exclusions");

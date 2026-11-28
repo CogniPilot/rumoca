@@ -247,10 +247,6 @@ pub struct StageSeconds {
     /// model's certification is inconclusive, never judged on absolute time.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timing_inconclusive: Option<String>,
-    /// This model's OMC wall time in the baseline's fixed frame: the reference
-    /// the next run's speed gauge reads against.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub omc_wall_reference: Option<f64>,
 }
 
 /// One sim target's state in a quality snapshot.

@@ -1141,32 +1141,38 @@ fn shard_timing_windows(shards: &[(u64, Option<&Value>, Option<&Value>)]) -> Val
     )
 }
 
-/// Mark each OMC model of a shard's reference with its `shard` index and
-/// whether its timing is `timing_fresh` (taken on this shard's own run and
-/// runner, not cached or resumed): the merged file no longer says which shard
-/// a model ran on, and rule B's speed gauge reads only a shard's own fresh
-/// timings.
-fn annotate_omc_timings(shard_dir: &Path, payload: &mut Value) -> Result<(), String> {
+/// Mark each OMC model of a shard's reference with its `shard` index (the
+/// merged file no longer says which shard a model ran on, and rule B judges a
+/// model by its own shard's speed), and return the shard's calibration
+/// section, marked `fresh` when its timings carry the shard's own run.
+fn annotate_omc_timings(shard_dir: &Path, payload: &mut Value) -> Result<Option<Value>, String> {
     let shard = shard_index(shard_dir)?;
     let own_run = payload.get("timing_run").cloned().unwrap_or_default();
-    let Some(models) = payload.get_mut("models").and_then(Value::as_object_mut) else {
-        return Ok(());
-    };
-    for entry in models.values_mut() {
-        let fresh = timing_run_of(entry) == own_run;
-        if let Some(entry) = entry.as_object_mut() {
+    let calibration = payload
+        .get("calibration_timings")
+        .filter(|section| !section.is_null())
+        .map(|section| {
+            let mut section = section.clone();
+            let fresh = timing_run_of(&section) == own_run;
+            section["fresh"] = fresh.into();
+            section
+        });
+    if let Some(models) = payload.get_mut("models").and_then(Value::as_object_mut) {
+        for entry in models.values_mut().filter_map(Value::as_object_mut) {
             entry.insert("shard".to_string(), shard.into());
-            entry.insert("timing_fresh".to_string(), fresh.into());
         }
     }
-    Ok(())
+    Ok(calibration)
 }
 
 fn merge_shard_parity_artifacts(dir: &Path, results_dir: &Path) -> Result<(), String> {
     let shard_dirs = list_shard_dirs(dir)?;
     let mut omc_payloads = load_shard_json_payloads(&shard_dirs, SHARD_OMC_REFERENCE_FILE)?;
+    let mut calibration = Map::new();
     for (shard_dir, payload) in shard_dirs.iter().zip(&mut omc_payloads) {
-        annotate_omc_timings(shard_dir, payload)?;
+        if let Some(section) = annotate_omc_timings(shard_dir, payload)? {
+            calibration.insert(shard_index(shard_dir)?.to_string(), section);
+        }
     }
     let trace_payloads = load_shard_json_payloads(&shard_dirs, SHARD_TRACE_COMPARISON_FILE)?;
     let omc_models = merge_required_object_maps(&omc_payloads, &["models"], "OMC model")?;
@@ -1190,6 +1196,10 @@ fn merge_shard_parity_artifacts(dir: &Path, results_dir: &Path) -> Result<(), St
         root.insert(
             "shard_timing_windows".to_string(),
             shard_timing_windows(&shards),
+        );
+        root.insert(
+            "calibration_by_shard".to_string(),
+            Value::Object(calibration),
         );
     }
 

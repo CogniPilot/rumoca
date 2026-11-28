@@ -2,13 +2,18 @@
 //!
 //! CI runners come in speed classes about 2.3x apart, so a completion time
 //! judged against an absolute budget certifies by runner lottery. OMC is
-//! pinned and does the same work in every run, so the ratio of a model's OMC
-//! wall time now to its stored reference measures the runner, not rumoca. For
-//! a judged model `m` on shard `s`:
+//! pinned and does the same work in every run, so a fixed **calibration set**
+//! of models, OMC-timed on every shard, measures each shard's runner against
+//! one common frame: for a judged model `m` on shard `s`,
 //!
-//! `k_s(m) = median over fresh OMC timings j on s, j != m, of now(j) / ref(j)`
+//! `k_s(m) = median over calibration models j != m timed on s of now_s(j) / ref(j)`
 //!
-//! Rumoca's stage times are divided by it before the margin is applied, so a
+//! where `ref(j)` is the model's wall time in the frame, fixed when the frame
+//! was set (the median of the shards of the run that set it). Every shard
+//! times the same models, so shard speeds compare directly, and no shard
+//! inherits the runner an earlier run happened to draw for it.
+//!
+//! Rumoca's stage times are divided by `k` before the margin is applied, so a
 //! slow runner does not uncertify a model and a fast one does not certify a
 //! near-budget model on luck; a genuine rumoca slowdown still reads in full.
 //! A gauge it cannot trust (too few fresh timings, a speed outside the
@@ -17,6 +22,51 @@
 
 use std::collections::BTreeMap;
 
+/// The calibration set: models whose OMC wall is a few seconds and mostly
+/// simulation (not process start and C compile, which scale with the disk and
+/// compiler rather than with simulation throughput), chosen on seven CI runs
+/// where each one's ratio stayed within 15% of its shard's median, and on a
+/// held-out run within 3.5% of every shard's median. About 285 s of OMC wall
+/// per shard on a nominal runner.
+pub const CALIBRATION_MODELS: &[&str] = &[
+    "Modelica.Electrical.Analog.Examples.CauerLowPassSC",
+    "Modelica.Electrical.Analog.Examples.CompareTransformers",
+    "Modelica.Electrical.Analog.Examples.DemoPowerSupplyWithBuffer",
+    "Modelica.Electrical.Batteries.Examples.BatteryDischargeCharge",
+    "Modelica.Electrical.Batteries.Examples.SuperCapDischargeCharge",
+    "Modelica.Electrical.Machines.Examples.ControlledDCDrives.CurrentControlledDCPM",
+    "Modelica.Electrical.Machines.Examples.ControlledDCDrives.PositionControlledDCPM",
+    "Modelica.Electrical.Machines.Examples.DCMachines.DCPM_CurrentControlled",
+    "Modelica.Electrical.Machines.Examples.DCMachines.DCPM_Drive",
+    "Modelica.Electrical.Machines.Examples.DCMachines.DCPM_QuasiStatic",
+    "Modelica.Electrical.Machines.Examples.DCMachines.DCPM_Temperature",
+    "Modelica.Electrical.Machines.Examples.DCMachines.DCPM_withLosses",
+    "Modelica.Electrical.Machines.Examples.InductionMachines.IMC_DOL",
+    "Modelica.Electrical.Machines.Examples.InductionMachines.IMC_Initialize",
+    "Modelica.Electrical.Machines.Examples.InductionMachines.IMC_Inverter",
+    "Modelica.Electrical.Machines.Examples.SynchronousMachines.SMEE_DOL",
+    "Modelica.Electrical.Machines.Examples.SynchronousMachines.SMPM_CurrentSource",
+    "Modelica.Electrical.Machines.Examples.SynchronousMachines.SMPM_Inverter",
+    "Modelica.Electrical.Machines.Examples.SynchronousMachines.SMPM_VoltageSource",
+    "Modelica.Electrical.Machines.Examples.SynchronousMachines.SMR_Inverter",
+    "Modelica.Electrical.Polyphase.Examples.PolyphaseRectifier",
+    "Modelica.Electrical.Polyphase.Examples.Rectifier",
+    "Modelica.Electrical.PowerConverters.Examples.ACAC.Dimmer_R",
+    "Modelica.Electrical.PowerConverters.Examples.ACDC.Rectifier1Pulse.Thyristor1Pulse_R_Characteristic",
+    "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierCenterTap2Pulse.ThyristorCenterTap2Pulse_RLV_Characteristic",
+    "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierCenterTap2mPulse.ThyristorCenterTap2mPulse_RLV_Characteristic",
+    "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierCenterTapmPulse.ThyristorCenterTapmPulse_RLV_Characteristic",
+    "Modelica.Electrical.PowerConverters.Examples.DCDC.ChopperBuckBoost.ChopperBuckBoost_DutyCycle",
+    "Modelica.Magnetic.FundamentalWave.Examples.BasicMachines.InductionMachines.IMC_Inverter",
+    "Modelica.Magnetic.FundamentalWave.Examples.BasicMachines.InductionMachines.IMC_Steinmetz",
+    "Modelica.Magnetic.FundamentalWave.Examples.BasicMachines.InductionMachines.IMC_YD",
+    "Modelica.Magnetic.FundamentalWave.Examples.BasicMachines.InductionMachines.IMS_Start",
+    "Modelica.Magnetic.FundamentalWave.Examples.BasicMachines.SynchronousMachines.SMEE_DOL",
+    "Modelica.Magnetic.FundamentalWave.Examples.BasicMachines.SynchronousMachines.SMPM_CurrentSource",
+    "Modelica.Magnetic.FundamentalWave.Examples.BasicMachines.SynchronousMachines.SMR_Inverter",
+    "Modelica.Thermal.HeatTransfer.Examples.Motor",
+];
+
 /// The fewest fresh same-shard OMC timings a gauge is read from.
 pub const MIN_FRESH_TIMINGS: usize = 30;
 /// The slowest and fastest runner a gauge is trusted for, relative to the frame.
@@ -24,36 +74,60 @@ pub const SPEED_BOUNDS: (f64, f64) = (1.0 / 3.0, 3.0);
 /// The widest p90/p10 spread of a shard's OMC ratios a gauge is trusted for.
 pub const MAX_RATIO_SPREAD: f64 = 1.5;
 
-/// One model's OMC timing in this run.
-#[derive(Debug, Clone, Copy, PartialEq)]
+/// One calibration model's OMC timing on one shard in this run.
+#[derive(Debug, Clone, PartialEq)]
 pub struct OmcTiming {
     pub shard: u32,
+    pub model: String,
     pub wall_seconds: f64,
     /// Taken in this run on this shard's runner (not cached or resumed).
     pub fresh: bool,
 }
 
-/// This run's OMC timings against the stored reference walls.
+fn usable(seconds: f64) -> bool {
+    seconds.is_finite() && seconds > 0.0
+}
+
+/// The frame a run without stored references sets: each calibration model's
+/// median fresh wall over the shards, so the frame's nominal runner is the
+/// run's median one, not any one shard's.
+pub fn bootstrap_references(timings: &[OmcTiming]) -> BTreeMap<String, f64> {
+    let mut walls: BTreeMap<&str, Vec<f64>> = BTreeMap::new();
+    for timing in timings {
+        if timing.fresh && usable(timing.wall_seconds) {
+            walls
+                .entry(&timing.model)
+                .or_default()
+                .push(timing.wall_seconds);
+        }
+    }
+    walls
+        .into_iter()
+        .map(|(model, mut walls)| (model.to_string(), median(&mut walls)))
+        .collect()
+}
+
+/// This run's calibration timings against the frame's references.
 #[derive(Debug, Clone, Default)]
 pub struct SpeedGauge {
-    /// Per shard: each fresh model's ratio of its wall now to its reference.
+    /// Per shard: each fresh calibration model's ratio of its wall now to its
+    /// reference.
     ratios: BTreeMap<u32, Vec<(String, f64)>>,
 }
 
 impl SpeedGauge {
-    /// The gauge of `now` against `reference` (model -> reference wall).
-    pub fn new(now: &BTreeMap<String, OmcTiming>, reference: &BTreeMap<String, f64>) -> Self {
+    /// The gauge of `timings` against `reference` (model -> reference wall).
+    pub fn new(timings: &[OmcTiming], reference: &BTreeMap<String, f64>) -> Self {
         let mut ratios: BTreeMap<u32, Vec<(String, f64)>> = BTreeMap::new();
-        for (model, timing) in now {
-            let Some(&reference) = reference.get(model) else {
+        for timing in timings {
+            let Some(&reference) = reference.get(&timing.model) else {
                 continue;
             };
-            let usable = |seconds: f64| seconds.is_finite() && seconds > 0.0;
             if timing.fresh && usable(timing.wall_seconds) && usable(reference) {
                 ratios
                     .entry(timing.shard)
                     .or_default()
-                    .push((model.clone(), timing.wall_seconds / reference));
+                    .push((timing.model.clone(), timing.wall_seconds / reference));
             }
         }
         Self { ratios }
@@ -74,27 +148,6 @@ impl SpeedGauge {
             })
             .unwrap_or_default();
         judged_speed(&mut ratios, shard)
-    }
-
-    /// The shard's own speed over all its fresh timings, when trusted.
-    pub fn shard_speed(&self, shard: u32) -> Result<f64, String> {
-        let mut ratios = self
-            .ratios
-            .get(&shard)
-            .map(|ratios| ratios.iter().map(|(_, ratio)| *ratio).collect::<Vec<_>>())
-            .unwrap_or_default();
-        judged_speed(&mut ratios, shard)
-    }
-
-    /// The median of the trusted shard speeds: the nominal speed of the frame
-    /// a first promotion fixes, so one unusual runner cannot set it.
-    pub fn nominal_speed(&self) -> Option<f64> {
-        let mut speeds = self
-            .ratios
-            .keys()
-            .filter_map(|shard| self.shard_speed(*shard).ok())
-            .collect::<Vec<_>>();
-        (!speeds.is_empty()).then(|| median(&mut speeds))
     }
 }
 
@@ -143,90 +196,97 @@ fn percentile(values: &[f64], fraction: f64) -> f64 {
 mod tests {
     use super::*;
 
-    fn shard(shard: u32, ratios: &[f64]) -> (BTreeMap<String, OmcTiming>, BTreeMap<String, f64>) {
-        let mut now = BTreeMap::new();
-        let mut reference = BTreeMap::new();
-        for (i, ratio) in ratios.iter().enumerate() {
-            let model = format!("S{shard}M{i}");
-            reference.insert(model.clone(), 10.0);
-            now.insert(
-                model,
-                OmcTiming {
-                    shard,
-                    wall_seconds: 10.0 * ratio,
-                    fresh: true,
-                },
-            );
-        }
-        (now, reference)
+    /// The calibration set timed on `shard` at `speed` times `wall`.
+    fn shard(shard: u32, speed: f64, wall: impl Fn(usize) -> f64) -> Vec<OmcTiming> {
+        CALIBRATION_MODELS
+            .iter()
+            .enumerate()
+            .map(|(i, model)| OmcTiming {
+                shard,
+                model: (*model).to_string(),
+                wall_seconds: wall(i) * speed,
+                fresh: true,
+            })
+            .collect()
+    }
+
+    fn walls(i: usize) -> f64 {
+        2.0 + 0.25 * i as f64
     }
 
     #[test]
-    fn a_slow_shard_reads_its_own_speed_leaving_the_model_out() {
-        // Shard 3 of run 46055840822: OMC ran about 2.46x its reference.
-        let ratios = (0..40)
-            .map(|i| 2.40 + 0.003 * f64::from(i))
-            .collect::<Vec<_>>();
-        let (now, reference) = shard(3, &ratios);
-        let gauge = SpeedGauge::new(&now, &reference);
+    fn the_calibration_set_is_large_enough_and_unique() {
+        assert!(CALIBRATION_MODELS.len() >= MIN_FRESH_TIMINGS + 6);
+        let mut sorted = CALIBRATION_MODELS.to_vec();
+        sorted.dedup();
+        assert_eq!(sorted.len(), CALIBRATION_MODELS.len());
+    }
+
+    #[test]
+    fn two_runners_2_3x_apart_give_the_same_normalized_time_for_the_same_work() {
+        // Shard 1 on a nominal runner, shard 2 on one 2.3x slower; the frame is
+        // set by this run (no stored references).
+        let mut timings = shard(1, 1.0, walls);
+        timings.extend(shard(2, 2.3, walls));
+        let reference = bootstrap_references(&timings);
+        let gauge = SpeedGauge::new(&timings, &reference);
+        let (fast, slow) = (
+            gauge.speed_for("Judged", 1).unwrap(),
+            gauge.speed_for("Judged", 2).unwrap(),
+        );
+        assert!((slow / fast - 2.3).abs() < 1e-9, "{fast} {slow}");
+        // The same rumoca work: 20 s on the nominal runner, 46 s on the slow one.
+        assert!((20.0 / fast - 46.0 / slow).abs() < 1e-9);
+        // The frame is the run's median runner: 1.65x nominal here.
+        assert!((fast - 1.0 / 1.65).abs() < 1e-9, "{fast}");
+    }
+
+    #[test]
+    fn stored_references_fix_the_frame_for_later_runs() {
+        // References set by an earlier run; this run's shard 3 is 2.46x slower.
+        let reference = bootstrap_references(&shard(1, 1.0, walls));
+        let timings = shard(3, 2.46, walls);
+        let gauge = SpeedGauge::new(&timings, &reference);
         let speed = gauge.speed_for("CauerLowPassSC", 3).unwrap();
-        assert!((speed - 2.4585).abs() < 1e-9, "{speed}");
-        // CauerLowPassSC's 42.9 s run reads 17.4 s in the frame.
-        assert!((42.9 / speed - 17.45).abs() < 0.01);
-        // Its own timing never enters its gauge.
-        let own = gauge.speed_for("S3M39", 3).unwrap();
-        assert!(own < speed);
+        assert!((speed - 2.46).abs() < 1e-9, "{speed}");
+        // A calibration model never enters its own gauge.
+        let own = CALIBRATION_MODELS[0];
+        assert!(gauge.speed_for(own, 3).is_ok());
     }
 
     #[test]
     fn a_gauge_it_cannot_trust_is_inconclusive() {
-        let (now, reference) = shard(1, &[1.0; 30]);
-        let gauge = SpeedGauge::new(&now, &reference);
-        // 30 timings, one of them the model's own: 29 left.
-        assert!(
-            gauge
-                .speed_for("S1M0", 1)
-                .unwrap_err()
-                .contains("fewer than 30")
-        );
-        assert_eq!(gauge.speed_for("Other", 1), Ok(1.0));
-        // Cached or resumed timings do not count.
-        let mut stale = now.clone();
-        stale.values_mut().for_each(|timing| timing.fresh = false);
-        assert!(
-            SpeedGauge::new(&stale, &reference)
-                .speed_for("Other", 1)
-                .is_err()
-        );
+        let reference = bootstrap_references(&shard(1, 1.0, walls));
+        // Too few fresh timings: all but 29 cached.
+        let mut stale = shard(1, 1.0, walls);
+        stale
+            .iter_mut()
+            .skip(29)
+            .for_each(|timing| timing.fresh = false);
+        let error = SpeedGauge::new(&stale, &reference)
+            .speed_for("Judged", 1)
+            .unwrap_err();
+        assert!(error.contains("fewer than 30"), "{error}");
         // A runner that changed speed mid-shard.
-        let mixed = (0..40)
-            .map(|i| if i < 20 { 1.0 } else { 2.0 })
-            .collect::<Vec<_>>();
-        let (now, reference) = shard(2, &mixed);
-        let error = SpeedGauge::new(&now, &reference)
-            .speed_for("Other", 2)
+        let mut mixed = shard(2, 1.0, walls);
+        mixed
+            .iter_mut()
+            .skip(18)
+            .for_each(|timing| timing.wall_seconds *= 2.0);
+        let error = SpeedGauge::new(&mixed, &reference)
+            .speed_for("Judged", 2)
             .unwrap_err();
         assert!(error.contains("spread"), "{error}");
         // A speed outside the bounds.
-        let (now, reference) = shard(4, &[3.5; 40]);
-        let error = SpeedGauge::new(&now, &reference)
-            .speed_for("Other", 4)
+        let error = SpeedGauge::new(&shard(4, 3.5, walls), &reference)
+            .speed_for("Judged", 4)
             .unwrap_err();
         assert!(error.contains("outside"), "{error}");
-        // No timings at all.
-        assert!(SpeedGauge::default().speed_for("Other", 1).is_err());
-    }
-
-    #[test]
-    fn the_frame_is_the_median_of_the_trusted_shards() {
-        let mut now = BTreeMap::new();
-        let mut reference = BTreeMap::new();
-        for (index, speed) in [(1, 1.84), (2, 0.39), (3, 2.46), (4, 0.40)] {
-            let (n, r) = shard(index, &[speed; 40]);
-            now.extend(n);
-            reference.extend(r);
-        }
-        let nominal = SpeedGauge::new(&now, &reference).nominal_speed().unwrap();
-        assert!((nominal - 1.12).abs() < 1e-9, "{nominal}");
+        // A shard without calibration timings.
+        assert!(
+            SpeedGauge::new(&[], &reference)
+                .speed_for("Judged", 1)
+                .is_err()
+        );
     }
 }

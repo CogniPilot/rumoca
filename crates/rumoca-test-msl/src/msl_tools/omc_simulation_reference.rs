@@ -22,6 +22,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+mod calibration;
 mod omc_session;
 mod output;
 mod retry_policy;
@@ -110,6 +111,11 @@ pub struct Args {
     /// newly-passing rumoca models already have an OMC baseline to compare to.
     #[arg(long, default_value_t = false)]
     rumoca_sim_ok_only: bool,
+    /// After the timed pass, OMC-time the pinned calibration set fresh, so the
+    /// quality gate can measure this runner's speed in the common frame (rule
+    /// B). Full and sharded runs pass it; focused runs need not.
+    #[arg(long, default_value_t = false)]
+    calibration_pass: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -166,6 +172,8 @@ struct SimRunState {
     // The session pool pulls models one at a time, so the queue is a flat model
     // list, so scheduling stays explicit at the subprocess boundary.
     pending_models: Vec<String>,
+    /// The calibration pass's timings, when it ran.
+    calibration_timings: Option<Value>,
 }
 
 /// Every candidate the comparator handled: compared, or recorded under the map
@@ -407,6 +415,10 @@ pub fn run(args: Args) -> Result<()> {
     }
     run_session_pending(&args, workers, &paths, &mut state, cache_valid)?;
     ensure_omc_trace_artifacts(&paths, &mut state.all_results);
+    if args.calibration_pass {
+        state.calibration_timings =
+            Some(calibration::time_calibration_set(&args, workers, &paths)?);
+    }
     // After every timed run, so no rerun overlaps one (see `tight_reference`).
     tight_reference::simulate_tight_references(&args, workers, &paths, &mut state.all_results)?;
     attach_rumoca_runtime(&rumoca_runtimes, &mut state.all_results);
@@ -708,6 +720,7 @@ fn prepare_run_state(model_names: &[String]) -> SimRunState {
         all_results: BTreeMap::new(),
         batch_timings: Vec::new(),
         pending_models: model_names.to_vec(),
+        calibration_timings: None,
     }
 }
 
@@ -846,12 +859,7 @@ fn run_session_pending(
     // Each timing collected here carries the context it was taken under, so a
     // cached timing from another worker count, host, run or runner is
     // recognisable later.
-    let context = serde_json::json!({
-        "workers": workers,
-        "omc_threads": args.omc_threads,
-        "host": output::host_description(),
-        "run": output::run_provenance(),
-    });
+    let context = calibration::timing_context(args, workers);
     let mut completed = 0usize;
     run_session_pool(&models, &config, &job, |idx, outcome| {
         completed += 1;

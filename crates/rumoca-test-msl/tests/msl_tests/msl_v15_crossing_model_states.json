@@ -5,8 +5,7 @@
   "source_commit": "ddbece0d6cb27863f78c2f469d02869fbf1129b7",
   "caveats": [
     "main's run carries the run-phase regression this crossing's change fixes, so its watchdog kills can only make the new side look like progress",
-    "main's comparator still excludes the near-zero models by policy, so they are newly scored on the new side",
-    "omc_wall_reference is main's own OMC wall per model, unnormalized (no frame existed before v15); the first v15 promotion fixes the frame at the median of its shards' speeds against it"
+    "main's comparator still excludes the near-zero models by policy, so they are newly scored on the new side"
   ],
   "model_states": {
     "Modelica.Blocks.Examples.BooleanNetwork1": {
@@ -22,8 +21,7 @@
       "stage_seconds": {
         "build": 0.033594178,
         "initialization": 0.000449649,
-        "run": 0.014477266,
-        "omc_wall_reference": 1.699
+        "run": 0.014477266
       }
     },
     "Modelica.Blocks.Examples.BusUsage": {
@@ -39,8 +37,7 @@
       "stage_seconds": {
         "build": 0.00692289,
         "initialization": 1.5314e-05,
-        "run": 0.000432212,
-        "omc_wall_reference": 1.408
+        "run": 0.000432212
       }
     },
     "Modelica.Blocks.Examples.BusUsage_Utilities.Part": {
@@ -56,8 +53,7 @@
       "stage_seconds": {
         "build": 0.005072408,
         "initialization": 1.9206e-05,
-        "run": 0.000973507,
-        "omc_wall_reference": 3.045
+        "run": 0.000973507
       }
     },
     "Modelica.Blocks.Examples.CompareSincExpSine": {
@@ -73,8 +69,7 @@
       "stage_seconds": {
         "build": 0.009064237,
         "initialization": 1.0519e-05,
-        "run": 0.01053807,
-        "omc_wall_reference": 1.422
+        "run": 0.01053807
       }
     },
     "Modelica.Blocks.Examples.DemoSignalCharacteristic": {
@@ -90,8 +85,7 @@
       "stage_seconds": {
         "build": 0.039843674,
         "initialization": 0.000144014,
-        "run": 0.011512884,
-        "omc_wall_reference": 1.659
+        "run": 0.011512884
       }
     },
     "Modelica.Blocks.Examples.DemonstrateContinuousSignalExtrema": {
@@ -107,8 +101,7 @@
       "stage_seconds": {
         "build": 0.075284759,
         "initialization": 0.000283984,
-        "run": 0.054229949,
-        "omc_wall_reference": 1.807
+        "run": 0.054229949
       }
     },
     "Modelica.Blocks.Examples.DemonstrateSignalExtrema": {
@@ -124,8 +117,7 @@
       "stage_seconds": {
         "build": 0.016557013,
         "initialization": 0.000100501,
-        "run": 0.57769405,
-        "omc_wall_reference": 2.456
+        "run": 0.57769405
       }
     },
     "Modelica.Blocks.Examples.Filter": {
@@ -141,8 +133,7 @@
       "stage_seconds": {
         "build": 1.198964579,
         "initialization": 0.000706975,
-        "run": 0.007321176,
-        "omc_wall_reference": 2.264
+        "run": 0.007321176
       }
     },
     "Modelica.Blocks.Examples.FilterWithDifferentiation": {
@@ -172,8 +163,7 @@
       "stage_seconds": {
         "build": 0.028112888,
         "initialization": 0.000185827,
-        "run": 0.003212481,
-        "omc_wall_reference": 1.731
+        "run": 0.003212481
       }
     },
     "Modelica.Blocks.Examples.IntegerNetwork1": {
@@ -203,8 +193,7 @@
       "stage_seconds": {
         "build": 0.055416145,
         "initialization": 0.000345706,
-        "run": 0.01085998,
-        "omc_wall_reference": 2.021
+        "run": 0.01085998
       }
     },
     "Modelica.Blocks.Examples.InverseModel": {
@@ -220,8 +209,7 @@
       "stage_seconds": {
         "build": 0.010711963,
         "initialization": 5.1062e-05,
-        "run": 0.000905839,
-        "omc_wall_reference": 1.42
+        "run": 0.000905839
       }
     },
     "Modelica.Blocks.Examples.LogicalNetwork1": {
@@ -237,8 +225,7 @@
       "stage_seconds": {
         "build": 0.046063957,
         "initialization": 0.000130895,
-        "run": 0.007356641,
-        "omc_wall_reference": 4.003
+        "run": 0.007356641
       }
     },
     "Modelica.Blocks.Examples.Modulation": {
@@ -254,8 +241,7 @@
       "stage_seconds": {
         "build": 0.017296692,
         "initialization": 8.406e-05,
-        "run": 0.007844503,
-        "omc_wall_reference": 1.533
+        "run": 0.007844503
       }
     },
     "Modelica.Blocks.Examples.Noise.ActuatorWithNoise": {
@@ -299,8 +285,7 @@
       "stage_seconds": {
         "build": 0.011918027,
         "initialization": 1.5893e-05,
-        "run": 0.000724644,
-        "omc_wall_reference": 1.432
+        "run": 0.000724644
       }
     },
     "Modelica.Blocks.Examples.Noise.Distributions": {
@@ -399,8 +384,7 @@
       "stage_seconds": {
         "build": 0.087233879,
         "initialization": 0.00079684,
-        "run": 0.007304304,
-        "omc_wall_reference": 1.712
+        "run": 0.007304304
       }
     },
     "Modelica.Blocks.Examples.RealNetwork1": {
@@ -416,8 +400,7 @@
       "stage_seconds": {
         "build": 0.022285059,
         "initialization": 4.9941e-05,
-        "run": 0.001641468,
-        "omc_wall_reference": 1.47
+        "run": 0.001641468
       }
     },
     "Modelica.Blocks.Examples.Rectifier12pulseFFT": {
@@ -459,8 +442,7 @@
       "stage_seconds": {
         "build": 0.028080782,
         "initialization": 0.00011222,
-        "run": 0.006817715,
-        "omc_wall_reference": 3.85
+        "run": 0.006817715
       }
     },
     "Modelica.Blocks.Examples.SinCosEncoder": {
@@ -476,8 +458,7 @@
       "stage_seconds": {
         "build": 0.061672269,
         "initialization": 0.000250468,
-        "run": 0.055899915,
-        "omc_wall_reference": 4.542
+        "run": 0.055899915
       }
     },
     "Modelica.Blocks.Examples.SlewRateLimiter": {
@@ -493,8 +474,7 @@
       "stage_seconds": {
         "build": 0.038177507,
         "initialization": 0.000197529,
-        "run": 0.006190474,
-        "omc_wall_reference": 3.803
+        "run": 0.006190474
       }
     },
     "Modelica.Blocks.Examples.TotalHarmonicDistortion": {
@@ -510,8 +490,7 @@
       "stage_seconds": {
         "build": 0.067977869,
         "initialization": 0.000325633,
-        "run": 0.008841539,
-        "omc_wall_reference": 1.855
+        "run": 0.008841539
       }
     },
     "Modelica.Clocked.Examples.CascadeControlledDrive.AbsoluteClocks": {
@@ -527,8 +506,7 @@
       "stage_seconds": {
         "build": 0.14694255,
         "initialization": 0.000247319,
-        "run": 0.210734588,
-        "omc_wall_reference": 2.167
+        "run": 0.210734588
       }
     },
     "Modelica.Clocked.Examples.CascadeControlledDrive.Continuous": {
@@ -544,8 +522,7 @@
       "stage_seconds": {
         "build": 0.303097862,
         "initialization": 0.000441284,
-        "run": 0.011028173,
-        "omc_wall_reference": 4.665
+        "run": 0.011028173
       }
     },
     "Modelica.Clocked.Examples.CascadeControlledDrive.SubClocked": {
@@ -561,8 +538,7 @@
       "stage_seconds": {
         "build": 0.312591742,
         "initialization": 0.000453998,
-        "run": 0.604612428,
-        "omc_wall_reference": 5.221
+        "run": 0.604612428
       }
     },
     "Modelica.Clocked.Examples.CascadeControlledDrive.SuperSampled": {
@@ -578,8 +554,7 @@
       "stage_seconds": {
         "build": 0.140343165,
         "initialization": 0.000223537,
-        "run": 0.195181379,
-        "omc_wall_reference": 1.983
+        "run": 0.195181379
       }
     },
     "Modelica.Clocked.Examples.Elementary.BooleanSignals.AssignClock": {
@@ -595,8 +570,7 @@
       "stage_seconds": {
         "build": 0.002442416,
         "initialization": 1.1184e-05,
-        "run": 0.000396719,
-        "omc_wall_reference": 1.369
+        "run": 0.000396719
       }
     },
     "Modelica.Clocked.Examples.Elementary.BooleanSignals.AssignClockVectorized": {
@@ -612,8 +586,7 @@
       "stage_seconds": {
         "build": 0.003515659,
         "initialization": 1.3711e-05,
-        "run": 0.000403571,
-        "omc_wall_reference": 1.449
+        "run": 0.000403571
       }
     },
     "Modelica.Clocked.Examples.Elementary.BooleanSignals.BackSample": {
@@ -629,8 +602,7 @@
       "stage_seconds": {
         "build": 0.023481197,
         "initialization": 0.000109684,
-        "run": 0.004574959,
-        "omc_wall_reference": 3.808
+        "run": 0.004574959
       }
     },
     "Modelica.Clocked.Examples.Elementary.BooleanSignals.Hold": {
@@ -646,8 +618,7 @@
       "stage_seconds": {
         "build": 0.010992025,
         "initialization": 2.9364e-05,
-        "run": 0.001424909,
-        "omc_wall_reference": 1.548
+        "run": 0.001424909
       }
     },
     "Modelica.Clocked.Examples.Elementary.BooleanSignals.Sample1": {
@@ -663,8 +634,7 @@
       "stage_seconds": {
         "build": 0.003910919,
         "initialization": 2.3845e-05,
-        "run": 0.000923584,
-        "omc_wall_reference": 3.606
+        "run": 0.000923584
       }
     },
     "Modelica.Clocked.Examples.Elementary.BooleanSignals.Sample2": {
@@ -680,8 +650,7 @@
       "stage_seconds": {
         "build": 0.005801749,
         "initialization": 3.5186e-05,
-        "run": 0.001109581,
-        "omc_wall_reference": 3.6
+        "run": 0.001109581
       }
     },
     "Modelica.Clocked.Examples.Elementary.BooleanSignals.SampleClocked": {
@@ -697,8 +666,7 @@
       "stage_seconds": {
         "build": 0.001830725,
         "initialization": 7.668e-06,
-        "run": 0.000389593,
-        "omc_wall_reference": 1.354
+        "run": 0.000389593
       }
     },
     "Modelica.Clocked.Examples.Elementary.BooleanSignals.SampleVectorizedAndClocked": {
@@ -714,8 +682,7 @@
       "stage_seconds": {
         "build": 0.002703433,
         "initialization": 1.0266e-05,
-        "run": 0.00041212,
-        "omc_wall_reference": 1.414
+        "run": 0.00041212
       }
     },
     "Modelica.Clocked.Examples.Elementary.BooleanSignals.ShiftSample": {
@@ -731,8 +698,7 @@
       "stage_seconds": {
         "build": 0.020372023,
         "initialization": 7.4909e-05,
-        "run": 0.003961674,
-        "omc_wall_reference": 3.862
+        "run": 0.003961674
       }
     },
     "Modelica.Clocked.Examples.Elementary.BooleanSignals.SubSample": {
@@ -748,8 +714,7 @@
       "stage_seconds": {
         "build": 0.010702088,
         "initialization": 3.22e-05,
-        "run": 0.001467991,
-        "omc_wall_reference": 1.54
+        "run": 0.001467991
       }
     },
     "Modelica.Clocked.Examples.Elementary.BooleanSignals.SuperSample": {
@@ -765,8 +730,7 @@
       "stage_seconds": {
         "build": 0.010235176,
         "initialization": 2.8487e-05,
-        "run": 0.001626246,
-        "omc_wall_reference": 1.483
+        "run": 0.001626246
       }
     },
     "Modelica.Clocked.Examples.Elementary.BooleanSignals.TickBasedPulse": {
@@ -782,8 +746,7 @@
       "stage_seconds": {
         "build": 0.005340717,
         "initialization": 1.1611e-05,
-        "run": 0.000420692,
-        "omc_wall_reference": 1.408
+        "run": 0.000420692
       }
     },
     "Modelica.Clocked.Examples.Elementary.BooleanSignals.TickBasedStep": {
@@ -799,8 +762,7 @@
       "stage_seconds": {
         "build": 0.006569071,
         "initialization": 2.6349e-05,
-        "run": 0.001079896,
-        "omc_wall_reference": 3.556
+        "run": 0.001079896
       }
     },
     "Modelica.Clocked.Examples.Elementary.BooleanSignals.TimeBasedPulse": {
@@ -816,8 +778,7 @@
       "stage_seconds": {
         "build": 0.004932767,
         "initialization": 2.8063e-05,
-        "run": 0.00116269,
-        "omc_wall_reference": 3.582
+        "run": 0.00116269
       }
     },
     "Modelica.Clocked.Examples.Elementary.BooleanSignals.TimeBasedStep": {
@@ -833,8 +794,7 @@
       "stage_seconds": {
         "build": 0.002098519,
         "initialization": 1.1339e-05,
-        "run": 0.000409644,
-        "omc_wall_reference": 1.413
+        "run": 0.000409644
       }
     },
     "Modelica.Clocked.Examples.Elementary.BooleanSignals.UpSample": {
@@ -850,8 +810,7 @@
       "stage_seconds": {
         "build": 0.011355549,
         "initialization": 3.9323e-05,
-        "run": 0.001697875,
-        "omc_wall_reference": 1.544
+        "run": 0.001697875
       }
     },
     "Modelica.Clocked.Examples.Elementary.ClockSignals.LogicalSample": {
@@ -867,8 +826,7 @@
       "stage_seconds": {
         "build": 0.193401588,
         "initialization": 0.003271566,
-        "run": 0.245927677,
-        "omc_wall_reference": 4.601
+        "run": 0.245927677
       }
     },
     "Modelica.Clocked.Examples.Elementary.ClockSignals.RotationalSample": {
@@ -884,8 +842,7 @@
       "stage_seconds": {
         "build": 0.033260162,
         "initialization": 5.5525e-05,
-        "run": 0.003726621,
-        "omc_wall_reference": 1.538
+        "run": 0.003726621
       }
     },
     "Modelica.Clocked.Examples.Elementary.ClockSignals.ShiftSample": {
@@ -901,8 +858,7 @@
       "stage_seconds": {
         "build": 0.005368284,
         "initialization": 9.152e-06,
-        "run": 0.000456303,
-        "omc_wall_reference": 1.525
+        "run": 0.000456303
       }
     },
     "Modelica.Clocked.Examples.Elementary.ClockSignals.SubSample": {
@@ -918,8 +874,7 @@
       "stage_seconds": {
         "build": 0.007556885,
         "initialization": 1.7663e-05,
-        "run": 0.000789804,
-        "omc_wall_reference": 3.53
+        "run": 0.000789804
       }
     },
     "Modelica.Clocked.Examples.Elementary.ClockSignals.SuperSample": {
@@ -935,8 +890,7 @@
       "stage_seconds": {
         "build": 0.005406034,
         "initialization": 1.1447e-05,
-        "run": 0.000489632,
-        "omc_wall_reference": 1.41
+        "run": 0.000489632
       }
     },
     "Modelica.Clocked.Examples.Elementary.IntegerSignals.AssignClock": {
@@ -952,8 +906,7 @@
       "stage_seconds": {
         "build": 0.004191834,
         "initialization": 2.4946e-05,
-        "run": 0.000967285,
-        "omc_wall_reference": 3.595
+        "run": 0.000967285
       }
     },
     "Modelica.Clocked.Examples.Elementary.IntegerSignals.AssignClockVectorized": {
@@ -969,8 +922,7 @@
       "stage_seconds": {
         "build": 0.003227546,
         "initialization": 2.0383e-05,
-        "run": 0.000428285,
-        "omc_wall_reference": 1.46
+        "run": 0.000428285
       }
     },
     "Modelica.Clocked.Examples.Elementary.IntegerSignals.BackSample": {
@@ -986,8 +938,7 @@
       "stage_seconds": {
         "build": 0.015474788,
         "initialization": 5.0406e-05,
-        "run": 0.003393814,
-        "omc_wall_reference": 1.53
+        "run": 0.003393814
       }
     },
     "Modelica.Clocked.Examples.Elementary.IntegerSignals.Hold": {
@@ -1003,8 +954,7 @@
       "stage_seconds": {
         "build": 0.016765726,
         "initialization": 5.2534e-05,
-        "run": 0.003419588,
-        "omc_wall_reference": 1.614
+        "run": 0.003419588
       }
     },
     "Modelica.Clocked.Examples.Elementary.IntegerSignals.Sample1": {
@@ -1020,8 +970,7 @@
       "stage_seconds": {
         "build": 0.003915037,
         "initialization": 2.184e-05,
-        "run": 0.001011197,
-        "omc_wall_reference": 3.571
+        "run": 0.001011197
       }
     },
     "Modelica.Clocked.Examples.Elementary.IntegerSignals.Sample2": {
@@ -1037,8 +986,7 @@
       "stage_seconds": {
         "build": 0.006312071,
         "initialization": 4.311e-05,
-        "run": 0.001497605,
-        "omc_wall_reference": 3.636
+        "run": 0.001497605
       }
     },
     "Modelica.Clocked.Examples.Elementary.IntegerSignals.SampleClocked": {
@@ -1054,8 +1002,7 @@
       "stage_seconds": {
         "build": 0.001703621,
         "initialization": 9.442e-06,
-        "run": 0.000398569,
-        "omc_wall_reference": 1.363
+        "run": 0.000398569
       }
     },
     "Modelica.Clocked.Examples.Elementary.IntegerSignals.SampleVectorizedAndClocked": {
@@ -1071,8 +1018,7 @@
       "stage_seconds": {
         "build": 0.002655302,
         "initialization": 1.2311e-05,
-        "run": 0.000427872,
-        "omc_wall_reference": 1.553
+        "run": 0.000427872
       }
     },
     "Modelica.Clocked.Examples.Elementary.IntegerSignals.ShiftSample": {
@@ -1088,8 +1034,7 @@
       "stage_seconds": {
         "build": 0.016312475,
         "initialization": 5.8078e-05,
-        "run": 0.003402708,
-        "omc_wall_reference": 1.596
+        "run": 0.003402708
       }
     },
     "Modelica.Clocked.Examples.Elementary.IntegerSignals.SubSample": {
@@ -1105,8 +1050,7 @@
       "stage_seconds": {
         "build": 0.03679144,
         "initialization": 0.000138599,
-        "run": 0.008972767,
-        "omc_wall_reference": 3.988
+        "run": 0.008972767
       }
     },
     "Modelica.Clocked.Examples.Elementary.IntegerSignals.SuperSample": {
@@ -1122,8 +1066,7 @@
       "stage_seconds": {
         "build": 0.016057912,
         "initialization": 0.000131761,
-        "run": 0.003643758,
-        "omc_wall_reference": 1.562
+        "run": 0.003643758
       }
     },
     "Modelica.Clocked.Examples.Elementary.IntegerSignals.TickBasedStep": {
@@ -1139,8 +1082,7 @@
       "stage_seconds": {
         "build": 0.003743569,
         "initialization": 1.1049e-05,
-        "run": 0.00037743,
-        "omc_wall_reference": 1.345
+        "run": 0.00037743
       }
     },
     "Modelica.Clocked.Examples.Elementary.IntegerSignals.TimeBasedStep": {
@@ -1156,8 +1098,7 @@
       "stage_seconds": {
         "build": 0.003220999,
         "initialization": 1.055e-05,
-        "run": 0.000428943,
-        "omc_wall_reference": 1.385
+        "run": 0.000428943
       }
     },
     "Modelica.Clocked.Examples.Elementary.IntegerSignals.UpSample": {
@@ -1173,8 +1114,7 @@
       "stage_seconds": {
         "build": 0.016507659,
         "initialization": 6.2075e-05,
-        "run": 0.003634275,
-        "omc_wall_reference": 1.555
+        "run": 0.003634275
       }
     },
     "Modelica.Clocked.Examples.Elementary.RealSignals.AssignClock": {
@@ -1190,8 +1130,7 @@
       "stage_seconds": {
         "build": 0.002918062,
         "initialization": 1.2667e-05,
-        "run": 0.00037629,
-        "omc_wall_reference": 1.417
+        "run": 0.00037629
       }
     },
     "Modelica.Clocked.Examples.Elementary.RealSignals.AssignClockToSquareWaveHold": {
@@ -1207,8 +1146,7 @@
       "stage_seconds": {
         "build": 0.005922486,
         "initialization": 1.5988e-05,
-        "run": 0.00046443,
-        "omc_wall_reference": 1.45
+        "run": 0.00046443
       }
     },
     "Modelica.Clocked.Examples.Elementary.RealSignals.AssignClockToTriggerHold": {
@@ -1224,8 +1162,7 @@
       "stage_seconds": {
         "build": 0.022217019,
         "initialization": 2.8638e-05,
-        "run": 0.000554603,
-        "omc_wall_reference": 1.436
+        "run": 0.000554603
       }
     },
     "Modelica.Clocked.Examples.Elementary.RealSignals.AssignClockVectorized": {
@@ -1241,8 +1178,7 @@
       "stage_seconds": {
         "build": 0.003220221,
         "initialization": 1.5155e-05,
-        "run": 0.00043483,
-        "omc_wall_reference": 1.395
+        "run": 0.00043483
       }
     },
     "Modelica.Clocked.Examples.Elementary.RealSignals.BackSample": {
@@ -1258,8 +1194,7 @@
       "stage_seconds": {
         "build": 0.005825958,
         "initialization": 1.2337e-05,
-        "run": 0.00046245,
-        "omc_wall_reference": 1.444
+        "run": 0.00046245
       }
     },
     "Modelica.Clocked.Examples.Elementary.RealSignals.FractionalDelay": {
@@ -1275,8 +1210,7 @@
       "stage_seconds": {
         "build": 0.006378511,
         "initialization": 1.3772e-05,
-        "run": 0.00048526,
-        "omc_wall_reference": 1.457
+        "run": 0.00048526
       }
     },
     "Modelica.Clocked.Examples.Elementary.RealSignals.Hold": {
@@ -1292,8 +1226,7 @@
       "stage_seconds": {
         "build": 0.005829767,
         "initialization": 3.5992e-05,
-        "run": 0.000465936,
-        "omc_wall_reference": 1.38
+        "run": 0.000465936
       }
     },
     "Modelica.Clocked.Examples.Elementary.RealSignals.HoldWithDAeffects1": {
@@ -1309,8 +1242,7 @@
       "stage_seconds": {
         "build": 0.008689436,
         "initialization": 2.2576e-05,
-        "run": 0.001226479,
-        "omc_wall_reference": 1.436
+        "run": 0.001226479
       }
     },
     "Modelica.Clocked.Examples.Elementary.RealSignals.HoldWithDAeffects2": {
@@ -1326,8 +1258,7 @@
       "stage_seconds": {
         "build": 0.009269349,
         "initialization": 1.8564e-05,
-        "run": 0.001125286,
-        "omc_wall_reference": 1.5
+        "run": 0.001125286
       }
     },
     "Modelica.Clocked.Examples.Elementary.RealSignals.Sample1": {
@@ -1343,8 +1274,7 @@
       "stage_seconds": {
         "build": 0.009857539,
         "initialization": 2.7141e-05,
-        "run": 0.001188718,
-        "omc_wall_reference": 3.582
+        "run": 0.001188718
       }
     },
     "Modelica.Clocked.Examples.Elementary.RealSignals.Sample2": {
@@ -1360,8 +1290,7 @@
       "stage_seconds": {
         "build": 0.003920354,
         "initialization": 1.0894e-05,
-        "run": 0.00044974,
-        "omc_wall_reference": 1.385
+        "run": 0.00044974
       }
     },
     "Modelica.Clocked.Examples.Elementary.RealSignals.Sample3": {
@@ -1377,8 +1306,7 @@
       "stage_seconds": {
         "build": 0.004709793,
         "initialization": 1.0004e-05,
-        "run": 0.000478383,
-        "omc_wall_reference": 1.379
+        "run": 0.000478383
       }
     },
     "Modelica.Clocked.Examples.Elementary.RealSignals.SampleClocked": {
@@ -1394,8 +1322,7 @@
       "stage_seconds": {
         "build": 0.005116583,
         "initialization": 1.7881e-05,
-        "run": 0.000448933,
-        "omc_wall_reference": 1.378
+        "run": 0.000448933
       }
     },
     "Modelica.Clocked.Examples.Elementary.RealSignals.SampleVectorizedAndClocked": {
@@ -1411,8 +1338,7 @@
       "stage_seconds": {
         "build": 0.007324396,
         "initialization": 1.402e-05,
-        "run": 0.00069344,
-        "omc_wall_reference": 1.4
+        "run": 0.00069344
       }
     },
     "Modelica.Clocked.Examples.Elementary.RealSignals.SampleWithADeffects": {
@@ -1428,8 +1354,7 @@
       "stage_seconds": {
         "build": 0.015134615,
         "initialization": 2.2367e-05,
-        "run": 0.000987325,
-        "omc_wall_reference": 1.55
+        "run": 0.000987325
       }
     },
     "Modelica.Clocked.Examples.Elementary.RealSignals.ShiftSample": {
@@ -1445,8 +1370,7 @@
       "stage_seconds": {
         "build": 0.005515226,
         "initialization": 1.1485e-05,
-        "run": 0.000483687,
-        "omc_wall_reference": 1.386
+        "run": 0.000483687
       }
     },
     "Modelica.Clocked.Examples.Elementary.RealSignals.SubSample": {
@@ -1462,8 +1386,7 @@
       "stage_seconds": {
         "build": 0.005582189,
         "initialization": 1.1466e-05,
-        "run": 0.000472266,
-        "omc_wall_reference": 1.402
+        "run": 0.000472266
       }
     },
     "Modelica.Clocked.Examples.Elementary.RealSignals.SuperSample": {
@@ -1479,8 +1402,7 @@
       "stage_seconds": {
         "build": 0.009943158,
         "initialization": 2.3995e-05,
-        "run": 0.001244012,
-        "omc_wall_reference": 3.571
+        "run": 0.001244012
       }
     },
     "Modelica.Clocked.Examples.Elementary.RealSignals.SuperSampleInterpolated": {
@@ -1496,8 +1418,7 @@
       "stage_seconds": {
         "build": 0.007622395,
         "initialization": 1.8487e-05,
-        "run": 0.00053614,
-        "omc_wall_reference": 1.461
+        "run": 0.00053614
       }
     },
     "Modelica.Clocked.Examples.Elementary.RealSignals.TickBasedRamp": {
@@ -1513,8 +1434,7 @@
       "stage_seconds": {
         "build": 0.01020634,
         "initialization": 2.4887e-05,
-        "run": 0.000942669,
-        "omc_wall_reference": 3.546
+        "run": 0.000942669
       }
     },
     "Modelica.Clocked.Examples.Elementary.RealSignals.TickBasedSine": {
@@ -1530,8 +1450,7 @@
       "stage_seconds": {
         "build": 0.013397345,
         "initialization": 3.2631e-05,
-        "run": 0.00146829,
-        "omc_wall_reference": 3.637
+        "run": 0.00146829
       }
     },
     "Modelica.Clocked.Examples.Elementary.RealSignals.TickBasedStep": {
@@ -1547,8 +1466,7 @@
       "stage_seconds": {
         "build": 0.003763872,
         "initialization": 1.1678e-05,
-        "run": 0.000422389,
-        "omc_wall_reference": 1.435
+        "run": 0.000422389
       }
     },
     "Modelica.Clocked.Examples.Elementary.RealSignals.TimeBasedRamp": {
@@ -1564,8 +1482,7 @@
       "stage_seconds": {
         "build": 0.002551531,
         "initialization": 9.806e-06,
-        "run": 0.000414021,
-        "omc_wall_reference": 1.415
+        "run": 0.000414021
       }
     },
     "Modelica.Clocked.Examples.Elementary.RealSignals.TimeBasedSine": {
@@ -1581,8 +1498,7 @@
       "stage_seconds": {
         "build": 0.002026211,
         "initialization": 8.889e-06,
-        "run": 0.00041726,
-        "omc_wall_reference": 1.358
+        "run": 0.00041726
       }
     },
     "Modelica.Clocked.Examples.Elementary.RealSignals.TimeBasedStep": {
@@ -1598,8 +1514,7 @@
       "stage_seconds": {
         "build": 0.001620347,
         "initialization": 9.205e-06,
-        "run": 0.0003793,
-        "omc_wall_reference": 1.335
+        "run": 0.0003793
       }
     },
     "Modelica.Clocked.Examples.Elementary.RealSignals.UniformNoise": {
@@ -1615,8 +1530,7 @@
       "stage_seconds": {
         "build": 0.016261512,
         "initialization": 2.6289e-05,
-        "run": 0.001945281,
-        "omc_wall_reference": 3.666
+        "run": 0.001945281
       }
     },
     "Modelica.Clocked.Examples.Elementary.RealSignals.UniformNoiseXorshift64star": {
@@ -1632,8 +1546,7 @@
       "stage_seconds": {
         "build": 0.005563661,
         "initialization": 1.6115e-05,
-        "run": 0.000639377,
-        "omc_wall_reference": 1.446
+        "run": 0.000639377
       }
     },
     "Modelica.Clocked.Examples.Elementary.RealSignals.UpSample1": {
@@ -1649,8 +1562,7 @@
       "stage_seconds": {
         "build": 0.006985813,
         "initialization": 1.9727e-05,
-        "run": 0.000613957,
-        "omc_wall_reference": 1.414
+        "run": 0.000613957
       }
     },
     "Modelica.Clocked.Examples.Elementary.RealSignals.UpSample2": {
@@ -1666,8 +1578,7 @@
       "stage_seconds": {
         "build": 0.010672555,
         "initialization": 4.48e-05,
-        "run": 0.000881646,
-        "omc_wall_reference": 1.543
+        "run": 0.000881646
       }
     },
     "Modelica.Clocked.Examples.SimpleControlledDrive.ClockedWithDiscreteController": {
@@ -1683,8 +1594,7 @@
       "stage_seconds": {
         "build": 0.011142193,
         "initialization": 3.3404e-05,
-        "run": 0.00274031,
-        "omc_wall_reference": 1.608
+        "run": 0.00274031
       }
     },
     "Modelica.Clocked.Examples.SimpleControlledDrive.ClockedWithDiscreteTextbookController": {
@@ -1700,8 +1610,7 @@
       "stage_seconds": {
         "build": 0.022505586,
         "initialization": 6.9339e-05,
-        "run": 0.010575379,
-        "omc_wall_reference": 3.721
+        "run": 0.010575379
       }
     },
     "Modelica.Clocked.Examples.SimpleControlledDrive.ClockedWithDiscretizedContinuousController": {
@@ -1730,8 +1639,7 @@
       "stage_seconds": {
         "build": 0.026535472,
         "initialization": 9.7217e-05,
-        "run": 0.010092514,
-        "omc_wall_reference": 1.765
+        "run": 0.010092514
       }
     },
     "Modelica.Clocked.Examples.SimpleControlledDrive.Continuous": {
@@ -1747,8 +1655,7 @@
       "stage_seconds": {
         "build": 0.02713162,
         "initialization": 9.3775e-05,
-        "run": 0.004192956,
-        "omc_wall_reference": 3.703
+        "run": 0.004192956
       }
     },
     "Modelica.Clocked.Examples.SimpleControlledDrive.ExactlyClockedWithDiscreteController": {
@@ -1764,8 +1671,7 @@
       "stage_seconds": {
         "build": 0.011710992,
         "initialization": 6.1249e-05,
-        "run": 0.003800182,
-        "omc_wall_reference": 1.517
+        "run": 0.003800182
       }
     },
     "Modelica.Clocked.Examples.Systems.ControlledMixingUnit": {
@@ -1794,8 +1700,7 @@
       "stage_seconds": {
         "build": 0.051506365,
         "initialization": 0.000213248,
-        "run": 0.011258145,
-        "omc_wall_reference": 1.723
+        "run": 0.011258145
       }
     },
     "Modelica.ComplexBlocks.Examples.ShowTransferFunction": {
@@ -1824,8 +1729,7 @@
       "stage_seconds": {
         "build": 0.008192857,
         "initialization": 1.7809e-05,
-        "run": 0.001165595,
-        "omc_wall_reference": 1.476
+        "run": 0.001165595
       }
     },
     "Modelica.Electrical.Analog.Examples.AD_DA_conversion": {
@@ -1854,8 +1758,7 @@
       "stage_seconds": {
         "build": 0.103669275,
         "initialization": 0.000821643,
-        "run": 0.333168648,
-        "omc_wall_reference": 4.565
+        "run": 0.333168648
       }
     },
     "Modelica.Electrical.Analog.Examples.CauerLowPassAnalog": {
@@ -1871,8 +1774,7 @@
       "stage_seconds": {
         "build": 0.029381152,
         "initialization": 6.6213e-05,
-        "run": 0.005763964,
-        "omc_wall_reference": 1.619
+        "run": 0.005763964
       }
     },
     "Modelica.Electrical.Analog.Examples.CauerLowPassOPV": {
@@ -1888,8 +1790,7 @@
       "stage_seconds": {
         "build": 0.102188512,
         "initialization": 0.000517301,
-        "run": 0.009866305,
-        "omc_wall_reference": 2.074
+        "run": 0.009866305
       }
     },
     "Modelica.Electrical.Analog.Examples.CauerLowPassSC": {
@@ -1905,8 +1806,7 @@
       "stage_seconds": {
         "build": 0.312923388,
         "initialization": 0.001597426,
-        "run": 16.253151919,
-        "omc_wall_reference": 9.016
+        "run": 16.253151919
       }
     },
     "Modelica.Electrical.Analog.Examples.CharacteristicIdealDiodes": {
@@ -1922,8 +1822,7 @@
       "stage_seconds": {
         "build": 0.043806407,
         "initialization": 0.000104162,
-        "run": 0.005616718,
-        "omc_wall_reference": 1.923
+        "run": 0.005616718
       }
     },
     "Modelica.Electrical.Analog.Examples.CharacteristicThyristors": {
@@ -1939,8 +1838,7 @@
       "stage_seconds": {
         "build": 0.124428863,
         "initialization": 0.000327852,
-        "run": 0.032104662,
-        "omc_wall_reference": 5.455
+        "run": 0.032104662
       }
     },
     "Modelica.Electrical.Analog.Examples.ChuaCircuit": {
@@ -1956,8 +1854,7 @@
       "stage_seconds": {
         "build": 0.021735526,
         "initialization": 0.000110056,
-        "run": 0.138166964,
-        "omc_wall_reference": 2.037
+        "run": 0.138166964
       }
     },
     "Modelica.Electrical.Analog.Examples.CompareTransformers": {
@@ -1973,8 +1870,7 @@
       "stage_seconds": {
         "build": 0.062839124,
         "initialization": 0.000345011,
-        "run": 0.648876517,
-        "omc_wall_reference": 3.366
+        "run": 0.648876517
       }
     },
     "Modelica.Electrical.Analog.Examples.ControlledSwitchWithArc": {
@@ -1990,8 +1886,7 @@
       "stage_seconds": {
         "build": 0.033174673,
         "initialization": 0.000181424,
-        "run": 0.084476928,
-        "omc_wall_reference": 2.061
+        "run": 0.084476928
       }
     },
     "Modelica.Electrical.Analog.Examples.DemoPowerSupply": {
@@ -2007,8 +1902,7 @@
       "stage_seconds": {
         "build": 0.01892524,
         "initialization": 9.4894e-05,
-        "run": 0.116017664,
-        "omc_wall_reference": 1.748
+        "run": 0.116017664
       }
     },
     "Modelica.Electrical.Analog.Examples.DemoPowerSupplyWithBuffer": {
@@ -2024,8 +1918,7 @@
       "stage_seconds": {
         "build": 0.035805032,
         "initialization": 0.000238193,
-        "run": 1.04185002,
-        "omc_wall_reference": 3.45
+        "run": 1.04185002
       }
     },
     "Modelica.Electrical.Analog.Examples.DemonstrateLightning": {
@@ -2041,8 +1934,7 @@
       "stage_seconds": {
         "build": 0.110342646,
         "initialization": 0.000710541,
-        "run": 0.02538232,
-        "omc_wall_reference": 2.43
+        "run": 0.02538232
       }
     },
     "Modelica.Electrical.Analog.Examples.DifferenceAmplifier": {
@@ -2058,8 +1950,7 @@
       "stage_seconds": {
         "build": 0.162421982,
         "initialization": 0.000630187,
-        "run": 0.046696571,
-        "omc_wall_reference": 2.166
+        "run": 0.046696571
       }
     },
     "Modelica.Electrical.Analog.Examples.GenerationOfFMUs": {
@@ -2075,8 +1966,7 @@
       "stage_seconds": {
         "build": 0.415398169,
         "initialization": 0.003237342,
-        "run": 0.076912235,
-        "omc_wall_reference": 4.677
+        "run": 0.076912235
       }
     },
     "Modelica.Electrical.Analog.Examples.HeatingMOSInverter": {
@@ -2092,8 +1982,7 @@
       "stage_seconds": {
         "build": 0.063942381,
         "initialization": 0.000244972,
-        "run": 0.119530737,
-        "omc_wall_reference": 1.964
+        "run": 0.119530737
       }
     },
     "Modelica.Electrical.Analog.Examples.HeatingNPN_NORGate": {
@@ -2109,8 +1998,7 @@
       "stage_seconds": {
         "build": 0.306887511,
         "initialization": 0.000635415,
-        "run": 0.308560146,
-        "omc_wall_reference": 3.039
+        "run": 0.308560146
       }
     },
     "Modelica.Electrical.Analog.Examples.HeatingPNP_NORGate": {
@@ -2126,8 +2014,7 @@
       "stage_seconds": {
         "build": 0.601203775,
         "initialization": 0.001054978,
-        "run": 0.968506303,
-        "omc_wall_reference": 7.387
+        "run": 0.968506303
       }
     },
     "Modelica.Electrical.Analog.Examples.HeatingRectifier": {
@@ -2143,8 +2030,7 @@
       "stage_seconds": {
         "build": 0.065584802,
         "initialization": 0.000228196,
-        "run": 0.068697261,
-        "omc_wall_reference": 4.015
+        "run": 0.068697261
       }
     },
     "Modelica.Electrical.Analog.Examples.IdealTriacCircuit": {
@@ -2160,8 +2046,7 @@
       "stage_seconds": {
         "build": 0.032298441,
         "initialization": 8.3187e-05,
-        "run": 0.015885444,
-        "omc_wall_reference": 1.706
+        "run": 0.015885444
       }
     },
     "Modelica.Electrical.Analog.Examples.InvertingAmp": {
@@ -2177,8 +2062,7 @@
       "stage_seconds": {
         "build": 0.051165356,
         "initialization": 0.000220352,
-        "run": 0.016034555,
-        "omc_wall_reference": 1.724
+        "run": 0.016034555
       }
     },
     "Modelica.Electrical.Analog.Examples.Lines.CompareLineTrunks": {
@@ -2194,8 +2078,7 @@
       "stage_seconds": {
         "build": 0.596648504,
         "initialization": 0.00634045,
-        "run": 0.249091468,
-        "omc_wall_reference": 4.741
+        "run": 0.249091468
       }
     },
     "Modelica.Electrical.Analog.Examples.Lines.CompareLosslessLines": {
@@ -2211,8 +2094,7 @@
       "stage_seconds": {
         "build": 0.116288549,
         "initialization": 0.000322282,
-        "run": 0.011752756,
-        "omc_wall_reference": 4.788
+        "run": 0.011752756
       }
     },
     "Modelica.Electrical.Analog.Examples.Lines.LightningLosslessTransmissionLine": {
@@ -2228,8 +2110,7 @@
       "stage_seconds": {
         "build": 0.116545328,
         "initialization": 0.000601903,
-        "run": 1.327689536,
-        "omc_wall_reference": 6.761
+        "run": 1.327689536
       }
     },
     "Modelica.Electrical.Analog.Examples.Lines.LightningSegmentedTransmissionLine": {
@@ -2258,8 +2139,7 @@
       "stage_seconds": {
         "build": 1.116327081,
         "initialization": 0.029962791,
-        "run": 3.347978582,
-        "omc_wall_reference": 7.474
+        "run": 3.347978582
       }
     },
     "Modelica.Electrical.Analog.Examples.NandGate": {
@@ -2275,8 +2155,7 @@
       "stage_seconds": {
         "build": 0.095542362,
         "initialization": 0.000116634,
-        "run": 0.020607891,
-        "omc_wall_reference": 1.97
+        "run": 0.020607891
       }
     },
     "Modelica.Electrical.Analog.Examples.OpAmps.Adder": {
@@ -2292,8 +2171,7 @@
       "stage_seconds": {
         "build": 0.068301973,
         "initialization": 0.000393584,
-        "run": 0.117539172,
-        "omc_wall_reference": 4.108
+        "run": 0.117539172
       }
     },
     "Modelica.Electrical.Analog.Examples.OpAmps.Comparator": {
@@ -2309,8 +2187,7 @@
       "stage_seconds": {
         "build": 0.036624975,
         "initialization": 0.000128898,
-        "run": 0.004253472,
-        "omc_wall_reference": 1.693
+        "run": 0.004253472
       }
     },
     "Modelica.Electrical.Analog.Examples.OpAmps.ControlCircuit": {
@@ -2326,8 +2203,7 @@
       "stage_seconds": {
         "build": 0.121227232,
         "initialization": 0.001101111,
-        "run": 0.060117085,
-        "omc_wall_reference": 2.52
+        "run": 0.060117085
       }
     },
     "Modelica.Electrical.Analog.Examples.OpAmps.DifferentialAmplifier": {
@@ -2343,8 +2219,7 @@
       "stage_seconds": {
         "build": 0.058085238,
         "initialization": 0.000488499,
-        "run": 0.227715621,
-        "omc_wall_reference": 2.005
+        "run": 0.227715621
       }
     },
     "Modelica.Electrical.Analog.Examples.OpAmps.Differentiator": {
@@ -2360,8 +2235,7 @@
       "stage_seconds": {
         "build": 0.038879937,
         "initialization": 0.000166346,
-        "run": 0.015220015,
-        "omc_wall_reference": 1.599
+        "run": 0.015220015
       }
     },
     "Modelica.Electrical.Analog.Examples.OpAmps.HighPass": {
@@ -2377,8 +2251,7 @@
       "stage_seconds": {
         "build": 0.090965063,
         "initialization": 0.000429382,
-        "run": 0.198955634,
-        "omc_wall_reference": 4.317
+        "run": 0.198955634
       }
     },
     "Modelica.Electrical.Analog.Examples.OpAmps.Integrator": {
@@ -2394,8 +2267,7 @@
       "stage_seconds": {
         "build": 0.040974244,
         "initialization": 0.00025723,
-        "run": 0.027411541,
-        "omc_wall_reference": 1.748
+        "run": 0.027411541
       }
     },
     "Modelica.Electrical.Analog.Examples.OpAmps.InvertingAmplifier": {
@@ -2411,8 +2283,7 @@
       "stage_seconds": {
         "build": 0.086386477,
         "initialization": 0.000421356,
-        "run": 0.066626175,
-        "omc_wall_reference": 4.299
+        "run": 0.066626175
       }
     },
     "Modelica.Electrical.Analog.Examples.OpAmps.InvertingSchmittTrigger": {
@@ -2442,8 +2313,7 @@
       "stage_seconds": {
         "build": 0.023917026,
         "initialization": 0.000165992,
-        "run": 0.01028575,
-        "omc_wall_reference": 1.653
+        "run": 0.01028575
       }
     },
     "Modelica.Electrical.Analog.Examples.OpAmps.LowPass": {
@@ -2459,8 +2329,7 @@
       "stage_seconds": {
         "build": 0.040707605,
         "initialization": 0.000166546,
-        "run": 0.022218213,
-        "omc_wall_reference": 1.674
+        "run": 0.022218213
       }
     },
     "Modelica.Electrical.Analog.Examples.OpAmps.Multivibrator": {
@@ -2476,8 +2345,7 @@
       "stage_seconds": {
         "build": 0.023274224,
         "initialization": 0.000158833,
-        "run": 0.024679697,
-        "omc_wall_reference": 1.663
+        "run": 0.024679697
       }
     },
     "Modelica.Electrical.Analog.Examples.OpAmps.NonInvertingAmplifier": {
@@ -2493,8 +2361,7 @@
       "stage_seconds": {
         "build": 0.036532249,
         "initialization": 0.000154249,
-        "run": 0.021170332,
-        "omc_wall_reference": 1.868
+        "run": 0.021170332
       }
     },
     "Modelica.Electrical.Analog.Examples.OpAmps.OpAmpCircuits.Add": {
@@ -2626,8 +2493,7 @@
       "stage_seconds": {
         "build": 0.078500328,
         "initialization": 0.000210243,
-        "run": 0.016554569,
-        "omc_wall_reference": 4.251
+        "run": 0.016554569
       }
     },
     "Modelica.Electrical.Analog.Examples.OpAmps.SignalGenerator": {
@@ -2643,8 +2509,7 @@
       "stage_seconds": {
         "build": 0.06997715,
         "initialization": 0.000579051,
-        "run": 0.984080561,
-        "omc_wall_reference": 4.573
+        "run": 0.984080561
       }
     },
     "Modelica.Electrical.Analog.Examples.OpAmps.Subtracter": {
@@ -2660,8 +2525,7 @@
       "stage_seconds": {
         "build": 0.034995461,
         "initialization": 0.000191974,
-        "run": 0.013707455,
-        "omc_wall_reference": 1.794
+        "run": 0.013707455
       }
     },
     "Modelica.Electrical.Analog.Examples.OpAmps.VoltageFollower": {
@@ -2677,8 +2541,7 @@
       "stage_seconds": {
         "build": 0.032417495,
         "initialization": 0.000104819,
-        "run": 0.014829881,
-        "omc_wall_reference": 1.671
+        "run": 0.014829881
       }
     },
     "Modelica.Electrical.Analog.Examples.OvervoltageProtection": {
@@ -2694,8 +2557,7 @@
       "stage_seconds": {
         "build": 0.026886306,
         "initialization": 8.4853e-05,
-        "run": 0.12614119,
-        "omc_wall_reference": 1.817
+        "run": 0.12614119
       }
     },
     "Modelica.Electrical.Analog.Examples.ParallelResonance": {
@@ -2711,8 +2573,7 @@
       "stage_seconds": {
         "build": 0.02872691,
         "initialization": 0.00013319,
-        "run": 0.056195109,
-        "omc_wall_reference": 1.692
+        "run": 0.056195109
       }
     },
     "Modelica.Electrical.Analog.Examples.Rectifier": {
@@ -2728,8 +2589,7 @@
       "stage_seconds": {
         "build": 0.079509708,
         "initialization": 0.000434478,
-        "run": 0.207960314,
-        "omc_wall_reference": 2.564
+        "run": 0.207960314
       }
     },
     "Modelica.Electrical.Analog.Examples.Resistor": {
@@ -2745,8 +2605,7 @@
       "stage_seconds": {
         "build": 0.017972785,
         "initialization": 3.4445e-05,
-        "run": 0.008885692,
-        "omc_wall_reference": 1.498
+        "run": 0.008885692
       }
     },
     "Modelica.Electrical.Analog.Examples.ResonanceCircuits": {
@@ -2762,8 +2621,7 @@
       "stage_seconds": {
         "build": 0.17075293,
         "initialization": 0.000770459,
-        "run": 0.057288099,
-        "omc_wall_reference": 2.179
+        "run": 0.057288099
       }
     },
     "Modelica.Electrical.Analog.Examples.SeriesResonance": {
@@ -2779,8 +2637,7 @@
       "stage_seconds": {
         "build": 0.028371309,
         "initialization": 0.000153339,
-        "run": 0.056316681,
-        "omc_wall_reference": 1.72
+        "run": 0.056316681
       }
     },
     "Modelica.Electrical.Analog.Examples.ShowSaturatingInductor": {
@@ -2796,8 +2653,7 @@
       "stage_seconds": {
         "build": 0.036007156,
         "initialization": 0.000199181,
-        "run": 0.017904388,
-        "omc_wall_reference": 3.944
+        "run": 0.017904388
       }
     },
     "Modelica.Electrical.Analog.Examples.ShowVariableResistor": {
@@ -2813,8 +2669,7 @@
       "stage_seconds": {
         "build": 0.028858759,
         "initialization": 4.3607e-05,
-        "run": 0.004565056,
-        "omc_wall_reference": 1.612
+        "run": 0.004565056
       }
     },
     "Modelica.Electrical.Analog.Examples.SimpleTriacCircuit": {
@@ -2844,8 +2699,7 @@
       "stage_seconds": {
         "build": 0.027477283,
         "initialization": 0.000184144,
-        "run": 0.027776098,
-        "omc_wall_reference": 1.762
+        "run": 0.027776098
       }
     },
     "Modelica.Electrical.Analog.Examples.ThyristorBehaviourTest": {
@@ -2861,8 +2715,7 @@
       "stage_seconds": {
         "build": 0.045881711,
         "initialization": 0.000140926,
-        "run": 0.126842681,
-        "omc_wall_reference": 1.814
+        "run": 0.126842681
       }
     },
     "Modelica.Electrical.Batteries.Examples.BatteryDischargeCharge": {
@@ -2878,8 +2731,7 @@
       "stage_seconds": {
         "build": 0.121636231,
         "initialization": 0.000571923,
-        "run": 0.389027483,
-        "omc_wall_reference": 4.39
+        "run": 0.389027483
       }
     },
     "Modelica.Electrical.Batteries.Examples.CCCV_Cell": {
@@ -2895,8 +2747,7 @@
       "stage_seconds": {
         "build": 0.074284358,
         "initialization": 0.00029362,
-        "run": 0.104988855,
-        "omc_wall_reference": 2.467
+        "run": 0.104988855
       }
     },
     "Modelica.Electrical.Batteries.Examples.CCCV_CellRC": {
@@ -2912,8 +2763,7 @@
       "stage_seconds": {
         "build": 0.088777772,
         "initialization": 0.000417754,
-        "run": 0.12071038,
-        "omc_wall_reference": 2.784
+        "run": 0.12071038
       }
     },
     "Modelica.Electrical.Batteries.Examples.CCCV_Stack": {
@@ -2955,8 +2805,7 @@
       "stage_seconds": {
         "build": 0.18656382,
         "initialization": 0.000728269,
-        "run": 0.272544221,
-        "omc_wall_reference": 6.258
+        "run": 0.272544221
       }
     },
     "Modelica.Electrical.Batteries.Examples.ShowImpedance": {
@@ -2972,8 +2821,7 @@
       "stage_seconds": {
         "build": 0.020560148,
         "initialization": 1.9363e-05,
-        "run": 0.00742205,
-        "omc_wall_reference": 1.629
+        "run": 0.00742205
       }
     },
     "Modelica.Electrical.Batteries.Examples.SuperCapDischargeCharge": {
@@ -2989,8 +2837,7 @@
       "stage_seconds": {
         "build": 0.077956634,
         "initialization": 0.000745311,
-        "run": 0.249828047,
-        "omc_wall_reference": 7.836
+        "run": 0.249828047
       }
     },
     "Modelica.Electrical.Digital.Examples.Adder4": {
@@ -3006,8 +2853,7 @@
       "stage_seconds": {
         "build": 1.677132914,
         "initialization": 0.003324421,
-        "run": 0.096401614,
-        "omc_wall_reference": 4.008
+        "run": 0.096401614
       }
     },
     "Modelica.Electrical.Digital.Examples.BUF3S": {
@@ -3036,8 +2882,7 @@
       "stage_seconds": {
         "build": 0.296613981,
         "initialization": 0.002402232,
-        "run": 0.834506862,
-        "omc_wall_reference": 3.307
+        "run": 0.834506862
       }
     },
     "Modelica.Electrical.Digital.Examples.Counter3": {
@@ -3053,8 +2898,7 @@
       "stage_seconds": {
         "build": 0.478220811,
         "initialization": 0.003932079,
-        "run": 0.147158606,
-        "omc_wall_reference": 6.603
+        "run": 0.147158606
       }
     },
     "Modelica.Electrical.Digital.Examples.DFFREG": {
@@ -3174,8 +3018,7 @@
       "stage_seconds": {
         "build": 0.090494098,
         "initialization": 0.000443571,
-        "run": 1.027189482,
-        "omc_wall_reference": 1.961
+        "run": 1.027189482
       }
     },
     "Modelica.Electrical.Digital.Examples.FullAdder": {
@@ -3191,8 +3034,7 @@
       "stage_seconds": {
         "build": 0.632623923,
         "initialization": 0.004429261,
-        "run": 0.191824072,
-        "omc_wall_reference": 3.299
+        "run": 0.191824072
       }
     },
     "Modelica.Electrical.Digital.Examples.HalfAdder": {
@@ -3208,8 +3050,7 @@
       "stage_seconds": {
         "build": 0.215568958,
         "initialization": 0.00017627,
-        "run": 0.002997112,
-        "omc_wall_reference": 1.779
+        "run": 0.002997112
       }
     },
     "Modelica.Electrical.Digital.Examples.INV3S": {
@@ -3251,8 +3092,7 @@
       "stage_seconds": {
         "build": 0.164878947,
         "initialization": 0.000846466,
-        "run": 1.196060446,
-        "omc_wall_reference": 2.275
+        "run": 1.196060446
       }
     },
     "Modelica.Electrical.Digital.Examples.NRXFER": {
@@ -3307,8 +3147,7 @@
       "stage_seconds": {
         "build": 0.304146856,
         "initialization": 0.000173289,
-        "run": 0.002869922,
-        "omc_wall_reference": 1.768
+        "run": 0.002869922
       }
     },
     "Modelica.Electrical.Digital.Examples.WiredX": {
@@ -3337,8 +3176,7 @@
       "stage_seconds": {
         "build": 0.226198385,
         "initialization": 0.001110868,
-        "run": 0.194826023,
-        "omc_wall_reference": 4.087
+        "run": 0.194826023
       }
     },
     "Modelica.Electrical.Machines.Examples.ControlledDCDrives.PositionControlledDCPM": {
@@ -3354,8 +3192,7 @@
       "stage_seconds": {
         "build": 1.196654741,
         "initialization": 0.010156587,
-        "run": 1.057015621,
-        "omc_wall_reference": 13.383
+        "run": 1.057015621
       }
     },
     "Modelica.Electrical.Machines.Examples.ControlledDCDrives.SpeedControlledDCPM": {
@@ -3371,8 +3208,7 @@
       "stage_seconds": {
         "build": 0.251812884,
         "initialization": 0.002284301,
-        "run": 0.15179973,
-        "omc_wall_reference": 3.273
+        "run": 0.15179973
       }
     },
     "Modelica.Electrical.Machines.Examples.DCMachines.DCEE_Start": {
@@ -3388,8 +3224,7 @@
       "stage_seconds": {
         "build": 0.22543654,
         "initialization": 0.000677689,
-        "run": 0.137101482,
-        "omc_wall_reference": 2.915
+        "run": 0.137101482
       }
     },
     "Modelica.Electrical.Machines.Examples.DCMachines.DCPM_Cooling": {
@@ -3405,8 +3240,7 @@
       "stage_seconds": {
         "build": 0.197507372,
         "initialization": 0.00130778,
-        "run": 2.117242432,
-        "omc_wall_reference": 17.467
+        "run": 2.117242432
       }
     },
     "Modelica.Electrical.Machines.Examples.DCMachines.DCPM_CurrentControlled": {
@@ -3422,8 +3256,7 @@
       "stage_seconds": {
         "build": 0.369581169,
         "initialization": 0.001294677,
-        "run": 0.265473227,
-        "omc_wall_reference": 8.708
+        "run": 0.265473227
       }
     },
     "Modelica.Electrical.Machines.Examples.DCMachines.DCPM_Drive": {
@@ -3439,8 +3272,7 @@
       "stage_seconds": {
         "build": 0.574795055,
         "initialization": 0.00201803,
-        "run": 0.440693385,
-        "omc_wall_reference": 5.771
+        "run": 0.440693385
       }
     },
     "Modelica.Electrical.Machines.Examples.DCMachines.DCPM_QuasiStatic": {
@@ -3456,8 +3288,7 @@
       "stage_seconds": {
         "build": 0.793293191,
         "initialization": 0.001872545,
-        "run": 0.410486225,
-        "omc_wall_reference": 10.406
+        "run": 0.410486225
       }
     },
     "Modelica.Electrical.Machines.Examples.DCMachines.DCPM_Start": {
@@ -3473,8 +3304,7 @@
       "stage_seconds": {
         "build": 0.125273446,
         "initialization": 0.00034819,
-        "run": 0.093918195,
-        "omc_wall_reference": 2.668
+        "run": 0.093918195
       }
     },
     "Modelica.Electrical.Machines.Examples.DCMachines.DCPM_Temperature": {
@@ -3490,8 +3320,7 @@
       "stage_seconds": {
         "build": 0.140769645,
         "initialization": 0.000446574,
-        "run": 0.152171322,
-        "omc_wall_reference": 3.377
+        "run": 0.152171322
       }
     },
     "Modelica.Electrical.Machines.Examples.DCMachines.DCPM_withLosses": {
@@ -3507,8 +3336,7 @@
       "stage_seconds": {
         "build": 0.375020516,
         "initialization": 0.001096757,
-        "run": 0.364670341,
-        "omc_wall_reference": 4.363
+        "run": 0.364670341
       }
     },
     "Modelica.Electrical.Machines.Examples.DCMachines.DCSE_SinglePhase": {
@@ -3524,8 +3352,7 @@
       "stage_seconds": {
         "build": 0.287216281,
         "initialization": 0.000714132,
-        "run": 0.26269866,
-        "omc_wall_reference": 3.243
+        "run": 0.26269866
       }
     },
     "Modelica.Electrical.Machines.Examples.DCMachines.DCSE_Start": {
@@ -3541,8 +3368,7 @@
       "stage_seconds": {
         "build": 0.305041117,
         "initialization": 0.000752861,
-        "run": 0.155211933,
-        "omc_wall_reference": 3.369
+        "run": 0.155211933
       }
     },
     "Modelica.Electrical.Machines.Examples.DCMachines.DC_CompareCharacteristics": {
@@ -3558,8 +3384,7 @@
       "stage_seconds": {
         "build": 0.666404393,
         "initialization": 0.001265395,
-        "run": 0.161451878,
-        "omc_wall_reference": 4.053
+        "run": 0.161451878
       }
     },
     "Modelica.Electrical.Machines.Examples.InductionMachines.IMC_Conveyor": {
@@ -3603,8 +3428,7 @@
       "stage_seconds": {
         "build": 0.408037647,
         "initialization": 0.002105952,
-        "run": 0.537206525,
-        "omc_wall_reference": 4.798
+        "run": 0.537206525
       }
     },
     "Modelica.Electrical.Machines.Examples.InductionMachines.IMC_Initialize": {
@@ -3620,8 +3444,7 @@
       "stage_seconds": {
         "build": 0.898932784,
         "initialization": 0.008616332,
-        "run": 0.881205306,
-        "omc_wall_reference": 11.509
+        "run": 0.881205306
       }
     },
     "Modelica.Electrical.Machines.Examples.InductionMachines.IMC_Inverter": {
@@ -3637,8 +3460,7 @@
       "stage_seconds": {
         "build": 1.20997788,
         "initialization": 0.004526148,
-        "run": 1.782839635,
-        "omc_wall_reference": 11.349
+        "run": 1.782839635
       }
     },
     "Modelica.Electrical.Machines.Examples.InductionMachines.IMC_InverterDrive": {
@@ -3669,8 +3491,7 @@
       "stage_seconds": {
         "build": 0.39550569,
         "initialization": 0.002212116,
-        "run": 0.706088335,
-        "omc_wall_reference": 4.27
+        "run": 0.706088335
       }
     },
     "Modelica.Electrical.Machines.Examples.InductionMachines.IMC_Transformer": {
@@ -3700,8 +3521,7 @@
       "stage_seconds": {
         "build": 1.199088474,
         "initialization": 0.006395167,
-        "run": 3.041445074,
-        "omc_wall_reference": 31.872
+        "run": 3.041445074
       }
     },
     "Modelica.Electrical.Machines.Examples.InductionMachines.IMC_YDarc": {
@@ -3732,8 +3552,7 @@
       "stage_seconds": {
         "build": 1.08388183,
         "initialization": 0.009552848,
-        "run": 4.412398198,
-        "omc_wall_reference": 26.363
+        "run": 4.412398198
       }
     },
     "Modelica.Electrical.Machines.Examples.InductionMachines.IMS_Start": {
@@ -3749,8 +3568,7 @@
       "stage_seconds": {
         "build": 1.434505077,
         "initialization": 0.007376638,
-        "run": 1.961147178,
-        "omc_wall_reference": 17.585
+        "run": 1.961147178
       }
     },
     "Modelica.Electrical.Machines.Examples.SynchronousMachines.SMEE_DOL": {
@@ -3766,8 +3584,7 @@
       "stage_seconds": {
         "build": 0.934022315,
         "initialization": 0.007765887,
-        "run": 1.44986093,
-        "omc_wall_reference": 8.444
+        "run": 1.44986093
       }
     },
     "Modelica.Electrical.Machines.Examples.SynchronousMachines.SMEE_Generator": {
@@ -3783,8 +3600,7 @@
       "stage_seconds": {
         "build": 2.044088888,
         "initialization": 0.004885188,
-        "run": 2.876732402,
-        "omc_wall_reference": 22.306
+        "run": 2.876732402
       }
     },
     "Modelica.Electrical.Machines.Examples.SynchronousMachines.SMEE_LoadDump": {
@@ -3815,8 +3631,7 @@
       "stage_seconds": {
         "build": 0.78482331,
         "initialization": 0.005913964,
-        "run": 24.083284898,
-        "omc_wall_reference": 8.667
+        "run": 24.083284898
       }
     },
     "Modelica.Electrical.Machines.Examples.SynchronousMachines.SMPM_Braking": {
@@ -3832,8 +3647,7 @@
       "stage_seconds": {
         "build": 0.577368839,
         "initialization": 0.003304909,
-        "run": 1.104695322,
-        "omc_wall_reference": 4.983
+        "run": 1.104695322
       }
     },
     "Modelica.Electrical.Machines.Examples.SynchronousMachines.SMPM_CurrentSource": {
@@ -3849,8 +3663,7 @@
       "stage_seconds": {
         "build": 1.140344736,
         "initialization": 0.003033842,
-        "run": 0.490718382,
-        "omc_wall_reference": 6.248
+        "run": 0.490718382
       }
     },
     "Modelica.Electrical.Machines.Examples.SynchronousMachines.SMPM_Inverter": {
@@ -3866,8 +3679,7 @@
       "stage_seconds": {
         "build": 0.875722583,
         "initialization": 0.007732674,
-        "run": 0.615831347,
-        "omc_wall_reference": 5.209
+        "run": 0.615831347
       }
     },
     "Modelica.Electrical.Machines.Examples.SynchronousMachines.SMPM_NoLoad": {
@@ -3883,8 +3695,7 @@
       "stage_seconds": {
         "build": 0.483030024,
         "initialization": 0.007274405,
-        "run": 0.064966947,
-        "omc_wall_reference": 2.852
+        "run": 0.064966947
       }
     },
     "Modelica.Electrical.Machines.Examples.SynchronousMachines.SMPM_ResistiveBraking": {
@@ -3900,8 +3711,7 @@
       "stage_seconds": {
         "build": 0.879885325,
         "initialization": 0.007027558,
-        "run": 0.079838234,
-        "omc_wall_reference": 3.674
+        "run": 0.079838234
       }
     },
     "Modelica.Electrical.Machines.Examples.SynchronousMachines.SMPM_VoltageSource": {
@@ -3917,8 +3727,7 @@
       "stage_seconds": {
         "build": 1.189965433,
         "initialization": 0.01135514,
-        "run": 0.735075154,
-        "omc_wall_reference": 7.373
+        "run": 0.735075154
       }
     },
     "Modelica.Electrical.Machines.Examples.SynchronousMachines.SMR_DOL": {
@@ -3934,8 +3743,7 @@
       "stage_seconds": {
         "build": 0.772431841,
         "initialization": 0.002153909,
-        "run": 0.496703013,
-        "omc_wall_reference": 3.364
+        "run": 0.496703013
       }
     },
     "Modelica.Electrical.Machines.Examples.SynchronousMachines.SMR_Inverter": {
@@ -3951,8 +3759,7 @@
       "stage_seconds": {
         "build": 0.646491705,
         "initialization": 0.002065255,
-        "run": 0.576413284,
-        "omc_wall_reference": 4.969
+        "run": 0.576413284
       }
     },
     "Modelica.Electrical.Machines.Examples.Transformers.AsymmetricalLoad": {
@@ -4038,8 +3845,7 @@
       "stage_seconds": {
         "build": 0.616403835,
         "initialization": 0.003534458,
-        "run": 1.829227409,
-        "omc_wall_reference": 13.656
+        "run": 1.829227409
       }
     },
     "Modelica.Electrical.Polyphase.Examples.Rectifier": {
@@ -4055,8 +3861,7 @@
       "stage_seconds": {
         "build": 0.260148184,
         "initialization": 0.001576057,
-        "run": 0.376288682,
-        "omc_wall_reference": 4.141
+        "run": 0.376288682
       }
     },
     "Modelica.Electrical.Polyphase.Examples.TestSensors": {
@@ -4072,8 +3877,7 @@
       "stage_seconds": {
         "build": 0.232461435,
         "initialization": 0.001241992,
-        "run": 0.024191595,
-        "omc_wall_reference": 2.316
+        "run": 0.024191595
       }
     },
     "Modelica.Electrical.Polyphase.Examples.TransformerYD": {
@@ -4089,8 +3893,7 @@
       "stage_seconds": {
         "build": 0.099801884,
         "initialization": 0.000603108,
-        "run": 0.008592626,
-        "omc_wall_reference": 1.863
+        "run": 0.008592626
       }
     },
     "Modelica.Electrical.Polyphase.Examples.TransformerYY": {
@@ -4106,8 +3909,7 @@
       "stage_seconds": {
         "build": 0.250729651,
         "initialization": 0.00129676,
-        "run": 0.031995649,
-        "omc_wall_reference": 4.653
+        "run": 0.031995649
       }
     },
     "Modelica.Electrical.PowerConverters.Examples.ACAC.Dimmer_R": {
@@ -4123,8 +3925,7 @@
       "stage_seconds": {
         "build": 0.125552831,
         "initialization": 0.00103404,
-        "run": 2.198270373,
-        "omc_wall_reference": 6.82
+        "run": 2.198270373
       }
     },
     "Modelica.Electrical.PowerConverters.Examples.ACAC.Dimmer_RL": {
@@ -4237,8 +4038,7 @@
       "stage_seconds": {
         "build": 0.047811855,
         "initialization": 0.000191492,
-        "run": 0.009874163,
-        "omc_wall_reference": 1.852
+        "run": 0.009874163
       }
     },
     "Modelica.Electrical.PowerConverters.Examples.ACDC.Rectifier1Pulse.Thyristor1Pulse_R_Characteristic": {
@@ -4254,8 +4054,7 @@
       "stage_seconds": {
         "build": 0.052045598,
         "initialization": 0.000260733,
-        "run": 0.879981375,
-        "omc_wall_reference": 3.307
+        "run": 0.879981375
       }
     },
     "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierBridge2Pulse.DiodeBridge2Pulse": {
@@ -4271,8 +4070,7 @@
       "stage_seconds": {
         "build": 0.050310745,
         "initialization": 0.000131631,
-        "run": 0.014257077,
-        "omc_wall_reference": 1.81
+        "run": 0.014257077
       }
     },
     "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierBridge2Pulse.HalfControlledBridge2Pulse": {
@@ -4288,8 +4086,7 @@
       "stage_seconds": {
         "build": 0.073462408,
         "initialization": 0.000458905,
-        "run": 0.021644771,
-        "omc_wall_reference": 2.137
+        "run": 0.021644771
       }
     },
     "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierBridge2Pulse.ThyristorBridge2Pulse_DC_Drive": {
@@ -4305,8 +4102,7 @@
       "stage_seconds": {
         "build": 0.280103097,
         "initialization": 0.001558547,
-        "run": 7.943358484,
-        "omc_wall_reference": 28.717
+        "run": 7.943358484
       }
     },
     "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierBridge2Pulse.ThyristorBridge2Pulse_R": {
@@ -4322,8 +4118,7 @@
       "stage_seconds": {
         "build": 0.168775835,
         "initialization": 0.000448548,
-        "run": 0.051997352,
-        "omc_wall_reference": 5.418
+        "run": 0.051997352
       }
     },
     "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierBridge2Pulse.ThyristorBridge2Pulse_RL": {
@@ -4339,8 +4134,7 @@
       "stage_seconds": {
         "build": 0.073521853,
         "initialization": 0.000390368,
-        "run": 0.026147095,
-        "omc_wall_reference": 2.177
+        "run": 0.026147095
       }
     },
     "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierBridge2Pulse.ThyristorBridge2Pulse_RLV": {
@@ -4356,8 +4150,7 @@
       "stage_seconds": {
         "build": 0.173918523,
         "initialization": 0.000616621,
-        "run": 0.073998235,
-        "omc_wall_reference": 5.695
+        "run": 0.073998235
       }
     },
     "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierBridge2Pulse.ThyristorBridge2Pulse_RLV_Characteristic": {
@@ -4373,8 +4166,7 @@
       "stage_seconds": {
         "build": 0.228497916,
         "initialization": 0.001353997,
-        "run": 7.053619311,
-        "omc_wall_reference": 15.539
+        "run": 7.053619311
       }
     },
     "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierBridge2mPulse.DiodeBridge2mPulse": {
@@ -4390,8 +4182,7 @@
       "stage_seconds": {
         "build": 0.112312082,
         "initialization": 0.000592225,
-        "run": 0.06039883,
-        "omc_wall_reference": 2.474
+        "run": 0.06039883
       }
     },
     "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierBridge2mPulse.HalfControlledBridge2mPulse": {
@@ -4407,8 +4198,7 @@
       "stage_seconds": {
         "build": 0.170571934,
         "initialization": 0.001093229,
-        "run": 0.129898526,
-        "omc_wall_reference": 3.047
+        "run": 0.129898526
       }
     },
     "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierBridge2mPulse.ThyristorBridge2mPulse_DC_Drive": {
@@ -4424,8 +4214,7 @@
       "stage_seconds": {
         "build": 0.590767361,
         "initialization": 0.003733234,
-        "run": 43.037528978,
-        "omc_wall_reference": 113.887
+        "run": 43.037528978
       }
     },
     "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierBridge2mPulse.ThyristorBridge2mPulse_R": {
@@ -4441,8 +4230,7 @@
       "stage_seconds": {
         "build": 0.171125458,
         "initialization": 0.001060979,
-        "run": 0.103340813,
-        "omc_wall_reference": 3.069
+        "run": 0.103340813
       }
     },
     "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierBridge2mPulse.ThyristorBridge2mPulse_RL": {
@@ -4458,8 +4246,7 @@
       "stage_seconds": {
         "build": 0.172646354,
         "initialization": 0.001049603,
-        "run": 0.093358894,
-        "omc_wall_reference": 2.906
+        "run": 0.093358894
       }
     },
     "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierBridge2mPulse.ThyristorBridge2mPulse_RLV": {
@@ -4475,8 +4262,7 @@
       "stage_seconds": {
         "build": 0.425978394,
         "initialization": 0.001160716,
-        "run": 0.356515242,
-        "omc_wall_reference": 7.159
+        "run": 0.356515242
       }
     },
     "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierBridge2mPulse.ThyristorBridge2mPulse_RLV_Characteristic": {
@@ -4492,8 +4278,7 @@
       "stage_seconds": {
         "build": 0.190163703,
         "initialization": 0.001425026,
-        "run": 12.365066696,
-        "omc_wall_reference": 15.142
+        "run": 12.365066696
       }
     },
     "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierCenterTap2Pulse.DiodeCenterTap2Pulse": {
@@ -4509,8 +4294,7 @@
       "stage_seconds": {
         "build": 0.046459005,
         "initialization": 0.000182418,
-        "run": 0.011508031,
-        "omc_wall_reference": 1.748
+        "run": 0.011508031
       }
     },
     "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierCenterTap2Pulse.ThyristorCenterTap2Pulse_R": {
@@ -4526,8 +4310,7 @@
       "stage_seconds": {
         "build": 0.067902102,
         "initialization": 0.000289023,
-        "run": 0.016555516,
-        "omc_wall_reference": 2.054
+        "run": 0.016555516
       }
     },
     "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierCenterTap2Pulse.ThyristorCenterTap2Pulse_RL": {
@@ -4543,8 +4326,7 @@
       "stage_seconds": {
         "build": 0.068433645,
         "initialization": 0.000194941,
-        "run": 0.019090365,
-        "omc_wall_reference": 2.046
+        "run": 0.019090365
       }
     },
     "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierCenterTap2Pulse.ThyristorCenterTap2Pulse_RLV": {
@@ -4560,8 +4342,7 @@
       "stage_seconds": {
         "build": 0.06837778,
         "initialization": 0.00026315,
-        "run": 0.020040886,
-        "omc_wall_reference": 2.159
+        "run": 0.020040886
       }
     },
     "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierCenterTap2Pulse.ThyristorCenterTap2Pulse_RLV_Characteristic": {
@@ -4577,8 +4358,7 @@
       "stage_seconds": {
         "build": 0.071502424,
         "initialization": 0.00045237,
-        "run": 1.84414452,
-        "omc_wall_reference": 4.805
+        "run": 1.84414452
       }
     },
     "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierCenterTap2mPulse.DiodeCenterTap2mPulse": {
@@ -4594,8 +4374,7 @@
       "stage_seconds": {
         "build": 0.127625201,
         "initialization": 0.000610593,
-        "run": 0.054131844,
-        "omc_wall_reference": 2.642
+        "run": 0.054131844
       }
     },
     "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierCenterTap2mPulse.ThyristorCenterTap2mPulse_R": {
@@ -4611,8 +4390,7 @@
       "stage_seconds": {
         "build": 0.486663902,
         "initialization": 0.002182764,
-        "run": 0.243061251,
-        "omc_wall_reference": 6.9
+        "run": 0.243061251
       }
     },
     "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierCenterTap2mPulse.ThyristorCenterTap2mPulse_RL": {
@@ -4628,8 +4406,7 @@
       "stage_seconds": {
         "build": 0.187506099,
         "initialization": 0.000705992,
-        "run": 0.096521079,
-        "omc_wall_reference": 3.008
+        "run": 0.096521079
       }
     },
     "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierCenterTap2mPulse.ThyristorCenterTap2mPulse_RLV": {
@@ -4645,8 +4422,7 @@
       "stage_seconds": {
         "build": 0.192982926,
         "initialization": 0.000517291,
-        "run": 0.090089785,
-        "omc_wall_reference": 2.901
+        "run": 0.090089785
       }
     },
     "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierCenterTap2mPulse.ThyristorCenterTap2mPulse_RLV_Characteristic": {
@@ -4662,8 +4438,7 @@
       "stage_seconds": {
         "build": 0.201854083,
         "initialization": 0.001410855,
-        "run": 9.856164344,
-        "omc_wall_reference": 14.495
+        "run": 9.856164344
       }
     },
     "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierCenterTapmPulse.DiodeCenterTapmPulse": {
@@ -4679,8 +4454,7 @@
       "stage_seconds": {
         "build": 0.07190941,
         "initialization": 0.000206012,
-        "run": 0.026850962,
-        "omc_wall_reference": 2.004
+        "run": 0.026850962
       }
     },
     "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierCenterTapmPulse.ThyristorCenterTapmPulse_R": {
@@ -4696,8 +4470,7 @@
       "stage_seconds": {
         "build": 0.312150485,
         "initialization": 0.000807237,
-        "run": 0.157901401,
-        "omc_wall_reference": 6.078
+        "run": 0.157901401
       }
     },
     "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierCenterTapmPulse.ThyristorCenterTapmPulse_RL": {
@@ -4713,8 +4486,7 @@
       "stage_seconds": {
         "build": 0.138352492,
         "initialization": 0.000564084,
-        "run": 0.079966704,
-        "omc_wall_reference": 2.461
+        "run": 0.079966704
       }
     },
     "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierCenterTapmPulse.ThyristorCenterTapmPulse_RLV": {
@@ -4730,8 +4502,7 @@
       "stage_seconds": {
         "build": 0.133299463,
         "initialization": 0.000788616,
-        "run": 0.050921577,
-        "omc_wall_reference": 2.361
+        "run": 0.050921577
       }
     },
     "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierCenterTapmPulse.ThyristorCenterTapmPulse_RLV_Characteristic": {
@@ -4747,8 +4518,7 @@
       "stage_seconds": {
         "build": 0.134781763,
         "initialization": 0.000962048,
-        "run": 5.760301264,
-        "omc_wall_reference": 9.479
+        "run": 5.760301264
       }
     },
     "Modelica.Electrical.PowerConverters.Examples.DCAC.ExampleTemplates.SinglePhaseTwoLevel": {
@@ -4774,8 +4544,7 @@
       "stage_seconds": {
         "build": 0.318701771,
         "initialization": 0.002388507,
-        "run": 0.504714809,
-        "omc_wall_reference": 4.674
+        "run": 0.504714809
       }
     },
     "Modelica.Electrical.PowerConverters.Examples.DCAC.PolyphaseTwoLevel.PolyphaseTwoLevel_RL": {
@@ -4791,8 +4560,7 @@
       "stage_seconds": {
         "build": 0.729717972,
         "initialization": 0.006953008,
-        "run": 1.752377834,
-        "omc_wall_reference": 9.652
+        "run": 1.752377834
       }
     },
     "Modelica.Electrical.PowerConverters.Examples.DCAC.PolyphaseTwoLevel.ThreePhaseTwoLevel_PWM": {
@@ -4808,8 +4576,7 @@
       "stage_seconds": {
         "build": 0.223597329,
         "initialization": 0.001832574,
-        "run": 0.899052458,
-        "omc_wall_reference": 3.928
+        "run": 0.899052458
       }
     },
     "Modelica.Electrical.PowerConverters.Examples.DCAC.SinglePhaseTwoLevel.SinglePhaseTwoLevel_R": {
@@ -4825,8 +4592,7 @@
       "stage_seconds": {
         "build": 0.09284827,
         "initialization": 0.000530161,
-        "run": 0.123728044,
-        "omc_wall_reference": 2.143
+        "run": 0.123728044
       }
     },
     "Modelica.Electrical.PowerConverters.Examples.DCAC.SinglePhaseTwoLevel.SinglePhaseTwoLevel_RL": {
@@ -4842,8 +4608,7 @@
       "stage_seconds": {
         "build": 0.096569834,
         "initialization": 0.000411486,
-        "run": 0.133225641,
-        "omc_wall_reference": 2.257
+        "run": 0.133225641
       }
     },
     "Modelica.Electrical.PowerConverters.Examples.DCDC.ChopperBuckBoost.ChopperBuckBoost_DutyCycle": {
@@ -4859,8 +4624,7 @@
       "stage_seconds": {
         "build": 0.096452837,
         "initialization": 0.000941003,
-        "run": 6.948888241,
-        "omc_wall_reference": 9.418
+        "run": 6.948888241
       }
     },
     "Modelica.Electrical.PowerConverters.Examples.DCDC.ChopperStepDown.ChopperStepDown_R": {
@@ -4876,8 +4640,7 @@
       "stage_seconds": {
         "build": 0.061189772,
         "initialization": 0.000387243,
-        "run": 0.126672316,
-        "omc_wall_reference": 2.221
+        "run": 0.126672316
       }
     },
     "Modelica.Electrical.PowerConverters.Examples.DCDC.ChopperStepDown.ChopperStepDown_RL": {
@@ -4893,8 +4656,7 @@
       "stage_seconds": {
         "build": 0.133173445,
         "initialization": 0.001002631,
-        "run": 0.348924798,
-        "omc_wall_reference": 5.643
+        "run": 0.348924798
       }
     },
     "Modelica.Electrical.PowerConverters.Examples.DCDC.ChopperStepUp.ChopperStepUp_R": {
@@ -4910,8 +4672,7 @@
       "stage_seconds": {
         "build": 0.057933975,
         "initialization": 0.000432282,
-        "run": 0.11556914,
-        "omc_wall_reference": 2.224
+        "run": 0.11556914
       }
     },
     "Modelica.Electrical.PowerConverters.Examples.DCDC.ExampleTemplates.ChopperBuckBoost": {
@@ -4982,8 +4743,7 @@
       "stage_seconds": {
         "build": 0.235892056,
         "initialization": 0.001301799,
-        "run": 0.209344796,
-        "omc_wall_reference": 5.836
+        "run": 0.209344796
       }
     },
     "Modelica.Electrical.PowerConverters.Examples.DCDC.HBridge.HBridge_RL": {
@@ -4999,8 +4759,7 @@
       "stage_seconds": {
         "build": 0.098839311,
         "initialization": 0.000579401,
-        "run": 0.144177226,
-        "omc_wall_reference": 2.496
+        "run": 0.144177226
       }
     },
     "Modelica.Electrical.PowerConverters.Examples.DCDC.HBridge.HBridge_TrianglePWM_RL": {
@@ -5016,8 +4775,7 @@
       "stage_seconds": {
         "build": 0.116551748,
         "initialization": 0.000942138,
-        "run": 0.235123924,
-        "omc_wall_reference": 2.655
+        "run": 0.235123924
       }
     },
     "Modelica.Electrical.QuasiStatic.Machines.Examples.TransformerTestbench": {
@@ -5047,8 +4805,7 @@
       "stage_seconds": {
         "build": 1.074491059,
         "initialization": 0.002025826,
-        "run": 0.039325406,
-        "omc_wall_reference": 2.77
+        "run": 0.039325406
       }
     },
     "Modelica.Electrical.QuasiStatic.Polyphase.Examples.BalancingStar": {
@@ -5064,8 +4821,7 @@
       "stage_seconds": {
         "build": 1.7138418450000001,
         "initialization": 0.002216824,
-        "run": 0.03305705,
-        "omc_wall_reference": 2.946
+        "run": 0.03305705
       }
     },
     "Modelica.Electrical.QuasiStatic.Polyphase.Examples.TestSensors": {
@@ -5081,8 +4837,7 @@
       "stage_seconds": {
         "build": 4.122498435,
         "initialization": 0.00457504,
-        "run": 0.084344833,
-        "omc_wall_reference": 4.938
+        "run": 0.084344833
       }
     },
     "Modelica.Electrical.QuasiStatic.Polyphase.Examples.UnsymmetricalLoad": {
@@ -5098,8 +4853,7 @@
       "stage_seconds": {
         "build": 2.196932563,
         "initialization": 0.003427422,
-        "run": 0.069731504,
-        "omc_wall_reference": 3.965
+        "run": 0.069731504
       }
     },
     "Modelica.Electrical.QuasiStatic.SinglePhase.Examples.MultipleResonance": {
@@ -5115,8 +4869,7 @@
       "stage_seconds": {
         "build": 0.173892257,
         "initialization": 0.000460022,
-        "run": 0.184088499,
-        "omc_wall_reference": 2.467
+        "run": 0.184088499
       }
     },
     "Modelica.Electrical.QuasiStatic.SinglePhase.Examples.ParallelResonance": {
@@ -5132,8 +4885,7 @@
       "stage_seconds": {
         "build": 0.102233563,
         "initialization": 0.000310673,
-        "run": 0.010269638,
-        "omc_wall_reference": 1.837
+        "run": 0.010269638
       }
     },
     "Modelica.Electrical.QuasiStatic.SinglePhase.Examples.Rectifier": {
@@ -5149,8 +4901,7 @@
       "stage_seconds": {
         "build": 0.3403983,
         "initialization": 0.001597993,
-        "run": 2.024155691,
-        "omc_wall_reference": 7.907
+        "run": 2.024155691
       }
     },
     "Modelica.Electrical.QuasiStatic.SinglePhase.Examples.SeriesBode": {
@@ -5179,8 +4930,7 @@
       "stage_seconds": {
         "build": 0.210536411,
         "initialization": 0.00069079,
-        "run": 0.018336494,
-        "omc_wall_reference": 4.506
+        "run": 0.018336494
       }
     },
     "Modelica.Electrical.QuasiStatic.SinglePhase.Examples.Transformer": {
@@ -5196,8 +4946,7 @@
       "stage_seconds": {
         "build": 0.153718666,
         "initialization": 0.000442337,
-        "run": 0.006291401,
-        "omc_wall_reference": 1.805
+        "run": 0.006291401
       }
     },
     "Modelica.Electrical.Spice3.Examples.CascodeCircuit": {
@@ -5228,8 +4977,7 @@
       "stage_seconds": {
         "build": 0.040352246,
         "initialization": 0.000194072,
-        "run": 0.043843325,
-        "omc_wall_reference": 1.672
+        "run": 0.043843325
       }
     },
     "Modelica.Electrical.Spice3.Examples.FourInverters": {
@@ -5420,8 +5168,7 @@
       "stage_seconds": {
         "build": 0.265351998,
         "initialization": 0.001710466,
-        "run": 0.461955071,
-        "omc_wall_reference": 2.764
+        "run": 0.461955071
       }
     },
     "Modelica.Fluid.Examples.AST_BatchPlant.Test.TankWithEmptyingPipe1": {
@@ -5437,8 +5184,7 @@
       "stage_seconds": {
         "build": 0.66850196,
         "initialization": 0.028547743,
-        "run": 0.064101453,
-        "omc_wall_reference": 7.286
+        "run": 0.064101453
       }
     },
     "Modelica.Fluid.Examples.AST_BatchPlant.Test.TankWithEmptyingPipe2": {
@@ -5454,8 +5200,7 @@
       "stage_seconds": {
         "build": 0.339860169,
         "initialization": 0.005371969,
-        "run": 0.039235104,
-        "omc_wall_reference": 2.843
+        "run": 0.039235104
       }
     },
     "Modelica.Fluid.Examples.AST_BatchPlant.Test.TanksWithEmptyingPipe1": {
@@ -5471,8 +5216,7 @@
       "stage_seconds": {
         "build": 1.053361688,
         "initialization": 0.064259919,
-        "run": 0.319433881,
-        "omc_wall_reference": 9.084
+        "run": 0.319433881
       }
     },
     "Modelica.Fluid.Examples.AST_BatchPlant.Test.TanksWithEmptyingPipe2": {
@@ -5488,8 +5232,7 @@
       "stage_seconds": {
         "build": 0.60444612,
         "initialization": 0.039960313,
-        "run": 0.102658666,
-        "omc_wall_reference": 4.844
+        "run": 0.102658666
       }
     },
     "Modelica.Fluid.Examples.AST_BatchPlant.Test.TwoTanks": {
@@ -5505,8 +5248,7 @@
       "stage_seconds": {
         "build": 0.648979024,
         "initialization": 0.010767607,
-        "run": 0.057573218,
-        "omc_wall_reference": 6.465
+        "run": 0.057573218
       }
     },
     "Modelica.Fluid.Examples.BranchingDynamicPipes": {
@@ -5535,8 +5277,7 @@
       "stage_seconds": {
         "build": 0.369313451,
         "initialization": 0.001178126,
-        "run": 0.17969095,
-        "omc_wall_reference": 4.532
+        "run": 0.17969095
       }
     },
     "Modelica.Fluid.Examples.DrumBoiler.DrumBoiler": {
@@ -5675,8 +5416,7 @@
       "stage_seconds": {
         "build": 0.309839639,
         "initialization": 0.000887784,
-        "run": 0.031110156,
-        "omc_wall_reference": 2.968
+        "run": 0.031110156
       }
     },
     "Modelica.Fluid.Examples.Tanks.TanksWithOverflow": {
@@ -5707,8 +5447,7 @@
       "stage_seconds": {
         "build": 0.494371302,
         "initialization": 0.002855543,
-        "run": 2.179206271,
-        "omc_wall_reference": 4.06
+        "run": 2.179206271
       }
     },
     "Modelica.Fluid.Examples.TraceSubstances.RoomCO2": {
@@ -5724,8 +5463,7 @@
       "stage_seconds": {
         "build": 11.032215289,
         "initialization": 0.002156041,
-        "run": 0.111972777,
-        "omc_wall_reference": 4.747
+        "run": 0.111972777
       }
     },
     "Modelica.Fluid.Examples.TraceSubstances.RoomCO2WithControls": {
@@ -5770,8 +5508,7 @@
       "stage_seconds": {
         "build": 0.033311063,
         "initialization": 0.000240672,
-        "run": 0.012614312,
-        "omc_wall_reference": 2.025
+        "run": 0.012614312
       }
     },
     "Modelica.Magnetic.FluxTubes.Examples.BasicExamples.ToroidalCoreAirgap": {
@@ -5787,8 +5524,7 @@
       "stage_seconds": {
         "build": 0.047260373,
         "initialization": 0.000113056,
-        "run": 0.001731123,
-        "omc_wall_reference": 1.83
+        "run": 0.001731123
       }
     },
     "Modelica.Magnetic.FluxTubes.Examples.BasicExamples.ToroidalCoreQuadraticCrossSection": {
@@ -5804,8 +5540,7 @@
       "stage_seconds": {
         "build": 0.044299852,
         "initialization": 3.7481e-05,
-        "run": 0.00175455,
-        "omc_wall_reference": 1.598
+        "run": 0.00175455
       }
     },
     "Modelica.Magnetic.FluxTubes.Examples.Hysteresis.Components.Transformer1PhaseWithHysteresis": {
@@ -5912,8 +5647,7 @@
       "stage_seconds": {
         "build": 0.523583443,
         "initialization": 0.001556165,
-        "run": 0.23381034,
-        "omc_wall_reference": 6.511
+        "run": 0.23381034
       }
     },
     "Modelica.Magnetic.FluxTubes.Examples.MovingCoilActuator.Components.ConstantActuator": {
@@ -5985,8 +5719,7 @@
       "stage_seconds": {
         "build": 1.5959651369999999,
         "initialization": 0.006345093,
-        "run": 12.057206611,
-        "omc_wall_reference": 18.272
+        "run": 12.057206611
       }
     },
     "Modelica.Magnetic.FluxTubes.Examples.SolenoidActuator.ComparisonQuasiStatic": {
@@ -6101,8 +5834,7 @@
       "stage_seconds": {
         "build": 3.236773585,
         "initialization": 0.017530971,
-        "run": 9.102722195,
-        "omc_wall_reference": 25.518
+        "run": 9.102722195
       }
     },
     "Modelica.Magnetic.FundamentalWave.Examples.BasicMachines.InductionMachines.IMC_Initialize": {
@@ -6118,8 +5850,7 @@
       "stage_seconds": {
         "build": 3.324336606,
         "initialization": 0.012946613,
-        "run": 2.325175737,
-        "omc_wall_reference": 16.453
+        "run": 2.325175737
       }
     },
     "Modelica.Magnetic.FundamentalWave.Examples.BasicMachines.InductionMachines.IMC_Inverter": {
@@ -6135,8 +5866,7 @@
       "stage_seconds": {
         "build": 1.689877279,
         "initialization": 0.003741386,
-        "run": 1.801282714,
-        "omc_wall_reference": 6.065
+        "run": 1.801282714
       }
     },
     "Modelica.Magnetic.FundamentalWave.Examples.BasicMachines.InductionMachines.IMC_Steinmetz": {
@@ -6152,8 +5882,7 @@
       "stage_seconds": {
         "build": 1.833413319,
         "initialization": 0.011822647,
-        "run": 3.717631282,
-        "omc_wall_reference": 13.21
+        "run": 3.717631282
       }
     },
     "Modelica.Magnetic.FundamentalWave.Examples.BasicMachines.InductionMachines.IMC_Transformer": {
@@ -6183,8 +5912,7 @@
       "stage_seconds": {
         "build": 0.851765853,
         "initialization": 0.004623001,
-        "run": 3.173220749,
-        "omc_wall_reference": 10.503
+        "run": 3.173220749
       }
     },
     "Modelica.Magnetic.FundamentalWave.Examples.BasicMachines.InductionMachines.IMC_withLosses": {
@@ -6200,8 +5928,7 @@
       "stage_seconds": {
         "build": 2.642648457,
         "initialization": 0.0177123,
-        "run": 9.741730422,
-        "omc_wall_reference": 38.294
+        "run": 9.741730422
       }
     },
     "Modelica.Magnetic.FundamentalWave.Examples.BasicMachines.InductionMachines.IMS_Start": {
@@ -6217,8 +5944,7 @@
       "stage_seconds": {
         "build": 2.049880928,
         "initialization": 0.010113784,
-        "run": 4.971289775,
-        "omc_wall_reference": 13.14
+        "run": 4.971289775
       }
     },
     "Modelica.Magnetic.FundamentalWave.Examples.BasicMachines.SynchronousMachines.ComparisonPolyphase.SMEE_Generator_Polyphase": {
@@ -6279,8 +6005,7 @@
       "stage_seconds": {
         "build": 2.120071345,
         "initialization": 0.014240611,
-        "run": 4.991791078,
-        "omc_wall_reference": 10.892
+        "run": 4.991791078
       }
     },
     "Modelica.Magnetic.FundamentalWave.Examples.BasicMachines.SynchronousMachines.SMEE_Generator": {
@@ -6296,8 +6021,7 @@
       "stage_seconds": {
         "build": 5.402022031,
         "initialization": 0.022182881,
-        "run": 24.169289599,
-        "omc_wall_reference": 16.312
+        "run": 24.169289599
       }
     },
     "Modelica.Magnetic.FundamentalWave.Examples.BasicMachines.SynchronousMachines.SMEE_LoadDump": {
@@ -6343,8 +6067,7 @@
       "stage_seconds": {
         "build": 0.689778905,
         "initialization": 0.005658174,
-        "run": 2.1627980669999998,
-        "omc_wall_reference": 5.302
+        "run": 2.1627980669999998
       }
     },
     "Modelica.Magnetic.FundamentalWave.Examples.BasicMachines.SynchronousMachines.SMPM_CurrentSource": {
@@ -6360,8 +6083,7 @@
       "stage_seconds": {
         "build": 1.941099701,
         "initialization": 0.003680426,
-        "run": 0.557828343,
-        "omc_wall_reference": 7.291
+        "run": 0.557828343
       }
     },
     "Modelica.Magnetic.FundamentalWave.Examples.BasicMachines.SynchronousMachines.SMPM_Inverter": {
@@ -6377,8 +6099,7 @@
       "stage_seconds": {
         "build": 11.660188781,
         "initialization": 0.018656322,
-        "run": 5.967004247,
-        "omc_wall_reference": 24.75
+        "run": 5.967004247
       }
     },
     "Modelica.Magnetic.FundamentalWave.Examples.BasicMachines.SynchronousMachines.SMPM_VoltageSource": {
@@ -6394,8 +6115,7 @@
       "stage_seconds": {
         "build": 4.543046542,
         "initialization": 0.011350094,
-        "run": 5.845564942,
-        "omc_wall_reference": 20.149
+        "run": 5.845564942
       }
     },
     "Modelica.Magnetic.FundamentalWave.Examples.BasicMachines.SynchronousMachines.SMR_Inverter": {
@@ -6411,8 +6131,7 @@
       "stage_seconds": {
         "build": 4.191250646,
         "initialization": 0.007016967,
-        "run": 2.459101514,
-        "omc_wall_reference": 9.605
+        "run": 2.459101514
       }
     },
     "Modelica.Magnetic.FundamentalWave.Examples.Components.EddyCurrentLosses": {
@@ -6428,8 +6147,7 @@
       "stage_seconds": {
         "build": 0.461341432,
         "initialization": 0.00203253,
-        "run": 0.622194162,
-        "omc_wall_reference": 3.294
+        "run": 0.622194162
       }
     },
     "Modelica.Magnetic.FundamentalWave.Examples.Components.PolyphaseInductance": {
@@ -6445,8 +6163,7 @@
       "stage_seconds": {
         "build": 0.629517905,
         "initialization": 0.00235242,
-        "run": 1.854027476,
-        "omc_wall_reference": 4.284
+        "run": 1.854027476
       }
     },
     "Modelica.Magnetic.FundamentalWave.Examples.Components.SinglePhaseInductance": {
@@ -6462,8 +6179,7 @@
       "stage_seconds": {
         "build": 0.0803597,
         "initialization": 0.000384353,
-        "run": 0.359294191,
-        "omc_wall_reference": 1.807
+        "run": 0.359294191
       }
     },
     "Modelica.Magnetic.QuasiStatic.FluxTubes.Examples.BasicExamples.QuadraticCoreAirgap": {
@@ -6479,8 +6195,7 @@
       "stage_seconds": {
         "build": 0.679103929,
         "initialization": 0.000300962,
-        "run": 0.027086025,
-        "omc_wall_reference": 6.136
+        "run": 0.027086025
       }
     },
     "Modelica.Magnetic.QuasiStatic.FluxTubes.Examples.BasicExamples.ToroidalCoreAirgap": {
@@ -6496,8 +6211,7 @@
       "stage_seconds": {
         "build": 0.193629577,
         "initialization": 0.000324039,
-        "run": 0.005142636,
-        "omc_wall_reference": 2.023
+        "run": 0.005142636
       }
     },
     "Modelica.Magnetic.QuasiStatic.FluxTubes.Examples.BasicExamples.ToroidalCoreQuadraticCrossSection": {
@@ -6513,8 +6227,7 @@
       "stage_seconds": {
         "build": 0.197437493,
         "initialization": 0.000358263,
-        "run": 0.005315881,
-        "omc_wall_reference": 2.081
+        "run": 0.005315881
       }
     },
     "Modelica.Magnetic.QuasiStatic.FluxTubes.Examples.FixedShapes.CuboidSections": {
@@ -6530,8 +6243,7 @@
       "stage_seconds": {
         "build": 0.148184662,
         "initialization": 0.000415768,
-        "run": 0.015082939,
-        "omc_wall_reference": 2.187
+        "run": 0.015082939
       }
     },
     "Modelica.Magnetic.QuasiStatic.FluxTubes.Examples.FixedShapes.CylinderSections": {
@@ -6547,8 +6259,7 @@
       "stage_seconds": {
         "build": 0.141240334,
         "initialization": 0.000327144,
-        "run": 0.004313804,
-        "omc_wall_reference": 1.898
+        "run": 0.004313804
       }
     },
     "Modelica.Magnetic.QuasiStatic.FluxTubes.Examples.Leakage.CylinderLeakage": {
@@ -6564,8 +6275,7 @@
       "stage_seconds": {
         "build": 0.182752854,
         "initialization": 0.000469693,
-        "run": 0.013291916,
-        "omc_wall_reference": 2.122
+        "run": 0.013291916
       }
     },
     "Modelica.Magnetic.QuasiStatic.FluxTubes.Examples.Leakage.GeneralLeakage": {
@@ -6581,8 +6291,7 @@
       "stage_seconds": {
         "build": 0.054611174,
         "initialization": 0.000173052,
-        "run": 0.005728091,
-        "omc_wall_reference": 1.6
+        "run": 0.005728091
       }
     },
     "Modelica.Magnetic.QuasiStatic.FluxTubes.Examples.LinearInductor": {
@@ -6598,8 +6307,7 @@
       "stage_seconds": {
         "build": 0.466882462,
         "initialization": 0.000812326,
-        "run": 0.06080942,
-        "omc_wall_reference": 6.333
+        "run": 0.06080942
       }
     },
     "Modelica.Magnetic.QuasiStatic.FluxTubes.Examples.NonLinearInductor": {
@@ -6615,8 +6323,7 @@
       "stage_seconds": {
         "build": 0.289949103,
         "initialization": 0.000963832,
-        "run": 0.170147139,
-        "omc_wall_reference": 3.328
+        "run": 0.170147139
       }
     },
     "Modelica.Magnetic.QuasiStatic.FundamentalWave.Examples.BasicMachines.InductionMachines.IMC_Characteristics": {
@@ -6928,8 +6635,7 @@
       "stage_seconds": {
         "build": 0.025232129,
         "initialization": 1.9978e-05,
-        "run": 0.000529248,
-        "omc_wall_reference": 1.414
+        "run": 0.000529248
       }
     },
     "Modelica.Math.Random.Examples.GenerateRandomNumbers": {
@@ -6945,8 +6651,7 @@
       "stage_seconds": {
         "build": 0.075662844,
         "initialization": 9.5905e-05,
-        "run": 0.002264089,
-        "omc_wall_reference": 1.462
+        "run": 0.002264089
       }
     },
     "Modelica.Mechanics.MultiBody.Examples.Constraints.PrismaticConstraint": {
@@ -6962,8 +6667,7 @@
       "stage_seconds": {
         "build": 2.556527232,
         "initialization": 0.02569878,
-        "run": 0.208910053,
-        "omc_wall_reference": 6.612
+        "run": 0.208910053
       }
     },
     "Modelica.Mechanics.MultiBody.Examples.Constraints.RevoluteConstraint": {
@@ -6979,8 +6683,7 @@
       "stage_seconds": {
         "build": 2.406761833,
         "initialization": 0.019150935,
-        "run": 1.156260722,
-        "omc_wall_reference": 6.692
+        "run": 1.156260722
       }
     },
     "Modelica.Mechanics.MultiBody.Examples.Constraints.SphericalConstraint": {
@@ -6996,8 +6699,7 @@
       "stage_seconds": {
         "build": 1.49929863,
         "initialization": 0.005265369,
-        "run": 0.140548269,
-        "omc_wall_reference": 5.844
+        "run": 0.140548269
       }
     },
     "Modelica.Mechanics.MultiBody.Examples.Constraints.UniversalConstraint": {
@@ -7013,8 +6715,7 @@
       "stage_seconds": {
         "build": 2.69067168,
         "initialization": 0.024007178,
-        "run": 1.35024564,
-        "omc_wall_reference": 7.011
+        "run": 1.35024564
       }
     },
     "Modelica.Mechanics.MultiBody.Examples.Elementary.DoublePendulum": {
@@ -7030,8 +6731,7 @@
       "stage_seconds": {
         "build": 1.771254482,
         "initialization": 0.005430876,
-        "run": 0.251467786,
-        "omc_wall_reference": 9.657
+        "run": 0.251467786
       }
     },
     "Modelica.Mechanics.MultiBody.Examples.Elementary.DoublePendulumInitTip": {
@@ -7047,8 +6747,7 @@
       "stage_seconds": {
         "build": 0.87048469,
         "initialization": 0.005412267,
-        "run": 0.1405257,
-        "omc_wall_reference": 4.574
+        "run": 0.1405257
       }
     },
     "Modelica.Mechanics.MultiBody.Examples.Elementary.ForceAndTorque": {
@@ -7064,8 +6763,7 @@
       "stage_seconds": {
         "build": 1.76989942,
         "initialization": 0.006424872,
-        "run": 0.106569639,
-        "omc_wall_reference": 9.293
+        "run": 0.106569639
       }
     },
     "Modelica.Mechanics.MultiBody.Examples.Elementary.FreeBody": {
@@ -7081,8 +6779,7 @@
       "stage_seconds": {
         "build": 0.579824663,
         "initialization": 0.001986803,
-        "run": 0.070143394,
-        "omc_wall_reference": 4.009
+        "run": 0.070143394
       }
     },
     "Modelica.Mechanics.MultiBody.Examples.Elementary.HeatLosses": {
@@ -7098,8 +6795,7 @@
       "stage_seconds": {
         "build": 2.8089662349999998,
         "initialization": 0.009882205,
-        "run": 0.247345786,
-        "omc_wall_reference": 14.428
+        "run": 0.247345786
       }
     },
     "Modelica.Mechanics.MultiBody.Examples.Elementary.InitSpringConstant": {
@@ -7115,8 +6811,7 @@
       "stage_seconds": {
         "build": 0.54665303,
         "initialization": 0.002115508,
-        "run": 0.020911351,
-        "omc_wall_reference": 3.578
+        "run": 0.020911351
       }
     },
     "Modelica.Mechanics.MultiBody.Examples.Elementary.LineForceWithTwoMasses": {
@@ -7132,8 +6827,7 @@
       "stage_seconds": {
         "build": 1.863473063,
         "initialization": 0.004831414,
-        "run": 0.174333968,
-        "omc_wall_reference": 6.82
+        "run": 0.174333968
       }
     },
     "Modelica.Mechanics.MultiBody.Examples.Elementary.Pendulum": {
@@ -7149,8 +6843,7 @@
       "stage_seconds": {
         "build": 0.432634615,
         "initialization": 0.001348192,
-        "run": 0.020395237,
-        "omc_wall_reference": 3.094
+        "run": 0.020395237
       }
     },
     "Modelica.Mechanics.MultiBody.Examples.Elementary.PendulumWithSpringDamper": {
@@ -7166,8 +6859,7 @@
       "stage_seconds": {
         "build": 0.611336198,
         "initialization": 0.002070554,
-        "run": 0.045882719,
-        "omc_wall_reference": 3.82
+        "run": 0.045882719
       }
     },
     "Modelica.Mechanics.MultiBody.Examples.Elementary.PointGravity": {
@@ -7183,8 +6875,7 @@
       "stage_seconds": {
         "build": 0.539314909,
         "initialization": 0.002024402,
-        "run": 0.077572911,
-        "omc_wall_reference": 4.005
+        "run": 0.077572911
       }
     },
     "Modelica.Mechanics.MultiBody.Examples.Elementary.PointGravityWithPointMasses": {
@@ -7200,8 +6891,7 @@
       "stage_seconds": {
         "build": 0.308493846,
         "initialization": 0.001962686,
-        "run": 0.067559982,
-        "omc_wall_reference": 3.229
+        "run": 0.067559982
       }
     },
     "Modelica.Mechanics.MultiBody.Examples.Elementary.PointGravityWithPointMasses2": {
@@ -7217,8 +6907,7 @@
       "stage_seconds": {
         "build": 2.706884604,
         "initialization": 0.07421466,
-        "run": 0.598200802,
-        "omc_wall_reference": 8.486
+        "run": 0.598200802
       }
     },
     "Modelica.Mechanics.MultiBody.Examples.Elementary.RollingWheel": {
@@ -7234,8 +6923,7 @@
       "stage_seconds": {
         "build": 0.725432363,
         "initialization": 0.001780885,
-        "run": 0.175501861,
-        "omc_wall_reference": 4.127
+        "run": 0.175501861
       }
     },
     "Modelica.Mechanics.MultiBody.Examples.Elementary.RollingWheelSetDriving": {
@@ -7251,8 +6939,7 @@
       "stage_seconds": {
         "build": 1.574262777,
         "initialization": 0.005294532,
-        "run": 0.539020551,
-        "omc_wall_reference": 6.086
+        "run": 0.539020551
       }
     },
     "Modelica.Mechanics.MultiBody.Examples.Elementary.RollingWheelSetPulling": {
@@ -7268,8 +6955,7 @@
       "stage_seconds": {
         "build": 1.665650763,
         "initialization": 0.004931339,
-        "run": 0.213297995,
-        "omc_wall_reference": 6.884
+        "run": 0.213297995
       }
     },
     "Modelica.Mechanics.MultiBody.Examples.Elementary.SpringDamperSystem": {
@@ -7285,8 +6971,7 @@
       "stage_seconds": {
         "build": 0.913681115,
         "initialization": 0.002683348,
-        "run": 0.081441377,
-        "omc_wall_reference": 4.511
+        "run": 0.081441377
       }
     },
     "Modelica.Mechanics.MultiBody.Examples.Elementary.SpringMassSystem": {
@@ -7302,8 +6987,7 @@
       "stage_seconds": {
         "build": 0.707723537,
         "initialization": 0.002721434,
-        "run": 0.038597248,
-        "omc_wall_reference": 3.732
+        "run": 0.038597248
       }
     },
     "Modelica.Mechanics.MultiBody.Examples.Elementary.SpringWithMass": {
@@ -7319,8 +7003,7 @@
       "stage_seconds": {
         "build": 1.191029172,
         "initialization": 0.004829404,
-        "run": 0.115595458,
-        "omc_wall_reference": 8.508
+        "run": 0.115595458
       }
     },
     "Modelica.Mechanics.MultiBody.Examples.Elementary.Surfaces": {
@@ -7336,8 +7019,7 @@
       "stage_seconds": {
         "build": 0.312880763,
         "initialization": 0.001940313,
-        "run": 0.038966614,
-        "omc_wall_reference": 3.095
+        "run": 0.038966614
       }
     },
     "Modelica.Mechanics.MultiBody.Examples.Elementary.ThreeSprings": {
@@ -7353,8 +7035,7 @@
       "stage_seconds": {
         "build": 0.658730333,
         "initialization": 0.003379517,
-        "run": 0.25202882,
-        "omc_wall_reference": 4.578
+        "run": 0.25202882
       }
     },
     "Modelica.Mechanics.MultiBody.Examples.Elementary.UserDefinedGravityField": {
@@ -7370,8 +7051,7 @@
       "stage_seconds": {
         "build": 0.450802812,
         "initialization": 0.001385199,
-        "run": 0.019551965,
-        "omc_wall_reference": 3.248
+        "run": 0.019551965
       }
     },
     "Modelica.Mechanics.MultiBody.Examples.Loops.Engine1a": {
@@ -7387,8 +7067,7 @@
       "stage_seconds": {
         "build": 4.333921473,
         "initialization": 0.013314331,
-        "run": 0.782005624,
-        "omc_wall_reference": 16.957
+        "run": 0.782005624
       }
     },
     "Modelica.Mechanics.MultiBody.Examples.Loops.Engine1b": {
@@ -7404,8 +7083,7 @@
       "stage_seconds": {
         "build": 2.069986621,
         "initialization": 0.039362693,
-        "run": 0.52821103,
-        "omc_wall_reference": 7.503
+        "run": 0.52821103
       }
     },
     "Modelica.Mechanics.MultiBody.Examples.Loops.Engine1b_analytic": {
@@ -7421,8 +7099,7 @@
       "stage_seconds": {
         "build": 16.991607024,
         "initialization": 0.12876307,
-        "run": 1.371589246,
-        "omc_wall_reference": 18.316
+        "run": 1.371589246
       }
     },
     "Modelica.Mechanics.MultiBody.Examples.Loops.EngineV6": {
@@ -7464,8 +7141,7 @@
       "stage_seconds": {
         "build": 1.9208132359999999,
         "initialization": 0.022725299,
-        "run": 0.286543985,
-        "omc_wall_reference": 14.521
+        "run": 0.286543985
       }
     },
     "Modelica.Mechanics.MultiBody.Examples.Loops.Fourbar2": {
@@ -7481,8 +7157,7 @@
       "stage_seconds": {
         "build": 1.480547573,
         "initialization": 0.022480672,
-        "run": 0.172242692,
-        "omc_wall_reference": 5.705
+        "run": 0.172242692
       }
     },
     "Modelica.Mechanics.MultiBody.Examples.Loops.Fourbar_analytic": {
@@ -7498,8 +7173,7 @@
       "stage_seconds": {
         "build": 1.953109522,
         "initialization": 0.039574573,
-        "run": 0.173398737,
-        "omc_wall_reference": 4.704
+        "run": 0.173398737
       }
     },
     "Modelica.Mechanics.MultiBody.Examples.Loops.PlanarFourbar": {
@@ -7515,8 +7189,7 @@
       "stage_seconds": {
         "build": 1.619877668,
         "initialization": 0.005049785,
-        "run": 0.358540911,
-        "omc_wall_reference": 7.87
+        "run": 0.358540911
       }
     },
     "Modelica.Mechanics.MultiBody.Examples.Loops.PlanarLoops_analytic": {
@@ -7546,8 +7219,7 @@
       "stage_seconds": {
         "build": 0.636015793,
         "initialization": 0.002434067,
-        "run": 0.022609572,
-        "omc_wall_reference": 3.885
+        "run": 0.022609572
       }
     },
     "Modelica.Mechanics.MultiBody.Examples.Rotational3DEffects.BevelGear1D": {
@@ -7563,8 +7235,7 @@
       "stage_seconds": {
         "build": 2.414787574,
         "initialization": 0.009706547,
-        "run": 4.105403547,
-        "omc_wall_reference": 13.909
+        "run": 4.105403547
       }
     },
     "Modelica.Mechanics.MultiBody.Examples.Rotational3DEffects.GearConstraint": {
@@ -7580,8 +7251,7 @@
       "stage_seconds": {
         "build": 2.910930039,
         "initialization": 0.007870139,
-        "run": 0.208475612,
-        "omc_wall_reference": 10.277
+        "run": 0.208475612
       }
     },
     "Modelica.Mechanics.MultiBody.Examples.Rotational3DEffects.GyroscopicEffects": {
@@ -7597,8 +7267,7 @@
       "stage_seconds": {
         "build": 2.096634549,
         "initialization": 0.048745576,
-        "run": 0.835637817,
-        "omc_wall_reference": 8.652
+        "run": 0.835637817
       }
     },
     "Modelica.Mechanics.MultiBody.Examples.Rotational3DEffects.MovingActuatedDrive": {
@@ -7614,8 +7283,7 @@
       "stage_seconds": {
         "build": 0.801740953,
         "initialization": 0.003081491,
-        "run": 0.034985016,
-        "omc_wall_reference": 4.776
+        "run": 0.034985016
       }
     },
     "Modelica.Mechanics.MultiBody.Examples.Systems.RobotR3.FullRobot": {
@@ -7658,8 +7326,7 @@
       "stage_seconds": {
         "build": 0.072642478,
         "initialization": 0.000377697,
-        "run": 0.0189596,
-        "omc_wall_reference": 1.682
+        "run": 0.0189596
       }
     },
     "Modelica.Mechanics.Rotational.Examples.CompareBrakingTorque": {
@@ -7675,8 +7342,7 @@
       "stage_seconds": {
         "build": 0.024899231,
         "initialization": 0.000121213,
-        "run": 0.053950602,
-        "omc_wall_reference": 2.337
+        "run": 0.053950602
       }
     },
     "Modelica.Mechanics.Rotational.Examples.CoupledClutches": {
@@ -7706,8 +7372,7 @@
       "stage_seconds": {
         "build": 0.032595358,
         "initialization": 0.000161562,
-        "run": 0.003179234,
-        "omc_wall_reference": 3.711
+        "run": 0.003179234
       }
     },
     "Modelica.Mechanics.Rotational.Examples.ElasticBearing": {
@@ -7723,8 +7388,7 @@
       "stage_seconds": {
         "build": 0.057791256,
         "initialization": 0.00037012,
-        "run": 0.053658292,
-        "omc_wall_reference": 3.902
+        "run": 0.053658292
       }
     },
     "Modelica.Mechanics.Rotational.Examples.First": {
@@ -7740,8 +7404,7 @@
       "stage_seconds": {
         "build": 0.035266086,
         "initialization": 0.000253352,
-        "run": 0.005961851,
-        "omc_wall_reference": 1.695
+        "run": 0.005961851
       }
     },
     "Modelica.Mechanics.Rotational.Examples.FirstGrounded": {
@@ -7757,8 +7420,7 @@
       "stage_seconds": {
         "build": 0.03161756,
         "initialization": 0.000201517,
-        "run": 0.005697608,
-        "omc_wall_reference": 1.58
+        "run": 0.005697608
       }
     },
     "Modelica.Mechanics.Rotational.Examples.Friction": {
@@ -7885,8 +7547,7 @@
       "stage_seconds": {
         "build": 0.02186157,
         "initialization": 9.0636e-05,
-        "run": 0.008366098,
-        "omc_wall_reference": 1.583
+        "run": 0.008366098
       }
     },
     "Modelica.Mechanics.Rotational.Examples.SimpleGearShift": {
@@ -7916,8 +7577,7 @@
       "stage_seconds": {
         "build": 0.036177104,
         "initialization": 0.000164047,
-        "run": 0.001378914,
-        "omc_wall_reference": 3.614
+        "run": 0.001378914
       }
     },
     "Modelica.Mechanics.Translational.Examples.Brake": {
@@ -7947,8 +7607,7 @@
       "stage_seconds": {
         "build": 0.063439798,
         "initialization": 0.000297435,
-        "run": 0.110305481,
-        "omc_wall_reference": 6.648
+        "run": 0.110305481
       }
     },
     "Modelica.Mechanics.Translational.Examples.Damper": {
@@ -7964,8 +7623,7 @@
       "stage_seconds": {
         "build": 0.038237961,
         "initialization": 0.000253099,
-        "run": 0.002071266,
-        "omc_wall_reference": 1.604
+        "run": 0.002071266
       }
     },
     "Modelica.Mechanics.Translational.Examples.EddyCurrentBrake": {
@@ -7981,8 +7639,7 @@
       "stage_seconds": {
         "build": 0.016573383,
         "initialization": 7.6121e-05,
-        "run": 0.001194223,
-        "omc_wall_reference": 1.497
+        "run": 0.001194223
       }
     },
     "Modelica.Mechanics.Translational.Examples.ElastoGap": {
@@ -7998,8 +7655,7 @@
       "stage_seconds": {
         "build": 0.057697256,
         "initialization": 0.000299087,
-        "run": 0.004018435,
-        "omc_wall_reference": 1.72
+        "run": 0.004018435
       }
     },
     "Modelica.Mechanics.Translational.Examples.Friction": {
@@ -8028,8 +7684,7 @@
       "stage_seconds": {
         "build": 0.13592875,
         "initialization": 0.000556368,
-        "run": 0.013223093,
-        "omc_wall_reference": 1.739
+        "run": 0.013223093
       }
     },
     "Modelica.Mechanics.Translational.Examples.HeatLosses": {
@@ -8058,8 +7713,7 @@
       "stage_seconds": {
         "build": 0.036804932,
         "initialization": 0.000205562,
-        "run": 0.014359964,
-        "omc_wall_reference": 1.663
+        "run": 0.014359964
       }
     },
     "Modelica.Mechanics.Translational.Examples.Oscillator": {
@@ -8075,8 +7729,7 @@
       "stage_seconds": {
         "build": 0.060468682,
         "initialization": 0.000351105,
-        "run": 0.009725522,
-        "omc_wall_reference": 3.898
+        "run": 0.009725522
       }
     },
     "Modelica.Mechanics.Translational.Examples.PreLoad": {
@@ -8092,8 +7745,7 @@
       "stage_seconds": {
         "build": 0.26386274,
         "initialization": 0.001303082,
-        "run": 0.19100287,
-        "omc_wall_reference": 4.667
+        "run": 0.19100287
       }
     },
     "Modelica.Mechanics.Translational.Examples.Sensors": {
@@ -8109,8 +7761,7 @@
       "stage_seconds": {
         "build": 0.019934644,
         "initialization": 0.000105134,
-        "run": 0.001598919,
-        "omc_wall_reference": 1.454
+        "run": 0.001598919
       }
     },
     "Modelica.Mechanics.Translational.Examples.SignConvention": {
@@ -8126,8 +7777,7 @@
       "stage_seconds": {
         "build": 0.013432976,
         "initialization": 7.4981e-05,
-        "run": 0.000926932,
-        "omc_wall_reference": 1.613
+        "run": 0.000926932
       }
     },
     "Modelica.Mechanics.Translational.Examples.Vehicle": {
@@ -8143,8 +7793,7 @@
       "stage_seconds": {
         "build": 0.214125658,
         "initialization": 0.000881385,
-        "run": 0.051359953,
-        "omc_wall_reference": 2.524
+        "run": 0.051359953
       }
     },
     "Modelica.Mechanics.Translational.Examples.WhyArrows": {
@@ -8160,8 +7809,7 @@
       "stage_seconds": {
         "build": 0.019767861,
         "initialization": 9.712e-05,
-        "run": 0.001217936,
-        "omc_wall_reference": 1.51
+        "run": 0.001217936
       }
     },
     "Modelica.Media.Examples.IdealGasH2O": {
@@ -8177,8 +7825,7 @@
       "stage_seconds": {
         "build": 0.09011349,
         "initialization": 3.0224e-05,
-        "run": 0.001471278,
-        "omc_wall_reference": 2.012
+        "run": 0.001471278
       }
     },
     "Modelica.Media.Examples.MixtureGases": {
@@ -8207,8 +7854,7 @@
       "stage_seconds": {
         "build": 0.178279692,
         "initialization": 0.00012332,
-        "run": 0.007322006,
-        "omc_wall_reference": 5.273
+        "run": 0.007322006
       }
     },
     "Modelica.Media.Examples.PsychrometricData": {
@@ -8224,8 +7870,7 @@
       "stage_seconds": {
         "build": 1.629195963,
         "initialization": 0.001571103,
-        "run": 0.213740367,
-        "omc_wall_reference": 6.838
+        "run": 0.213740367
       }
     },
     "Modelica.Media.Examples.R134a.R134a1": {
@@ -8360,8 +8005,7 @@
       "stage_seconds": {
         "build": 0.058333629,
         "initialization": 8.7565e-05,
-        "run": 0.003708335,
-        "omc_wall_reference": 1.803
+        "run": 0.003708335
       }
     },
     "Modelica.Media.Examples.SolveOneNonlinearEquation.InverseIncompressible_sh_T": {
@@ -8390,8 +8034,7 @@
       "stage_seconds": {
         "build": 0.2649895,
         "initialization": 0.000110075,
-        "run": 0.013684752,
-        "omc_wall_reference": 4.617
+        "run": 0.013684752
       }
     },
     "Modelica.Media.Examples.SolveOneNonlinearEquation.Inverse_sh_TX": {
@@ -8420,8 +8063,7 @@
       "stage_seconds": {
         "build": 0.019359356,
         "initialization": 1.3247e-05,
-        "run": 1.2993e-05,
-        "omc_wall_reference": 1.483
+        "run": 1.2993e-05
       }
     },
     "Modelica.Media.Examples.TwoPhaseWater.BaseProperties": {
@@ -8485,8 +8127,7 @@
       "stage_seconds": {
         "build": 0.046495471,
         "initialization": 2.075e-05,
-        "run": 0.002339389,
-        "omc_wall_reference": 1.656
+        "run": 0.002339389
       }
     },
     "Modelica.StateGraph.Examples.ControlledTanks": {
@@ -8502,8 +8143,7 @@
       "stage_seconds": {
         "build": 0.116684579,
         "initialization": 0.000945445,
-        "run": 0.03960956,
-        "omc_wall_reference": 2.452
+        "run": 0.03960956
       }
     },
     "Modelica.StateGraph.Examples.ExecutionPaths": {
@@ -8519,8 +8159,7 @@
       "stage_seconds": {
         "build": 0.07636203,
         "initialization": 0.000601568,
-        "run": 0.016836038,
-        "omc_wall_reference": 2.039
+        "run": 0.016836038
       }
     },
     "Modelica.StateGraph.Examples.FirstExample": {
@@ -8536,8 +8175,7 @@
       "stage_seconds": {
         "build": 0.020605939,
         "initialization": 0.000135202,
-        "run": 0.002786499,
-        "omc_wall_reference": 1.54
+        "run": 0.002786499
       }
     },
     "Modelica.StateGraph.Examples.FirstExample_Variant2": {
@@ -8553,8 +8191,7 @@
       "stage_seconds": {
         "build": 0.021340937,
         "initialization": 8.942e-05,
-        "run": 0.003080838,
-        "omc_wall_reference": 1.532
+        "run": 0.003080838
       }
     },
     "Modelica.StateGraph.Examples.FirstExample_Variant3": {
@@ -8570,8 +8207,7 @@
       "stage_seconds": {
         "build": 0.043381861,
         "initialization": 0.000205804,
-        "run": 0.004857827,
-        "omc_wall_reference": 3.796
+        "run": 0.004857827
       }
     },
     "Modelica.StateGraph.Examples.ShowCompositeStep": {
@@ -8587,8 +8223,7 @@
       "stage_seconds": {
         "build": 0.083350556,
         "initialization": 0.000451839,
-        "run": 0.025540841,
-        "omc_wall_reference": 2.102
+        "run": 0.025540841
       }
     },
     "Modelica.StateGraph.Examples.ShowExceptions": {
@@ -8604,8 +8239,7 @@
       "stage_seconds": {
         "build": 0.089615826,
         "initialization": 0.000465202,
-        "run": 0.027018675,
-        "omc_wall_reference": 2.093
+        "run": 0.027018675
       }
     },
     "Modelica.Thermal.FluidHeatFlow.Examples.IndirectCooling": {
@@ -8621,8 +8255,7 @@
       "stage_seconds": {
         "build": 0.084896563,
         "initialization": 0.000320968,
-        "run": 0.007215105,
-        "omc_wall_reference": 3.033
+        "run": 0.007215105
       }
     },
     "Modelica.Thermal.FluidHeatFlow.Examples.OneMass": {
@@ -8638,8 +8271,7 @@
       "stage_seconds": {
         "build": 0.107865788,
         "initialization": 0.000471219,
-        "run": 0.007387929,
-        "omc_wall_reference": 5.385
+        "run": 0.007387929
       }
     },
     "Modelica.Thermal.FluidHeatFlow.Examples.ParallelCooling": {
@@ -8655,8 +8287,7 @@
       "stage_seconds": {
         "build": 0.080107364,
         "initialization": 0.000348656,
-        "run": 0.008826621,
-        "omc_wall_reference": 2.94
+        "run": 0.008826621
       }
     },
     "Modelica.Thermal.FluidHeatFlow.Examples.ParallelPumpDropOut": {
@@ -8686,8 +8317,7 @@
       "stage_seconds": {
         "build": 0.070964771,
         "initialization": 0.000260238,
-        "run": 0.021434881,
-        "omc_wall_reference": 2.815
+        "run": 0.021434881
       }
     },
     "Modelica.Thermal.FluidHeatFlow.Examples.PumpDropOut": {
@@ -8703,8 +8333,7 @@
       "stage_seconds": {
         "build": 0.101763298,
         "initialization": 0.000323043,
-        "run": 0.013464902,
-        "omc_wall_reference": 5.297
+        "run": 0.013464902
       }
     },
     "Modelica.Thermal.FluidHeatFlow.Examples.SimpleCooling": {
@@ -8720,8 +8349,7 @@
       "stage_seconds": {
         "build": 0.092778468,
         "initialization": 0.000349062,
-        "run": 0.00375571,
-        "omc_wall_reference": 5.03
+        "run": 0.00375571
       }
     },
     "Modelica.Thermal.FluidHeatFlow.Examples.TestCylinder": {
@@ -8737,8 +8365,7 @@
       "stage_seconds": {
         "build": 0.043992636,
         "initialization": 0.00028199,
-        "run": 0.006297359,
-        "omc_wall_reference": 1.958
+        "run": 0.006297359
       }
     },
     "Modelica.Thermal.FluidHeatFlow.Examples.TestOpenTank": {
@@ -8754,8 +8381,7 @@
       "stage_seconds": {
         "build": 0.064287822,
         "initialization": 0.000263482,
-        "run": 0.005637352,
-        "omc_wall_reference": 4.715
+        "run": 0.005637352
       }
     },
     "Modelica.Thermal.FluidHeatFlow.Examples.TwoMass": {
@@ -8786,8 +8412,7 @@
       "stage_seconds": {
         "build": 0.065190716,
         "initialization": 0.000542091,
-        "run": 0.014653139,
-        "omc_wall_reference": 4.962
+        "run": 0.014653139
       }
     },
     "Modelica.Thermal.FluidHeatFlow.Examples.WaterPump": {
@@ -8803,8 +8428,7 @@
       "stage_seconds": {
         "build": 0.173039794,
         "initialization": 0.000724432,
-        "run": 0.086417596,
-        "omc_wall_reference": 6.764
+        "run": 0.086417596
       }
     },
     "Modelica.Thermal.HeatTransfer.Examples.ControlledTemperature": {
@@ -8820,8 +8444,7 @@
       "stage_seconds": {
         "build": 0.025099325,
         "initialization": 0.000161673,
-        "run": 0.043624753,
-        "omc_wall_reference": 1.742
+        "run": 0.043624753
       }
     },
     "Modelica.Thermal.HeatTransfer.Examples.GenerationOfFMUs": {
@@ -8852,8 +8475,7 @@
       "stage_seconds": {
         "build": 0.026118024,
         "initialization": 0.00017312,
-        "run": 0.640202846,
-        "omc_wall_reference": 9.956
+        "run": 0.640202846
       }
     },
     "Modelica.Thermal.HeatTransfer.Examples.TwoMasses": {
@@ -8869,8 +8491,7 @@
       "stage_seconds": {
         "build": 0.009663798,
         "initialization": 6.3911e-05,
-        "run": 0.000543351,
-        "omc_wall_reference": 1.414
+        "run": 0.000543351
       }
     },
     "Modelica.Utilities.Examples.ReadRealMatrixFromFile": {
@@ -8886,8 +8507,7 @@
       "stage_seconds": {
         "build": 0.002258315,
         "initialization": 2.3644e-05,
-        "run": 0.000527187,
-        "omc_wall_reference": 1.635
+        "run": 0.000527187
       }
     },
     "Modelica.Utilities.Examples.WriteRealMatrixToFile": {
