@@ -455,28 +455,6 @@ Author reminder: fmt/lint APIs live in rumoca-tool-fmt and rumoca-tool-lint."
 }
 
 #[test]
-fn test_tool_dev_uses_session_facade() {
-    let cargo_toml = workspace_root().join("crates/xtask/Cargo.toml");
-    let content = fs::read_to_string(&cargo_toml).expect("read tool-dev Cargo.toml");
-
-    for banned in [
-        "rumoca",
-        "rumoca-core",
-        "rumoca-phase-solve",
-        "rumoca-ir-ast",
-        "rumoca-ir-flat",
-        "rumoca-ir-dae",
-        "rumoca-phase-parse",
-    ] {
-        assert!(
-            !manifest_declares_production_dependency(&content, banned),
-            "xtask must not depend directly on {banned}; \
-Author reminder: use rumoca-compile facade APIs instead."
-        );
-    }
-}
-
-#[test]
 fn test_session_is_compile_only() {
     let cargo_toml = workspace_root().join("crates/rumoca-compile/Cargo.toml");
     let content = fs::read_to_string(&cargo_toml).expect("read rumoca-compile Cargo.toml");

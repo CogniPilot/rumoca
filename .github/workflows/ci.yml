@@ -140,22 +140,6 @@ jobs:
       - name: Test CI scripts
         run: node --test .github/scripts/*.test.mjs
 
-      # Architectural invariant, checked without compiling anything: `xtask` must
-      # carry NO rumoca-* workspace crate. It parses args, moves files, and shells
-      # out; compiler-linked work runs on demand through a command in its owning
-      # package. If a rumoca-* dep creeps back in,
-      # building any xtask bin again drags in the whole compiler/diffsol stack.
-      - name: Architecture — xtask stays dependency-light
-        run: |
-          deps=$(cargo tree -p xtask -e normal --prefix none | grep '^rumoca-' | sort -u || true)
-          if [ -n "$deps" ]; then
-            echo "::error::xtask must not depend on any rumoca-* crate, but it now pulls in:"
-            echo "$deps"
-            echo "Move the heavy code into a compiler-linked crate and shell out to it."
-            exit 1
-          fi
-          echo "OK: xtask has no rumoca-* dependencies"
-
   lint:
     name: Lint
     runs-on: ubuntu-24.04

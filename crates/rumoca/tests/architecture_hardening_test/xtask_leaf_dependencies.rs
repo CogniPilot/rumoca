@@ -1,13 +1,18 @@
 //! xtask builds no compiler.
 //!
 //! `cargo xtask` runs on every developer and CI path, so it must not pull the
-//! compiler into its build. It may depend on a workspace crate only when that
-//! crate depends on no workspace crate itself, so the rule holds transitively
-//! by construction. The shared MSL quality rules live in such a leaf crate
-//! (`rumoca-msl-quality`) for exactly this reason.
+//! compiler into its build. It may depend only on the workspace crates declared
+//! in [`DECLARED_LEAVES`], and each of those must depend on no workspace crate
+//! itself, so the rule holds transitively by construction (SPEC_0041 §1). The
+//! shared MSL quality rules live in such a leaf crate (`rumoca-msl-quality`)
+//! for exactly this reason.
 
 use super::*;
 use std::collections::{BTreeMap, BTreeSet};
+
+/// The workspace crates xtask may depend on. Each is a reviewed leaf: adding
+/// one is a SPEC_0041 change, and it must keep depending on no workspace crate.
+const DECLARED_LEAVES: [&str; 1] = ["rumoca-msl-quality"];
 
 /// The workspace crates a manifest's build-relevant tables name: normal,
 /// build and target-specific dependencies (dev-dependencies don't build xtask).
@@ -47,8 +52,8 @@ fn workspace_dependencies(
 }
 
 /// Every way xtask's dependencies break the leaf rule, given each workspace
-/// crate's manifest by package name.
-fn xtask_leaf_offences(manifests: &BTreeMap<String, String>) -> Vec<String> {
+/// crate's manifest by package name and the crates declared as leaves.
+fn xtask_leaf_offences(manifests: &BTreeMap<String, String>, leaves: &[&str]) -> Vec<String> {
     let workspace = manifests.keys().cloned().collect::<BTreeSet<_>>();
     let Some(xtask) = manifests.get("xtask") else {
         return vec!["no xtask manifest".to_string()];
@@ -59,6 +64,14 @@ fn xtask_leaf_offences(manifests: &BTreeMap<String, String>) -> Vec<String> {
     };
     let mut offences = Vec::new();
     for dependency in direct {
+        if !leaves.contains(&dependency.as_str()) {
+            offences.push(format!(
+                "xtask depends on `{dependency}`, which is not a declared leaf \
+                 (DECLARED_LEAVES, SPEC_0041 §1); move the work behind a command \
+                 in the owning package"
+            ));
+            continue;
+        }
         match workspace_dependencies(&manifests[&dependency], &workspace) {
             Ok(own) if own.is_empty() => {}
             Ok(own) => offences.push(format!(
@@ -95,8 +108,56 @@ fn workspace_manifests() -> BTreeMap<String, String> {
 
 #[test]
 fn xtask_depends_only_on_leaf_workspace_crates() {
-    let offences = xtask_leaf_offences(&workspace_manifests());
+    let offences = xtask_leaf_offences(&workspace_manifests(), &DECLARED_LEAVES);
     assert!(offences.is_empty(), "{offences:#?}");
+}
+
+#[test]
+fn every_declared_leaf_is_a_workspace_crate_with_no_workspace_dependency() {
+    let manifests = workspace_manifests();
+    let workspace = manifests.keys().cloned().collect::<BTreeSet<_>>();
+    for leaf in DECLARED_LEAVES {
+        let manifest = manifests
+            .get(leaf)
+            .unwrap_or_else(|| panic!("declared leaf `{leaf}` is not a workspace crate"));
+        let own = workspace_dependencies(manifest, &workspace).expect("leaf manifest parses");
+        assert!(
+            own.is_empty(),
+            "declared leaf `{leaf}` depends on workspace crates {own:?}"
+        );
+    }
+}
+
+#[test]
+fn the_leaf_rule_refuses_an_undeclared_workspace_dependency() {
+    // A workspace crate with no workspace dependencies of its own is still
+    // refused until it is declared, and the compiler crates the old manifest
+    // ban named are refused by the same rule.
+    let manifests = |xtask_deps: &str| {
+        BTreeMap::from([
+            (
+                "xtask".to_string(),
+                format!("[package]\nname = \"xtask\"\n[dependencies]\n{xtask_deps}"),
+            ),
+            (
+                "leaf".to_string(),
+                "[package]\nname = \"leaf\"\n[dependencies]\nserde = \"1\"\n".to_string(),
+            ),
+            (
+                "rumoca-core".to_string(),
+                "[package]\nname = \"rumoca-core\"\n".to_string(),
+            ),
+        ])
+    };
+    let leaf = "leaf = { path = \"../leaf\" }\n";
+    assert!(xtask_leaf_offences(&manifests(leaf), &["leaf"]).is_empty());
+    let offences = xtask_leaf_offences(&manifests(leaf), &[]);
+    assert_eq!(offences.len(), 1, "{offences:?}");
+    assert!(offences[0].contains("not a declared leaf"), "{offences:?}");
+    let compiler = "rumoca-core = { path = \"../rumoca-core\" }\n";
+    let offences = xtask_leaf_offences(&manifests(compiler), &["leaf"]);
+    assert_eq!(offences.len(), 1, "{offences:?}");
+    assert!(offences[0].contains("rumoca-core"), "{offences:?}");
 }
 
 #[test]
@@ -118,11 +179,14 @@ fn the_leaf_rule_refuses_a_dependency_that_reaches_the_compiler() {
             ),
         ])
     };
-    assert!(xtask_leaf_offences(&manifests("serde = \"1\"\n")).is_empty());
-    let offences = xtask_leaf_offences(&manifests("rumoca-core = { path = \"../rumoca-core\" }\n"));
+    assert!(xtask_leaf_offences(&manifests("serde = \"1\"\n"), &["leaf"]).is_empty());
+    let offences = xtask_leaf_offences(
+        &manifests("rumoca-core = { path = \"../rumoca-core\" }\n"),
+        &["leaf"],
+    );
     assert_eq!(offences.len(), 1, "{offences:?}");
     assert!(offences[0].contains("rumoca-core"), "{offences:?}");
     // A target-specific or renamed dependency is no way around the rule.
     let renamed = "[target.'cfg(unix)'.dependencies]\ncore = { package = \"rumoca-core\", path = \"../rumoca-core\" }\n";
-    assert_eq!(xtask_leaf_offences(&manifests(renamed)).len(), 1);
+    assert_eq!(xtask_leaf_offences(&manifests(renamed), &["leaf"]).len(), 1);
 }
