@@ -1615,6 +1615,7 @@ jobs:
               core.setOutput('available', 'true');
               core.setOutput('run-id', found.artifact.runId);
               core.setOutput('artifact-id', found.artifact.artifactId);
+              core.setOutput('sha', found.artifact.sha);
             }
 
       - name: Download tested main results for re-measurement
@@ -1630,13 +1631,16 @@ jobs:
         env:
           TESTED_MAIN_AVAILABLE: ${{ steps.remeasure-main.outputs.available }}
           TESTED_MAIN_UNAVAILABLE_REASON: ${{ steps.remeasure-main.outputs.reason }}
+          TESTED_MAIN_SHA: ${{ steps.remeasure-main.outputs.sha }}
+          TESTED_MAIN_RUN_ID: ${{ steps.remeasure-main.outputs.run-id }}
         run: |
           set -euo pipefail
           tested_main=()
           if [[ "${{ github.event_name }}" == "pull_request" ]]; then
             if [[ "$TESTED_MAIN_AVAILABLE" == "true" ]]; then
               test -s target/msl/remeasure-main/msl_results.json
-              tested_main=(--tested-main-results target/msl/remeasure-main/msl_results.json)
+              tested_main=(--tested-main-results target/msl/remeasure-main/msl_results.json
+                --tested-main-sha "$TESTED_MAIN_SHA" --tested-main-run-id "$TESTED_MAIN_RUN_ID")
             else
               test "$TESTED_MAIN_AVAILABLE" == "false"
               test -n "$TESTED_MAIN_UNAVAILABLE_REASON"

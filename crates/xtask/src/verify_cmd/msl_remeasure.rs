@@ -39,8 +39,20 @@ pub(crate) struct VerifyMslRemeasureArgs {
     baseline: Option<PathBuf>,
     /// The tested-main run's msl_results.json the PR-vs-main check compares
     /// with: a stage it completed is a candidate too
-    #[arg(long, conflicts_with = "tested_main_unavailable")]
+    #[arg(
+        long,
+        conflicts_with = "tested_main_unavailable",
+        requires_all = ["tested_main_sha", "tested_main_run_id"]
+    )]
     tested_main_results: Option<PathBuf>,
+    /// The tested-main commit those results must be from (their
+    /// `git_commit`), recorded with the re-measurement
+    #[arg(long, requires = "tested_main_results", value_parser = parse_commit_sha)]
+    tested_main_sha: Option<String>,
+    /// The CI run the tested-main results were downloaded from, recorded with
+    /// the re-measurement
+    #[arg(long, requires = "tested_main_results")]
+    tested_main_run_id: Option<u64>,
     /// Why tested main has no results (its CI completed without a usable
     /// snapshot): candidates then come from the promoted baseline alone, and
     /// the reason is recorded
@@ -258,11 +270,43 @@ fn remeasure_one(
     Ok(Some(row))
 }
 
+/// A full, lowercase 40-hex-digit commit SHA.
+fn parse_commit_sha(raw: &str) -> std::result::Result<String, String> {
+    let hex = raw
+        .bytes()
+        .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b));
+    if raw.len() == 40 && hex {
+        Ok(raw.to_string())
+    } else {
+        Err(format!("'{raw}' is not a full lowercase commit SHA"))
+    }
+}
+
+/// Tested main's results, refused unless they are from the commit given.
+fn tested_main_results(path: &Path, sha: Option<&str>) -> Result<Value> {
+    let results = read_json(path)?;
+    let expected = sha.context("--tested-main-results requires --tested-main-sha")?;
+    let actual = results.get("git_commit").and_then(Value::as_str);
+    if actual != Some(expected) {
+        bail!(
+            "{} is from commit {}, not tested main {expected}",
+            path.display(),
+            actual.unwrap_or("<none>")
+        );
+    }
+    Ok(results)
+}
+
 /// Which old sides the candidates came from: the promoted baseline always,
-/// tested main when its results were given, and why not when it had none.
+/// tested main (its commit and CI run) when its results were given, and why
+/// not when it had none.
 fn tested_main_source(args: &VerifyMslRemeasureArgs) -> Value {
     match (&args.tested_main_results, &args.tested_main_unavailable) {
-        (Some(_), _) => json!({ "state": "results" }),
+        (Some(_), _) => json!({
+            "state": "results",
+            "sha": args.tested_main_sha,
+            "run_id": args.tested_main_run_id,
+        }),
         (None, Some(reason)) => json!({ "state": "unavailable", "reason": reason }),
         (None, None) => json!({ "state": "not_given" }),
     }
@@ -295,7 +339,10 @@ pub(crate) fn run(root: &Path, args: &VerifyMslRemeasureArgs) -> Result<()> {
     let tested_main = args
         .tested_main_results
         .as_deref()
-        .map(|path| read_json(path).and_then(|results| row_stages(&results)))
+        .map(|path| {
+            tested_main_results(path, args.tested_main_sha.as_deref())
+                .and_then(|results| row_stages(&results))
+        })
         .transpose()?;
     let old = old_side_stages(&promoted, tested_main.as_ref());
     let results_path = args.results_dir.join("msl_results.json");
@@ -532,11 +579,6 @@ mod tests {
             record["tested_main"],
             json!({ "state": "unavailable", "reason": reason })
         );
-        let args = parse(&["--tested-main-results", "main.json"]).unwrap();
-        assert_eq!(
-            remeasured_record(&Map::new(), &[], &args)["tested_main"],
-            json!({ "state": "results" })
-        );
         let args = parse(&[]).unwrap();
         assert_eq!(
             remeasured_record(&Map::new(), &[], &args)["tested_main"],
@@ -546,14 +588,99 @@ mod tests {
 
     #[test]
     fn tested_main_results_and_unavailable_are_mutually_exclusive() {
-        let error = parse(&[
-            "--tested-main-results",
-            "main.json",
-            "--tested-main-unavailable",
-            "none",
-        ])
-        .expect_err("both old-side inputs refuse");
+        let mut both = with_main("main.json", MAIN_SHA, "7");
+        both.extend(["--tested-main-unavailable".to_string(), "none".to_string()]);
+        let error = parse_owned(&both).expect_err("both old-side inputs refuse");
         assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
+    }
+
+    const MAIN_SHA: &str = "0123456789abcdef0123456789abcdef01234567";
+
+    fn with_main(path: &str, sha: &str, run_id: &str) -> Vec<String> {
+        [
+            "--tested-main-results",
+            path,
+            "--tested-main-sha",
+            sha,
+            "--tested-main-run-id",
+            run_id,
+        ]
+        .map(String::from)
+        .to_vec()
+    }
+
+    fn parse_owned(extra: &[String]) -> std::result::Result<VerifyMslRemeasureArgs, clap::Error> {
+        parse(&extra.iter().map(String::as_str).collect::<Vec<_>>())
+    }
+
+    #[test]
+    fn tested_main_results_are_recorded_with_their_commit_and_run() {
+        let args = parse_owned(&with_main("main.json", MAIN_SHA, "123456789")).unwrap();
+        assert_eq!(
+            remeasured_record(&Map::new(), &[], &args)["tested_main"],
+            json!({ "state": "results", "sha": MAIN_SHA, "run_id": 123_456_789_u64 })
+        );
+    }
+
+    #[test]
+    fn tested_main_results_need_their_commit_and_run() {
+        for missing in [
+            vec!["--tested-main-results", "main.json"],
+            vec![
+                "--tested-main-results",
+                "main.json",
+                "--tested-main-sha",
+                MAIN_SHA,
+            ],
+            vec![
+                "--tested-main-results",
+                "main.json",
+                "--tested-main-run-id",
+                "7",
+            ],
+            vec!["--tested-main-sha", MAIN_SHA],
+            vec!["--tested-main-run-id", "7"],
+        ] {
+            let error = parse(&missing).expect_err("provenance travels with the results");
+            assert_eq!(
+                error.kind(),
+                clap::error::ErrorKind::MissingRequiredArgument,
+                "{missing:?}"
+            );
+        }
+        for sha in [
+            "0123456",
+            &MAIN_SHA.to_uppercase(),
+            &format!("{}g", &MAIN_SHA[..39]),
+        ] {
+            let error = parse_owned(&with_main("main.json", sha, "7")).expect_err(sha);
+            assert_eq!(
+                error.kind(),
+                clap::error::ErrorKind::ValueValidation,
+                "{sha}"
+            );
+        }
+    }
+
+    #[test]
+    fn tested_main_results_from_another_commit_are_refused() {
+        let dir = std::env::temp_dir().join(format!("msl-remeasure-main-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("msl_results.json");
+        fs::write(
+            &path,
+            json!({ "git_commit": MAIN_SHA, "model_results": [] }).to_string(),
+        )
+        .unwrap();
+        assert!(tested_main_results(&path, Some(MAIN_SHA)).is_ok());
+        let other = "f".repeat(40);
+        let error = tested_main_results(&path, Some(&other))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("not tested main"), "{error}");
+        fs::write(&path, json!({ "model_results": [] }).to_string()).unwrap();
+        assert!(tested_main_results(&path, Some(MAIN_SHA)).is_err());
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

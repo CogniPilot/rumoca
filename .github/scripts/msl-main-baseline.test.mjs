@@ -121,6 +121,9 @@ test('re-measurement on a PR resolves tested main without failing on a main that
   const remeasure = ci.slice(ci.indexOf('- name: Re-measure watchdog kills on this runner'),
     ci.indexOf('- name: Upload shard results'));
   assert.match(remeasure, /--tested-main-unavailable/);
+  assert.match(remeasure, /--tested-main-sha "\$TESTED_MAIN_SHA" --tested-main-run-id "\$TESTED_MAIN_RUN_ID"/);
+  assert.match(remeasure, /TESTED_MAIN_SHA: \$\{\{ steps\.remeasure-main\.outputs\.sha \}\}/);
+  assert.match(step, /core\.setOutput\('sha', found\.artifact\.sha\)/);
   const upload = ci.slice(ci.indexOf('- name: Upload shard results'), ci.indexOf('  msl-merge:'));
   assert.match(upload, /if: \$\{\{ always\(\) \}\}/);
   const merge = ci.slice(ci.indexOf('- name: Resolve tested main baseline'),
