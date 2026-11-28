@@ -45,25 +45,70 @@ pub fn run(args: Args) -> Result<()> {
         .with_context(|| format!("invalid JSON in {}", source.display()))?;
     ensure_promotable_quality_snapshot(&snapshot, &source)?;
 
+    let mut promoted_text = snapshot_text;
     if baseline.exists() {
         let previous_text = fs::read_to_string(&baseline)
             .with_context(|| format!("failed to read {}", baseline.display()))?;
         let previous: serde_json::Value = serde_json::from_str(&previous_text)
             .with_context(|| format!("invalid JSON in {}", baseline.display()))?;
         ensure_certified_roster_preserved(&snapshot, &previous, &baseline)?;
+        let mut promoted = snapshot;
+        if carry_reviewed_headers(&mut promoted, &previous, &baseline)? {
+            promoted_text = serde_json::to_string_pretty(&promoted)?;
+        }
     }
 
     if let Some(parent) = baseline.parent() {
         fs::create_dir_all(parent)
             .with_context(|| format!("failed to create {}", parent.display()))?;
     }
-    fs::write(&baseline, snapshot_text)
+    fs::write(&baseline, promoted_text)
         .with_context(|| format!("failed to write {}", baseline.display()))?;
 
     println!("Promoted MSL quality baseline:");
     println!("  source: {}", source.display());
     println!("  baseline: {}", baseline.display());
     Ok(())
+}
+
+/// Header keys a run never measures: reviewed lineage and corrections that a
+/// baseline carries from one promotion to the next.
+const REVIEWED_HEADER_KEYS: [&str; 4] = [
+    "evidence_provenance",
+    "budget_metadata_correction",
+    "omc_context_migration",
+    "promoted_baseline_bridge",
+];
+
+/// Carry the previous baseline's reviewed headers into the promoted snapshot.
+/// A snapshot that states one of them with a different value is refused: a
+/// run cannot rewrite a reviewed record. Returns whether anything was added.
+fn carry_reviewed_headers(
+    promoted: &mut serde_json::Value,
+    previous: &serde_json::Value,
+    baseline: &Path,
+) -> Result<bool> {
+    let mut carried = false;
+    for key in REVIEWED_HEADER_KEYS {
+        let Some(reviewed) = previous.get(key) else {
+            continue;
+        };
+        match promoted.get(key) {
+            Some(current) if current == reviewed => {}
+            Some(_) => bail!(
+                "cannot promote into {}: the snapshot's {key} differs from the reviewed one",
+                baseline.display()
+            ),
+            None => {
+                promoted
+                    .as_object_mut()
+                    .context("snapshot must be a JSON object")?
+                    .insert(key.to_string(), reviewed.clone());
+                carried = true;
+            }
+        }
+    }
+    Ok(carried)
 }
 
 fn ensure_promotable_quality_snapshot(snapshot: &serde_json::Value, source: &Path) -> Result<()> {
@@ -308,6 +353,74 @@ mod tests {
             baseline: Some(baseline),
         })
         .expect_err("invalid certification metadata cannot become a baseline");
+    }
+
+    fn reviewed_headers() -> serde_json::Value {
+        json!({
+            "evidence_provenance": {"oracle": "reviewed"},
+            "budget_metadata_correction": {"asset_sha256": "abc", "reason": "reviewed"},
+            "omc_context_migration": {"from_omc_version": "a", "to_omc_version": "b"},
+            "promoted_baseline_bridge": {"document_sha256": "def"}
+        })
+    }
+
+    fn promote(
+        previous: &serde_json::Value,
+        current: &serde_json::Value,
+    ) -> anyhow::Result<serde_json::Value> {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let baseline = dir.path().join("baseline.json");
+        let source = dir.path().join("current.json");
+        std::fs::write(&baseline, previous.to_string()).expect("write baseline");
+        std::fs::write(&source, current.to_string()).expect("write current");
+        run(Args {
+            source: Some(source),
+            baseline: Some(baseline.clone()),
+        })?;
+        let text = std::fs::read_to_string(baseline).expect("promoted baseline");
+        Ok(serde_json::from_str(&text).expect("promoted JSON"))
+    }
+
+    #[test]
+    fn manual_promotion_carries_every_reviewed_header_forward() {
+        let mut previous = full_snapshot();
+        let headers = reviewed_headers();
+        for (key, value) in headers.as_object().expect("headers") {
+            previous[key] = value.clone();
+        }
+        let current = full_snapshot();
+        let promoted = promote(&previous, &current).expect("promotion");
+        for (key, value) in headers.as_object().expect("headers") {
+            assert_eq!(
+                promoted.get(key),
+                Some(value),
+                "{key} must be carried forward"
+            );
+        }
+        assert_eq!(
+            promoted["sim_ok"], current["sim_ok"],
+            "measurements come from the run"
+        );
+    }
+
+    #[test]
+    fn manual_promotion_refuses_a_snapshot_that_rewrites_a_reviewed_header() {
+        let mut previous = full_snapshot();
+        previous["budget_metadata_correction"] = json!({"asset_sha256": "abc"});
+        let mut current = full_snapshot();
+        current["budget_metadata_correction"] = json!({"asset_sha256": "other"});
+        let error =
+            promote(&previous, &current).expect_err("a run cannot rewrite a reviewed record");
+        assert!(
+            error.to_string().contains("budget_metadata_correction"),
+            "{error}"
+        );
+        current["budget_metadata_correction"] = json!({"asset_sha256": "abc"});
+        let promoted = promote(&previous, &current).expect("an equal value is not a rewrite");
+        assert_eq!(
+            promoted["budget_metadata_correction"],
+            json!({"asset_sha256": "abc"})
+        );
     }
 
     #[test]
