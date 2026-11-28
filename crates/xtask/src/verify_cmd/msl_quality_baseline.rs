@@ -968,12 +968,31 @@ fn resolve_workspace_path(root: &Path, path: &Path) -> PathBuf {
 /// does. Elsewhere the checked-in baseline is the local/offline fallback.
 fn download_msl_quality_baseline_asset(root: &Path) -> Result<Option<PathBuf>> {
     let in_ci = std::env::var_os("GITHUB_ACTIONS").is_some();
-    let downloaded = fetch_msl_quality_baseline_asset(root)?;
-    ensure!(
-        downloaded.is_some() || !in_ci,
-        "MSL quality baseline: the promoted asset could not be downloaded; CI never falls back \
-         to the checked-in baseline"
-    );
+    require_promoted_asset(
+        in_ci,
+        fetch_msl_quality_baseline_asset(root)?,
+        &mut |line| println!("{line}"),
+    )
+}
+
+/// The download result, refused in CI when there is none; offline, a missing
+/// asset is allowed and said out loud.
+pub(super) fn require_promoted_asset(
+    in_ci: bool,
+    downloaded: Option<PathBuf>,
+    log: &mut dyn FnMut(&str),
+) -> Result<Option<PathBuf>> {
+    if downloaded.is_none() {
+        ensure!(
+            !in_ci,
+            "MSL quality baseline: the promoted asset could not be downloaded; CI never falls \
+             back to the checked-in baseline"
+        );
+        log(
+            "MSL quality baseline: no promoted asset; the checked-in fallback is for \
+             local/offline runs only",
+        );
+    }
     Ok(downloaded)
 }
 

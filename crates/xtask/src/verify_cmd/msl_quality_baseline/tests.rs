@@ -3,9 +3,9 @@ use super::{
     DistributionMedian, InitialConditionStats, MetricSchemaMigration, MslQualityBaselineHeader,
     OmcContextMigration, PartialClassificationMigration, PromotedBaselineBridge, RuntimeRatioStats,
     StateSelectionStats, TraceAccuracyStats, choose_baseline, load_baseline_header,
-    reviewed_affected_partial_models, reviewed_partial_model_names, validate_context_migration,
-    validate_metric_schema_migration, validate_partial_classification_migration,
-    validate_promoted_baseline_bridge,
+    require_promoted_asset, reviewed_affected_partial_models, reviewed_partial_model_names,
+    validate_context_migration, validate_metric_schema_migration,
+    validate_partial_classification_migration, validate_promoted_baseline_bridge,
 };
 use serde_json::json;
 use std::{fs, path::PathBuf};
@@ -558,4 +558,24 @@ fn actual_header_binds_new_candidates_and_defers_historical_reader_activation() 
         failures.is_empty(),
         "root schema controls failed: {failures:?}"
     );
+}
+
+#[test]
+fn a_failed_asset_download_fails_in_ci_and_is_announced_offline() {
+    let mut lines = Vec::new();
+    let error = require_promoted_asset(true, None, &mut |line| lines.push(line.to_string()))
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("CI never falls back"), "{error}");
+    let offline = require_promoted_asset(false, None, &mut |line| lines.push(line.to_string()));
+    assert_eq!(offline.unwrap(), None);
+    assert_eq!(lines.len(), 1);
+    assert!(lines[0].contains("local/offline runs only"), "{lines:?}");
+    let asset = PathBuf::from("asset.json");
+    let mut quiet = Vec::new();
+    let found = require_promoted_asset(true, Some(asset.clone()), &mut |line| {
+        quiet.push(line.to_string())
+    });
+    assert_eq!(found.unwrap(), Some(asset));
+    assert!(quiet.is_empty());
 }
