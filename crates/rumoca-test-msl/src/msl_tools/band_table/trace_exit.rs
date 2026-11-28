@@ -80,3 +80,17 @@ impl TraceExitRecord {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_missing_tight_reference_records_the_omc_side_reason() {
+        assert_eq!(
+            TraceExitKind::TightReferenceMissing.exit_reason(),
+            ExitReason::ReferenceMissing
+        );
+        assert_eq!(ExitReason::ReferenceMissing.as_str(), "reference_missing");
+    }
+}

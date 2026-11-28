@@ -47,6 +47,11 @@ fn trace_of(row: Option<&BandRow>) -> Result<TraceState, String> {
                 .and_then(typed_exception_kind)
                 .ok_or_else(|| format!("{}: exclusion without a typed kind", row.model_name))?,
         ),
+        // OMC's side: its reference trace is missing or unusable, or it has
+        // an excursion channel without the tight reference the excursion rule
+        // needs (`TraceExitKind::OmcTraceMissing` and `TightReferenceMissing`
+        // both record this reason). Inconclusive, re-measured: never a pass
+        // and never rumoca's regression.
         Some(ExitReason::ReferenceMissing) => UnscoredCause::OmcFailed,
         Some(ExitReason::RumocaTraceMissing) => UnscoredCause::RumocaTraceMissing,
         Some(ExitReason::TraceNonidentifiable) => UnscoredCause::TraceNonidentifiable,
@@ -415,5 +420,44 @@ mod tests {
         )
         .unwrap_err();
         assert!(error.contains("Missing"), "{error}");
+    }
+
+    #[test]
+    fn a_missing_tight_reference_is_omc_side_and_inconclusive() {
+        use rumoca_msl_quality::{ReviewedChanges, Transition, transitions};
+        // What a `TraceExitKind::TightReferenceMissing` record writes into the
+        // band table.
+        let tight_missing = row("Excursion", "absent", Some("reference_missing"), 0);
+        assert_eq!(
+            trace_of(Some(&tight_missing)),
+            Ok(TraceState::Unscored(UnscoredCause::OmcFailed))
+        );
+        // A model scored before and missing its tight reference now must be
+        // re-measured: not a pass, not a regression.
+        let state = |trace| ModelState {
+            stage: ModelStage::Simulated,
+            outcome: None,
+            trace,
+            compared_channels: 0,
+            trace_violation_mass: None,
+            mean_channel_bounded_l1: None,
+            certified: false,
+            roster: false,
+            stage_seconds: StageSeconds::default(),
+        };
+        let before = ModelStates::from([(
+            "Excursion".to_string(),
+            state(TraceState::Scored(BandLabel::High)),
+        )]);
+        let after = ModelStates::from([(
+            "Excursion".to_string(),
+            state(TraceState::Unscored(UnscoredCause::OmcFailed)),
+        )]);
+        let transition =
+            transitions(&before, &after, &ReviewedChanges::default()).remove("Excursion");
+        assert!(
+            matches!(transition, Some(Transition::Inconclusive(_))),
+            "{transition:?}"
+        );
     }
 }
