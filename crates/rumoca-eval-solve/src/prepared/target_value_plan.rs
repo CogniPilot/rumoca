@@ -167,7 +167,9 @@ impl PreparedScalarProgramBlock {
         let shapes = self
             .assignment_shapes(row)
             .ok_or_else(|| invalid_prepared_row("issued target row is outside its block"))?;
-        for (candidate_output, shape) in shapes {
+        for assignment in shapes {
+            let candidate_output = &assignment.output;
+            let shape = &assignment.shape;
             // The canonical evaluator selects the first shape for this pair.
             if !issued.insert((*candidate_output, shape.target_y_index()))
                 || shape.expr_eval_len() != prefix_len

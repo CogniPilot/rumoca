@@ -112,6 +112,30 @@ fn compact_tensor_sum_isolates_each_force_coordinate() {
 }
 
 #[test]
+fn replacement_reissues_exact_assignment_certificates() {
+    let block = |row| {
+        ScalarProgramBlock::with_source_span(
+            vec![row],
+            fixture_span()
+                .require_provenance("replacement certificate")
+                .unwrap(),
+        )
+        .unwrap()
+    };
+    let row = tensor_sum_residual(false, 6);
+    let original = PreparedScalarProgramBlock::new(block(row.clone())).unwrap();
+    assert!(original.certifies_exact_target_assignment_output(0, 0, 0));
+    assert!(original.certifies_exact_target_assignment_output(0, 0, 0));
+    let mut cancelled = row;
+    cancelled[2] = vector_binary(6, BinaryOp::Sub, 0, 0);
+    let replaced =
+        PreparedScalarProgramBlock::with_replaced_programs(&original, block(cancelled), &[0])
+            .unwrap();
+    assert!(!replaced.certifies_exact_target_assignment_output(0, 0, 0));
+    assert!(original.certifies_exact_target_assignment_output(0, 0, 0));
+}
+
+#[test]
 fn compact_tensor_moment_sum_keeps_cross_product_independent_of_target() {
     let prepared = PreparedScalarProgramBlock::new(
         ScalarProgramBlock::with_source_span(

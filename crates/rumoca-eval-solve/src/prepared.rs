@@ -111,8 +111,15 @@ pub struct PreparedScalarProgramBlock {
     row_output_scratch: RefCell<Vec<f64>>,
 }
 
-/// A program's assignment shapes, each with the output offset it assigns.
-type AssignmentShapes = Box<[(usize, TargetAssignmentShape)]>;
+/// A prepared isolation shape and the exact execution-read certificate of its
+/// target coordinate. Both are derived from the same immutable row program.
+#[derive(Clone)]
+struct PreparedAssignmentShape {
+    output: usize,
+    shape: TargetAssignmentShape,
+    exact: bool,
+}
+type AssignmentShapes = Box<[PreparedAssignmentShape]>;
 
 /// One unchecked, output-specific request for a compiler-certified target assignment.
 pub struct TargetAssignmentOutputRequest<'a> {
@@ -482,15 +489,32 @@ impl PreparedScalarProgramBlock {
 
     /// The assignment shapes of program `row_idx`, with their output offsets,
     /// derived on first use. A block prepared with evaluation facts has none.
-    fn assignment_shapes(&self, row_idx: usize) -> Option<&[(usize, TargetAssignmentShape)]> {
+    fn assignment_shapes(&self, row_idx: usize) -> Option<&[PreparedAssignmentShape]> {
         let program = self.block.program(row_idx)?;
         let shapes = self.row_assignment_shapes.get(row_idx)?;
-        Some(shapes.get_or_init(|| match self.facts {
-            construction::RowFacts::Full => {
-                target_assignment_shapes_with_output_offsets(program).into_boxed_slice()
-            }
-            construction::RowFacts::Evaluation => AssignmentShapes::default(),
-        }))
+        Some(shapes.get_or_init(|| self.prepare_assignment_shapes(row_idx, program)))
+    }
+
+    fn prepare_assignment_shapes(&self, row_idx: usize, program: &[LinearOp]) -> AssignmentShapes {
+        if matches!(self.facts, construction::RowFacts::Evaluation) {
+            return AssignmentShapes::default();
+        }
+        target_assignment_shapes_with_output_offsets(program)
+            .into_iter()
+            .map(|(output, shape)| {
+                let exact = self.is_causal_row(row_idx)
+                    && self.execution_independent_of_target(
+                        row_idx,
+                        &shape,
+                        shape.target_y_index(),
+                    );
+                PreparedAssignmentShape {
+                    output,
+                    shape,
+                    exact,
+                }
+            })
+            .collect()
     }
 
     pub fn row_output_count(&self, row_idx: usize) -> Option<usize> {
@@ -557,13 +581,8 @@ impl PreparedScalarProgramBlock {
         output_offset: usize,
         target_y_index: usize,
     ) -> bool {
-        self.is_causal_row(row_idx)
-            && self
-                .assignment_shape_for_output(row_idx, output_offset, target_y_index)
-                .is_some_and(|shape| {
-                    shape.is_direct()
-                        && self.execution_independent_of_target(row_idx, shape, target_y_index)
-                })
+        self.prepared_assignment_for_output(row_idx, output_offset, target_y_index)
+            .is_some_and(|assignment| assignment.exact && assignment.shape.is_direct())
     }
 
     pub fn certifies_exact_target_assignment_output(
@@ -572,12 +591,8 @@ impl PreparedScalarProgramBlock {
         output_offset: usize,
         target_y_index: usize,
     ) -> bool {
-        self.is_causal_row(row_idx)
-            && self
-                .assignment_shape_for_output(row_idx, output_offset, target_y_index)
-                .is_some_and(|shape| {
-                    self.execution_independent_of_target(row_idx, shape, target_y_index)
-                })
+        self.prepared_assignment_for_output(row_idx, output_offset, target_y_index)
+            .is_some_and(|assignment| assignment.exact)
     }
 
     /// Whether program `row_idx` holds an assertion observation, a fact fixed
@@ -622,10 +637,12 @@ impl PreparedScalarProgramBlock {
         if !self.is_causal_row(row_idx) {
             return None;
         }
-        let shape = self.assignment_shape_for_output(row_idx, output_offset, target_y_index)?;
-        if !self.execution_independent_of_target(row_idx, shape, target_y_index) {
+        let assignment =
+            self.prepared_assignment_for_output(row_idx, output_offset, target_y_index)?;
+        if !assignment.exact {
             return None;
         }
+        let shape = &assignment.shape;
         let mut program = row
             .get(..shape.expr_eval_len())?
             .iter()
@@ -883,7 +900,11 @@ impl PreparedScalarProgramBlock {
             // target slot; otherwise the parent receives None and tries another row.
             if self
                 .assignment_shapes(request.row_idx)
-                .is_some_and(|shapes| shapes.iter().any(|(output, _)| *output == selected_output))
+                .is_some_and(|shapes| {
+                    shapes
+                        .iter()
+                        .any(|assignment| assignment.output == selected_output)
+                })
             {
                 return Ok(None);
             }
@@ -1008,12 +1029,20 @@ impl PreparedScalarProgramBlock {
         output_offset: usize,
         target_y_index: usize,
     ) -> Option<&TargetAssignmentShape> {
-        self.assignment_shapes(row_idx)?
-            .iter()
-            .find_map(|(output, shape)| {
-                (*output == output_offset && shape.target_y_index() == target_y_index)
-                    .then_some(shape)
-            })
+        self.prepared_assignment_for_output(row_idx, output_offset, target_y_index)
+            .map(|assignment| &assignment.shape)
+    }
+
+    fn prepared_assignment_for_output(
+        &self,
+        row_idx: usize,
+        output_offset: usize,
+        target_y_index: usize,
+    ) -> Option<&PreparedAssignmentShape> {
+        self.assignment_shapes(row_idx)?.iter().find(|assignment| {
+            assignment.output == output_offset
+                && assignment.shape.target_y_index() == target_y_index
+        })
     }
 
     fn eval_rows_unchecked(
