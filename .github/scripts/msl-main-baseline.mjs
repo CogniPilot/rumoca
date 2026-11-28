@@ -55,6 +55,20 @@ export async function resolveMainArtifact({ github, repo, sha, timeoutMs = 60000
   }
 }
 
+// The PR-vs-main step's view of tested main. A main whose CI completed without
+// a usable MSL snapshot is the typed "not compared" state: no deltas are
+// reported, the reason goes into the PR comment, and the step succeeds. A main
+// still pending, an API failure or an artifact from another source still
+// throws, so the comparison fails closed on everything else.
+export async function resolveTestedMainBaseline({ resultsDir, ...options }) {
+  const found = await resolveMainArtifact(options);
+  if (found.unavailable) {
+    writeBaselineNotCompared(resultsDir, found.unavailable, options.sha);
+    return { available: false, reason: found.unavailable };
+  }
+  return { available: true, binding: found.artifact };
+}
+
 async function artifactInRuns(github, repo, sha, runs) {
   let expired = false;
   for (const run of runs) {
@@ -216,6 +230,16 @@ export function writeComparison(resultsDir, binding, comparison, provenance) {
   const note = renderMainComparison(binding, comparison, provenance);
   fs.writeFileSync(file, marker + '\n' + note + '\n' + body.slice(marker.length).trimStart());
   return comparison;
+}
+
+export function writeBaselineNotCompared(resultsDir, reason, sha) {
+  fs.mkdirSync(resultsDir, { recursive: true });
+  fs.writeFileSync(path.join(resultsDir, 'msl_pr_comment.md'), [
+    '<!-- rumoca-msl-quality-summary -->', '### MSL main comparison: not compared', '',
+    '**Tested main has no MSL snapshot, so no PR-vs-main deltas are reported.**', '',
+    'Tested main: ' + code(sha) + '.', '', code(reason), '',
+    'No checked-in or different-commit baseline was substituted. The promoted quality-floor gate still runs.', '',
+  ].join('\n'));
 }
 
 export function writeBaselineFailure(resultsDir, message, sha = 'unresolved') {
