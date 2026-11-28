@@ -92,6 +92,15 @@ detect or schedule the event, advance to the event instant, write pre
 slots, apply discrete updates, and restart integration. No backend
 rediscovers event structure from expressions.
 
+## Native Entry Diagnostics
+
+Enable the `rumoca_exec_cranelift::native_entry=debug` tracing target before
+constructing native entries to record the first dispatch of each retained
+handle by family. This diagnoses which emitted entries a run actually uses;
+it does not count all emissions or repeated calls. Embedding hosts configure
+their existing tracing subscriber; the CLI accepts this raw target via
+`--trace` with its tracing feature enabled.
+
 ## Failure Diagnostics
 
 When a simulation produces a non-finite value, the runtime re-runs with NaN

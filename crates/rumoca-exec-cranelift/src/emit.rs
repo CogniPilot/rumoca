@@ -29,6 +29,7 @@ mod host_runtime;
 mod input_validation;
 #[cfg(test)]
 mod interpreter;
+mod native_entry_trace;
 mod native_fault;
 pub(crate) mod observation_carrier;
 mod output_ranges;
@@ -59,6 +60,7 @@ use input_validation::{
 };
 #[cfg(test)]
 use interpreter::execute_row;
+use native_entry_trace::EntryUse;
 use owned_jit_module::{OwnedJitModule, declare_far_call_in_func};
 pub(crate) use projection_batch::SharedProjectionModule;
 #[cfg(test)]
@@ -99,6 +101,7 @@ struct CompiledResidualRow {
 }
 
 struct CompiledResidualJit {
+    usage: EntryUse,
     jit: ResidualJit,
     scratch: scratch::ScratchOwner,
     register_count: usize,
@@ -128,6 +131,7 @@ enum LoweredConditionalOutput {
 }
 
 struct CompiledJacobianRow {
+    usage: EntryUse,
     plan: RowPlan,
     jit: JacobianRowFn,
     scratch: scratch::ScratchOwner,
@@ -139,6 +143,7 @@ struct CompiledJacobianRow {
 /// one function, or a single program through its own function.
 enum JacobianWholeEntry {
     Batch {
+        usage: EntryUse,
         jit: JacobianRowFn,
         scratch: scratch::ScratchOwner,
         rows: std::ops::Range<usize>,
@@ -394,6 +399,7 @@ impl CompiledResidualRows {
             &self.whole_jits
         };
         for compiled in jits {
+            compiled.usage.record("residual_whole");
             let output =
                 &mut out[compiled.output_start..compiled.output_start + compiled.output_count];
             let status = unsafe {
@@ -607,12 +613,14 @@ impl CompiledJacobianRows {
                     base += k;
                 }
                 JacobianWholeEntry::Batch {
+                    usage,
                     jit,
                     scratch,
                     rows: _rows,
                     output_start,
                     output_count,
                 } => {
+                    usage.record("jacobian_batch");
                     let output = &mut out[*output_start..*output_start + *output_count];
                     // SAFETY: compile_row_batch declared this function with the
                     // JacobianRowFn ABI, prevalidation bounds every y/p/seed
@@ -672,6 +680,7 @@ impl CompiledJacobianRows {
         ctx: &JacobianCallContext<'_>,
         out: &mut [f64],
     ) -> Result<(), CompileError> {
+        row.usage.record("jacobian_row");
         let status = unsafe { call_jacobian_jit(row, ctx.y, ctx.p, ctx.t, ctx.v, out) };
         self.record_jit_call();
         status::check(status)?;
@@ -936,6 +945,7 @@ fn finalize_residual_jits(
             ),
         };
         jits.push(CompiledResidualJit {
+            usage: Default::default(),
             jit,
             scratch: Default::default(),
             register_count,
@@ -1099,6 +1109,7 @@ fn compile_jacobian_rows_attached(
     for ((plan, func_id), _source) in plans.into_iter().zip(func_ids).zip(rows) {
         let jit = finalized_jacobian_fn(&emitter.module, func_id)?;
         compiled_rows.push(CompiledJacobianRow {
+            usage: Default::default(),
             plan,
             jit,
             scratch: Default::default(),
@@ -1115,6 +1126,7 @@ fn compile_jacobian_rows_attached(
             .sum::<usize>();
         whole.push(match func_id {
             Some(func_id) => JacobianWholeEntry::Batch {
+                usage: Default::default(),
                 jit: finalized_jacobian_fn(&emitter.module, func_id)?,
                 scratch: Default::default(),
                 rows,

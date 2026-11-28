@@ -102,6 +102,7 @@ impl CompiledResidualRows {
     ) -> Result<(), CompileError> {
         let mut regs = self.regs_scratch.borrow_mut();
         let compiled = &self.jits[program];
+        compiled.usage.record("residual_selected");
         // SAFETY: selectable compilation emits one entry per source program;
         // the input bounds and aggregate output extent were checked above.
         let status =
