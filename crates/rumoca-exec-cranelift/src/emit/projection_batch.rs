@@ -145,6 +145,7 @@ fn define_projection_application(
 }
 
 pub(super) struct ProjectionBatch {
+    usage: EntryUse,
     function: JacobianRowFn,
     scratch: scratch::ScratchOwner,
     _module: Rc<ProjectionModule>,
@@ -172,6 +173,7 @@ impl ProjectionBatch {
             Ok(functions) => Ok(functions
                 .into_iter()
                 .map(|function| Self {
+                    usage: Default::default(),
                     function,
                     scratch: Default::default(),
                     _module: module.clone(),
@@ -192,6 +194,7 @@ impl ProjectionBatch {
         seed: &mut [f64],
         output: &mut [f64],
     ) -> Result<(), CompileError> {
+        self.usage.record("projection");
         // SAFETY: the prepared application checks all input/output extents and
         // exclusively leases both scratch buffers. The seed pointer refers to
         // writable storage; this entry sets and clears its issued color seeds.

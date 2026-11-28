@@ -4566,6 +4566,8 @@ dependencies = [
  "rumoca-core",
  "rumoca-eval-solve",
  "rumoca-ir-solve",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

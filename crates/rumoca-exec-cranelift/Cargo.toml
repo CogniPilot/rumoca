@@ -17,8 +17,10 @@ cranelift-jit = "0.125"
 cranelift-module = "0.125"
 rayon = { workspace = true }
 region = "3.0"
+tracing.workspace = true
 
 [dev-dependencies]
+tracing-subscriber.workspace = true
 rumoca-ir-solve = { workspace = true, features = ["pattern-fixtures"] }
 # The AArch64 backend, to compile for it on any host (#699).
 cranelift-codegen = { version = "0.125", features = ["arm64"] }
