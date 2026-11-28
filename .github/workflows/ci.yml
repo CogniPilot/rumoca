@@ -1460,6 +1460,7 @@ jobs:
           ref: ${{ env.CI_SOURCE_SHA }}
           token: ${{ github.token }}
           persist-credentials: true
+          fetch-depth: 2 # Both parents of a PR test merge, to find tested main.
 
       - name: Verify source checkout identity
         shell: bash
@@ -1588,10 +1589,41 @@ jobs:
       # stage killed again is final; a runner whose speed cannot be trusted
       # re-runs nothing, and its kills stay inconclusive. When rows changed,
       # the shard's comparator tail runs again over them.
+      # The PR-vs-main check compares with tested main, so a stage tested main
+      # completed is re-measured too: one mechanism serves both comparisons.
+      - name: Resolve tested main for re-measurement
+        id: remeasure-main
+        if: ${{ github.event_name == 'pull_request' }}
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const { pathToFileURL } = require('url');
+            const { execFileSync } = require('child_process');
+            const helper = await import(pathToFileURL(process.cwd() + '/.github/scripts/msl-main-baseline.mjs'));
+            const parents = execFileSync('git', ['rev-list', '--parents', '-n', '1', 'HEAD'], { encoding: 'utf8' });
+            const sha = helper.testedMainSha(process.env.CI_SOURCE_SHA, parents);
+            const binding = await helper.findMainArtifact({ github, repo: context.repo, sha, log: core.info });
+            core.setOutput('run-id', binding.runId);
+            core.setOutput('artifact-id', binding.artifactId);
+
+      - name: Download tested main results for re-measurement
+        if: ${{ github.event_name == 'pull_request' }}
+        uses: actions/download-artifact@v8
+        with:
+          artifact-ids: ${{ steps.remeasure-main.outputs.artifact-id }}
+          path: target/msl/remeasure-main
+          run-id: ${{ steps.remeasure-main.outputs.run-id }}
+          github-token: ${{ github.token }}
+
       - name: Re-measure watchdog kills on this runner
         run: |
           set -euo pipefail
-          cargo xtask verify msl-remeasure --results-dir target/msl/results -- \
+          tested_main=()
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            test -s target/msl/remeasure-main/msl_results.json
+            tested_main=(--tested-main-results target/msl/remeasure-main/msl_results.json)
+          fi
+          cargo xtask verify msl-remeasure --results-dir target/msl/results "${tested_main[@]}" -- \
             --prebuilt-test-binary "$PWD/result-msl-artifacts/bin/msl_tests" \
             --prebuilt-model-worker "$PWD/result-msl-artifacts/bin/rumoca-worker" \
             --prebuilt-sim-worker "$PWD/result-msl-artifacts/bin/rumoca-sim-worker" \

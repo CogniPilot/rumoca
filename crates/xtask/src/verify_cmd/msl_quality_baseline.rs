@@ -1,7 +1,7 @@
 mod budget_metadata;
 mod cohort;
 pub(super) mod ratchet;
-mod reference_boundary;
+pub(super) mod reference_boundary;
 #[cfg(test)]
 mod tests;
 

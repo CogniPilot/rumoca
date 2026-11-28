@@ -551,10 +551,17 @@ fn a_kill_is_inconclusive_until_re_measured_and_final_after() {
         speed: Some(2.46),
     });
     assert_eq!(
-        one(simulated_before, killed),
+        one(simulated_before.clone(), killed.clone()),
         Transition::Regressed(Regression::StageDropped {
             from: ModelStage::Simulated,
             to: ModelStage::Initialized,
         })
+    );
+    // Re-measured, but on a runner whose speed could not be trusted: the
+    // re-measurement cannot conclude.
+    killed.stage_seconds.timing_inconclusive = Some("fewer than 30".to_string());
+    assert_eq!(
+        one(simulated_before, killed),
+        Transition::Inconclusive("watchdog kill")
     );
 }

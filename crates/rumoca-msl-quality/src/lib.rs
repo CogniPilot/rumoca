@@ -224,6 +224,24 @@ pub enum TraceState {
     Unscored(UnscoredCause),
 }
 
+/// The stage a result row records: the compile phase it failed at, or how
+/// far it got past compiling (from its initialization and simulation
+/// statuses). An unknown phase is refused.
+pub fn stage_of_row(
+    phase_reached: &str,
+    ic_status: Option<&str>,
+    sim_status: Option<&str>,
+) -> Result<ModelStage, String> {
+    if let Some(phase) = failed_compile_phase(phase_reached)? {
+        return Ok(ModelStage::FailedAt(phase));
+    }
+    Ok(match (ic_status, sim_status) {
+        (_, Some("sim_ok")) => ModelStage::Simulated,
+        (Some("ic_ok"), _) => ModelStage::Initialized,
+        _ => ModelStage::Compiled,
+    })
+}
+
 /// The stage a model reached when the watchdog killed `phase` (the worker's
 /// name for it): a compile phase fails at itself; a kill while solving,
 /// building the simulator or initializing leaves it compiled; a kill while
@@ -500,8 +518,10 @@ fn transition(
     reviewed: &ReviewedChanges,
 ) -> Transition {
     if current.stage < previous.stage {
-        let killed = current.stage_seconds.timeout_phase.is_some();
-        return if killed && current.stage_seconds.remeasured.is_none() {
+        let timing = &current.stage_seconds;
+        let killed = timing.timeout_phase.is_some();
+        let final_kill = timing.remeasured.is_some() && timing.timing_inconclusive.is_none();
+        return if killed && !final_kill {
             Transition::Inconclusive("watchdog kill")
         } else {
             Transition::Regressed(Regression::StageDropped {

@@ -12,7 +12,6 @@
 use super::*;
 use rumoca_msl_quality::{
     BandLabel, ModelStage, ModelState, ModelStates, StageSeconds, TraceState, UnscoredCause,
-    failed_compile_phase,
 };
 use rumoca_test_msl::msl_tools::band_table::{BandRow, ExitReason};
 use rumoca_test_msl::msl_tools::common::typed_exception_kind;
@@ -20,18 +19,16 @@ use rumoca_test_msl::msl_tools::common::typed_exception_kind;
 /// The furthest stage a model reached, ranked by the one compile-phase order;
 /// an unknown phase is refused rather than ranked.
 fn stage_of(result: &MslModelResult) -> Result<(ModelStage, Option<String>), String> {
-    let phase = failed_compile_phase(&result.phase_reached)
+    let (ic, sim) = (result.ic_status.as_deref(), result.sim_status.as_deref());
+    let stage = rumoca_msl_quality::stage_of_row(&result.phase_reached, ic, sim)
         .map_err(|error| format!("{}: {error}", result.model_name))?;
-    if let Some(phase) = phase {
-        return Ok((ModelStage::FailedAt(phase), result.error_code.clone()));
-    }
-    Ok(
-        match (result.ic_status.as_deref(), result.sim_status.as_deref()) {
-            (_, Some("sim_ok")) => (ModelStage::Simulated, None),
-            (Some("ic_ok"), status) => (ModelStage::Initialized, status.map(str::to_string)),
-            (ic, sim) => (ModelStage::Compiled, ic.or(sim).map(str::to_string)),
-        },
-    )
+    let outcome = match stage {
+        ModelStage::FailedAt(_) => result.error_code.clone(),
+        ModelStage::Simulated => None,
+        ModelStage::Initialized => sim.map(str::to_string),
+        ModelStage::Compiled => ic.or(sim).map(str::to_string),
+    };
+    Ok((stage, outcome))
 }
 
 fn trace_of(row: Option<&BandRow>) -> Result<TraceState, String> {

@@ -24,6 +24,31 @@ struct ReferenceBoundaryChainFile {
     chain: ReferenceBoundaryMigration,
 }
 
+/// The reviewed chain as data, with the quality gate version it reaches: what
+/// a run of this commit crosses from an older baseline.
+pub(crate) fn reviewed_chain_snapshot() -> Result<serde_json::Value> {
+    let file: serde_json::Value = serde_json::from_str(REVIEWED_REFERENCE_BOUNDARIES)
+        .context("parse the reference boundary chain")?;
+    ensure!(
+        file.get("schema_version")
+            .and_then(serde_json::Value::as_u64)
+            == Some(REFERENCE_BOUNDARY_CHAIN_SCHEMA_VERSION),
+        "reference boundary chain schema is not the supported {REFERENCE_BOUNDARY_CHAIN_SCHEMA_VERSION}"
+    );
+    let chain = file
+        .get("chain")
+        .cloned()
+        .context("the boundary file has no chain")?;
+    let version = chain
+        .get("to_quality_gate_version")
+        .cloned()
+        .context("the chain head has no to_quality_gate_version")?;
+    Ok(serde_json::json!({
+        "quality_gate_version": version,
+        "reference_boundary_migration": chain,
+    }))
+}
+
 /// Parse a reference boundary chain file, refusing one of another schema.
 fn parse_reference_boundary_chain(text: &str) -> Result<ReferenceBoundaryMigration> {
     let file: ReferenceBoundaryChainFile =

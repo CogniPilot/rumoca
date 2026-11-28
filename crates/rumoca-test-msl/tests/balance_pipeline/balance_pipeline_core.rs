@@ -416,6 +416,7 @@ fn compile_timeout_phase_result(
 
 fn model_worker_wall_timeout_secs(stage_budget_secs: f64) -> f64 {
     stage_budget_secs * COMPILE_PIPELINE_STAGE_BUDGETS
+        + raised_compile_wall_delta_secs(stage_budget_secs, parity_config().raised_stage)
 }
 
 fn streaming_queue_bound(worker_threads: usize, model_count: usize) -> usize {

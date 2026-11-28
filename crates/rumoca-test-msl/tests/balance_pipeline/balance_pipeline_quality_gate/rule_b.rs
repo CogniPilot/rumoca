@@ -16,7 +16,7 @@
 
 use super::*;
 use rumoca_msl_quality::speed::{SpeedGauge, calibration_timings, frame_references};
-use rumoca_msl_quality::{BandLabel, ModelStates, Remeasurement, TraceState};
+use rumoca_msl_quality::{BandLabel, ModelStates, Remeasurement, TraceState, stage_at_kill};
 
 /// Each OMC model's shard in a (merged) reference file (0 when unsharded).
 pub(super) fn model_shards(reference: &serde_json::Value) -> BTreeMap<String, u32> {
@@ -53,6 +53,69 @@ pub(super) fn apply_remeasurements(
         }
     }
     Ok(())
+}
+
+/// Judge every re-measured stage that completed: its own time divided by
+/// the shard's speed must fit the stage's configured budget. Over it, the
+/// stage counts as killed again (a stage drop); with no trusted speed it
+/// cannot conclude (inconclusive). The shard-side factor only bounds wall time,
+/// so a raised budget, the cap before the first frame included, never passes a
+/// slowdown by itself.
+pub(super) fn judge_remeasured_stages(
+    states: &mut ModelStates,
+    results: &[MslModelResult],
+    gauge: Result<&SpeedGauge, &str>,
+    shards: &BTreeMap<String, u32>,
+    budgets: PhaseBudgets,
+) {
+    let results = results
+        .iter()
+        .map(|result| (result.model_name.as_str(), result))
+        .collect::<HashMap<_, _>>();
+    for (model, state) in states.iter_mut() {
+        let timing = &state.stage_seconds;
+        let (Some(remeasured), None) = (&timing.remeasured, &timing.timeout_phase) else {
+            continue;
+        };
+        let stage = remeasured.stage.clone();
+        let measured = results
+            .get(model.as_str())
+            .and_then(|result| budgets.stage_time_and_budget(result, &stage));
+        // An unknown stage has no time or budget: judged below, never skipped.
+        let speed = match (gauge, shards.get(model)) {
+            (Err(why), _) => Err(format!("{why}; re-run the shard jobs")),
+            (Ok(gauge), Some(&shard)) => gauge
+                .speed_for(model, shard)
+                .map_err(|why| format!("{why}; re-run the shard job")),
+            (Ok(_), None) => Err(format!("{model} has no OMC timing to place it on a shard")),
+        };
+        let verdict = match (measured, speed) {
+            (Some((seconds, budget)), Ok(speed))
+                if seconds / speed <= budget && stage_at_kill(&stage).is_some() =>
+            {
+                continue;
+            }
+            (Some(_), Ok(_)) => None,
+            (None, _) => Some(format!(
+                "{model}'s re-measured {stage} time was not recorded"
+            )),
+            (_, Err(why)) => Some(why),
+        };
+        // A stage name this rule does not know (a renamed worker phase) is
+        // never exempt: the model is held at the stage before compiling ends.
+        let (reached, verdict) = match stage_at_kill(&stage) {
+            Some(reached) => (reached, verdict),
+            None => (
+                rumoca_msl_quality::ModelStage::Compiled.min(state.stage),
+                Some(format!(
+                    "{model}'s re-measured stage {stage:?} is not a known stage"
+                )),
+            ),
+        };
+        state.stage = reached;
+        state.stage_seconds.timeout_phase = Some(stage);
+        state.stage_seconds.timing_inconclusive = verdict;
+    }
 }
 
 /// Re-judge `states`' certification under rule B, with the gauge of the
@@ -173,6 +236,14 @@ pub(super) fn insert_normalized_certification(
     let gauge = references
         .as_ref()
         .map(|references| SpeedGauge::new(&timings, references));
+    let shards = model_shards(&reference);
+    judge_remeasured_stages(
+        &mut states,
+        &summary.model_results,
+        gauge.as_ref().map_err(|why| why.as_str()),
+        &shards,
+        budgets,
+    );
     normalize_certification(
         &mut states,
         &summary.model_results,
@@ -215,7 +286,7 @@ mod tests {
     use rumoca_msl_quality::speed::{
         CALIBRATION_MODELS, FRAME_GATE_VERSION, OmcTiming, bootstrap_references,
     };
-    use rumoca_msl_quality::{ModelStage, ModelState, StageSeconds};
+    use rumoca_msl_quality::{ModelStage, ModelState, Regression, StageSeconds};
 
     /// Budgets of CI: 45 s per phase, 45 s for the run.
     fn budgets() -> PhaseBudgets {
@@ -507,5 +578,86 @@ mod tests {
         let typo =
             serde_json::json!({ "remeasured": { "Killed": { "stage": "Sim", "factr": 2.0 } } });
         assert!(apply_remeasurements(&mut states, &typo).is_err());
+    }
+
+    /// A strict-high model whose killed Sim was re-measured and completed in
+    /// `run_seconds`.
+    fn remeasured_sim(run_seconds: f64) -> (ModelState, MslModelResult) {
+        let mut state = strict_high();
+        state.stage_seconds.remeasured = Some(Remeasurement {
+            stage: "Sim".to_string(),
+            factor: 3.0,
+            speed: None,
+        });
+        (state, result("M", run_seconds))
+    }
+
+    fn judged_remeasured(run_seconds: f64, gauge: Result<&SpeedGauge, &str>) -> ModelState {
+        let (state, result) = remeasured_sim(run_seconds);
+        let mut states = ModelStates::from([("M".to_string(), state)]);
+        let shards = BTreeMap::from([("M".to_string(), 1)]);
+        judge_remeasured_stages(&mut states, &[result], gauge, &shards, budgets());
+        states.remove("M").unwrap()
+    }
+
+    #[test]
+    fn a_re_measured_stage_is_judged_on_its_normalized_time_at_the_merge() {
+        use rumoca_msl_quality::{ReviewedChanges, Transition, transitions};
+        // The first crossing: the frame set at the merge, this shard at k = 1.
+        let timings = calibrated(1, 1.0);
+        let references = bootstrap_references(&timings).unwrap();
+        let gauge = SpeedGauge::new(&timings, &references);
+        let before = ModelStates::from([("M".to_string(), strict_high())]);
+        let judge = |state: ModelState| {
+            let after = ModelStates::from([("M".to_string(), state)]);
+            transitions(&before, &after, &ReviewedChanges::default())
+                .remove("M")
+                .unwrap()
+        };
+        // Completed at 2.5x the 45 s budget under the 3x cap: a slowdown, refused.
+        let slow = judged_remeasured(112.5, Ok(&gauge));
+        assert_eq!(slow.stage_seconds.timeout_phase.as_deref(), Some("Sim"));
+        assert!(matches!(
+            judge(slow),
+            Transition::Regressed(Regression::StageDropped { .. })
+        ));
+        // Completed inside the budget: judged as a completion.
+        let fine = judged_remeasured(40.0, Ok(&gauge));
+        assert_eq!(fine.stage_seconds.timeout_phase, None);
+        assert_eq!(judge(fine), Transition::Unchanged);
+        // On a 2.46x runner, 100 s is 40.7 s in the frame: a completion.
+        let slow_runner = calibrated(1, 2.46);
+        let gauge = SpeedGauge::new(&slow_runner, &references);
+        assert_eq!(
+            judged_remeasured(100.0, Ok(&gauge))
+                .stage_seconds
+                .timeout_phase,
+            None
+        );
+        // No trusted speed: it cannot conclude.
+        let untrusted = judged_remeasured(40.0, Err("cannot set the frame"));
+        assert_eq!(judge(untrusted), Transition::Inconclusive("watchdog kill"));
+    }
+
+    #[test]
+    fn an_unknown_re_measured_stage_is_never_exempt() {
+        use rumoca_msl_quality::{ReviewedChanges, Transition, transitions};
+        let timings = calibrated(1, 1.0);
+        let references = bootstrap_references(&timings).unwrap();
+        let gauge = SpeedGauge::new(&timings, &references);
+        let (mut state, result) = remeasured_sim(10.0);
+        state.stage_seconds.remeasured.as_mut().unwrap().stage = "Simulate".to_string();
+        let mut states = ModelStates::from([("M".to_string(), state)]);
+        let shards = BTreeMap::from([("M".to_string(), 1)]);
+        judge_remeasured_stages(&mut states, &[result], Ok(&gauge), &shards, budgets());
+        let why = states["M"]
+            .stage_seconds
+            .timing_inconclusive
+            .clone()
+            .unwrap();
+        assert!(why.contains("\"Simulate\" is not a known stage"), "{why}");
+        let before = ModelStates::from([("M".to_string(), strict_high())]);
+        let transition = transitions(&before, &states, &ReviewedChanges::default()).remove("M");
+        assert_eq!(transition, Some(Transition::Inconclusive("watchdog kill")));
     }
 }

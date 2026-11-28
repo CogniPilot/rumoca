@@ -309,13 +309,38 @@ pub(crate) fn promoted_baseline_file() -> Option<PathBuf> {
     Some(msl_workspace_root().join(path))
 }
 
-/// One stage whose watchdog budget a re-measurement raises.
+/// One stage whose watchdog budget a re-measurement raises; the factor is
+/// refused at load unless it is in 1..=3.
 #[derive(Debug, Clone, Copy, PartialEq, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(deny_unknown_fields, try_from = "RaisedStageWire")]
 pub(crate) struct RaisedStage {
     pub(crate) phase: rumoca_worker::WorkerProgressPhase,
     /// At least 1 and at most 3: the stage's budget times the shard's speed.
     pub(crate) factor: f64,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RaisedStageWire {
+    phase: rumoca_worker::WorkerProgressPhase,
+    factor: f64,
+}
+
+impl TryFrom<RaisedStageWire> for RaisedStage {
+    type Error = String;
+
+    fn try_from(wire: RaisedStageWire) -> Result<Self, Self::Error> {
+        if !(1.0..=3.0).contains(&wire.factor) {
+            return Err(format!(
+                "raised_stage.factor {} is outside 1..=3",
+                wire.factor
+            ));
+        }
+        Ok(Self {
+            phase: wire.phase,
+            factor: wire.factor,
+        })
+    }
 }
 
 pub(crate) fn quality_baseline_file_override() -> Option<PathBuf> {

@@ -15,8 +15,9 @@ use anyhow::{Context, Result, bail};
 use clap::Args;
 use rumoca_msl_quality::snapshot::{crossed_links, previous_states};
 use rumoca_msl_quality::speed::{SpeedGauge, calibration_timings, frame_references};
-use rumoca_msl_quality::{ModelStates, Remeasurement, stage_at_kill};
+use rumoca_msl_quality::{ModelStage, ModelStates, Remeasurement, stage_at_kill, stage_of_row};
 use serde_json::{Map, Value, json};
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -36,9 +37,10 @@ pub(crate) struct VerifyMslRemeasureArgs {
     /// asset, downloaded; in CI a failed download fails the pass)
     #[arg(long)]
     baseline: Option<PathBuf>,
-    /// The reviewed checked-in baseline of this commit (default: the tracked one)
+    /// The tested-main run's msl_results.json the PR-vs-main check compares
+    /// with: a stage it completed is a candidate too
     #[arg(long)]
-    checked_in: Option<PathBuf>,
+    tested_main_results: Option<PathBuf>,
     /// Re-measure at most this many models; the rest stay inconclusive
     #[arg(long, default_value_t = 4)]
     max_models: usize,
@@ -90,13 +92,56 @@ fn killed_stage(row: &Value) -> Option<String> {
         .then(|| "Sim".to_string())
 }
 
+/// Each model's stage in a run's msl_results.json rows.
+pub(crate) fn row_stages(results: &Value) -> Result<BTreeMap<String, ModelStage>> {
+    let rows = results
+        .get("model_results")
+        .and_then(Value::as_array)
+        .context("msl_results.json has no model_results")?;
+    rows.iter()
+        .map(|row| {
+            let model = row
+                .get("model_name")
+                .and_then(Value::as_str)
+                .context("a result row has no model_name")?;
+            let text = |key: &str| row.get(key).and_then(Value::as_str);
+            let stage = stage_of_row(
+                text("phase_reached").unwrap_or(""),
+                text("ic_status"),
+                text("sim_status"),
+            )
+            .map_err(|error| anyhow::anyhow!("{model}: {error}"))?;
+            Ok((model.to_string(), stage))
+        })
+        .collect()
+}
+
+/// The furthest stage each model reached on either old side: the promoted
+/// baseline's states, and the tested-main run the PR-vs-main check compares
+/// with. A kill is re-measured when either completed its stage, so both
+/// checks judge the same re-measured evidence.
+pub(crate) fn old_side_stages(
+    baseline: &ModelStates,
+    tested_main: Option<&BTreeMap<String, ModelStage>>,
+) -> BTreeMap<String, ModelStage> {
+    let mut stages = baseline
+        .iter()
+        .map(|(model, state)| (model.clone(), state.stage))
+        .collect::<BTreeMap<_, _>>();
+    for (model, stage) in tested_main.into_iter().flatten() {
+        let entry = stages.entry(model.clone()).or_insert(*stage);
+        *entry = (*entry).max(*stage);
+    }
+    stages
+}
+
 /// The models to re-measure, and the kills that cannot be (with why). A
-/// candidate is killed in a stage its old-side state completed. Its factor is
+/// candidate is killed in a stage an old side completed. Its factor is
 /// the shard's speed clamped to 1..=3; with no stored frame (the first
 /// crossing, whose frame is set only at the merge) it is the cap.
 pub(crate) fn candidates(
     results: &Value,
-    old: &ModelStates,
+    old: &BTreeMap<String, ModelStage>,
     gauge: Option<&Result<SpeedGauge, String>>,
 ) -> (Vec<Candidate>, Vec<String>) {
     let mut chosen = Vec::new();
@@ -112,7 +157,7 @@ pub(crate) fn candidates(
         let (Some(reached), Some(previous)) = (stage_at_kill(&stage), old.get(model)) else {
             continue;
         };
-        if previous.stage <= reached {
+        if *previous <= reached {
             continue;
         }
         let (factor, speed) = match gauge {
@@ -209,17 +254,22 @@ fn remeasure_one(
 }
 
 pub(crate) fn run(root: &Path, args: &VerifyMslRemeasureArgs) -> Result<()> {
-    let checked_in_path = args.checked_in.clone().unwrap_or_else(|| {
-        root.join(super::msl_quality_baseline::MSL_QUALITY_BASELINE_FALLBACK_REL)
-    });
     let baseline_path = match &args.baseline {
         Some(path) => path.clone(),
         None => super::msl_quality_baseline::promoted_baseline_or_offline_fallback(root)?,
     };
     let baseline = read_json(&baseline_path)?;
-    let checked_in = read_json(&checked_in_path)?;
-    let crossed = crossed_links(&checked_in, &baseline).map_err(anyhow::Error::msg)?;
-    let old = previous_states(&baseline, &crossed, root).map_err(anyhow::Error::msg)?;
+    // The reviewed chain of this commit, from the version it reaches down to
+    // the baseline's: the crossing's pinned evidence and reviewed changes.
+    let reviewed = super::msl_quality_baseline::reference_boundary::reviewed_chain_snapshot()?;
+    let crossed = crossed_links(&reviewed, &baseline).map_err(anyhow::Error::msg)?;
+    let promoted = previous_states(&baseline, &crossed, root).map_err(anyhow::Error::msg)?;
+    let tested_main = args
+        .tested_main_results
+        .as_deref()
+        .map(|path| read_json(path).and_then(|results| row_stages(&results)))
+        .transpose()?;
+    let old = old_side_stages(&promoted, tested_main.as_ref());
     let results_path = args.results_dir.join("msl_results.json");
     let mut results = read_json(&results_path)?;
     let reference = read_json(&args.results_dir.join("omc_simulation_reference.json"))?;
@@ -339,7 +389,7 @@ mod tests {
         ] })
     }
 
-    fn old() -> ModelStates {
+    fn promoted() -> ModelStates {
         ModelStates::from([
             ("Killed".to_string(), state(ModelStage::Simulated)),
             ("KilledCompiling".to_string(), state(ModelStage::Simulated)),
@@ -347,6 +397,31 @@ mod tests {
             ("WasKilledToo".to_string(), state(ModelStage::Initialized)),
             ("Fine".to_string(), state(ModelStage::Simulated)),
         ])
+    }
+
+    fn old() -> BTreeMap<String, ModelStage> {
+        old_side_stages(&promoted(), None)
+    }
+
+    #[test]
+    fn a_stage_tested_main_completed_is_re_measured_too() {
+        // Tested main simulated WasKilledToo, which the promoted baseline only
+        // initialized: progress since the promotion, re-measured all the same.
+        let tested_main = row_stages(&json!({ "model_results": [
+            { "model_name": "WasKilledToo", "phase_reached": "Success", "ic_status": "ic_ok", "sim_status": "sim_ok" },
+            { "model_name": "NewlyKilled", "phase_reached": "Flatten" },
+        ] }))
+        .unwrap();
+        let old = old_side_stages(&promoted(), Some(&tested_main));
+        let slow = Ok(gauge(2.46));
+        let (chosen, _) = candidates(&results(), &old, Some(&slow));
+        let names = chosen.iter().map(|c| c.model.as_str()).collect::<Vec<_>>();
+        assert_eq!(names, ["Killed", "KilledCompiling", "WasKilledToo"]);
+        // A model tested main never got as far is still not a candidate.
+        assert!(!names.contains(&"NewlyKilled"));
+        // A row with an unknown phase is refused, not read as anything.
+        let bad = json!({ "model_results": [{ "model_name": "X", "phase_reached": "Teleport" }] });
+        assert!(row_stages(&bad).is_err());
     }
 
     #[test]

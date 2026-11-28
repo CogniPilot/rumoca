@@ -108,6 +108,28 @@ impl PhaseBudgets {
         self.worst_share_at(result, 1.0)
     }
 
+    /// A stage's own time in `result` and its configured budget, by the
+    /// worker's name for the stage.
+    pub(super) fn stage_time_and_budget(
+        self,
+        result: &MslModelResult,
+        stage: &str,
+    ) -> Option<(f64, f64)> {
+        let attempt = self.model_attempt_seconds;
+        let (seconds, budget) = match stage {
+            "Instantiate" => (result.instantiate_seconds, attempt),
+            "Typecheck" => (result.typecheck_seconds, attempt),
+            "Flatten" => (result.flatten_seconds, attempt),
+            "ToDae" => (result.dae_seconds, attempt),
+            "Solve" => (result.ir_solve_seconds, attempt),
+            "SimBuild" => (result.sim_backend_build_seconds, attempt),
+            "IC" => (result.ic_seconds, attempt),
+            "Sim" => (result.sim_run_seconds, self.simulation_seconds),
+            _ => return None,
+        };
+        Some((seconds?, budget))
+    }
+
     /// [`Self::worst_share`] with every phase time divided by the runner's
     /// `speed` (rule B), so the share is the one in the reference frame.
     pub(super) fn worst_share_at(
