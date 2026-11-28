@@ -200,6 +200,17 @@ pub(super) fn rosters_from_states(
     (certified, held)
 }
 
+/// Read a JSON file that must exist, naming it on any failure: a missing
+/// file is never read as an empty value, which would surface far downstream
+/// as a misleading complaint about its contents.
+pub(super) fn read_required_json(path: &Path, what: &str) -> io::Result<serde_json::Value> {
+    let bytes = fs::read(path).map_err(|error| {
+        io::Error::new(error.kind(), format!("{what} {}: {error}", path.display()))
+    })?;
+    serde_json::from_slice(&bytes)
+        .map_err(|error| io::Error::other(format!("{what} {}: {error}", path.display())))
+}
+
 /// Apply rule B to the `model_states` just written into `root`.
 pub(super) fn insert_normalized_certification(
     root: &mut serde_json::Map<String, serde_json::Value>,
@@ -211,15 +222,9 @@ pub(super) fn insert_normalized_certification(
     };
     let mut states: ModelStates = serde_json::from_value(states.clone())
         .map_err(|error| io::Error::other(format!("model_states: {error}")))?;
-    let read_json = |path: &Path| -> io::Result<serde_json::Value> {
-        match fs::read(path) {
-            Ok(bytes) => serde_json::from_slice(&bytes)
-                .map_err(|error| io::Error::other(format!("{}: {error}", path.display()))),
-            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(serde_json::Value::Null),
-            Err(error) => Err(error),
-        }
-    };
-    let reference = read_json(&omc_simulation_reference_path())?;
+    // Both files must exist here: this runs only when parity was measured, so
+    // the OMC reference was written, and every run judges against a baseline.
+    let reference = read_required_json(&omc_simulation_reference_path(), "OMC reference")?;
     apply_remeasurements(&mut states, &reference)?;
     if let Some(windows) = reference.get("shard_timing_windows") {
         for window in windows.as_array().into_iter().flatten() {
@@ -230,7 +235,10 @@ pub(super) fn insert_normalized_certification(
         }
         root.insert("shard_timing_windows".to_string(), windows.clone());
     }
-    let baseline = read_json(&promoted_baseline_file().unwrap_or_else(msl_quality_baseline_path))?;
+    let baseline = read_required_json(
+        &promoted_baseline_file().unwrap_or_else(msl_quality_baseline_path),
+        "rule B baseline",
+    )?;
     let timings = calibration_timings(&reference);
     let references = frame_references(&baseline, &timings).map_err(io::Error::other)?;
     let gauge = references
@@ -659,5 +667,54 @@ mod tests {
         let before = ModelStates::from([("M".to_string(), strict_high())]);
         let transition = transitions(&before, &states, &ReviewedChanges::default()).remove("M");
         assert_eq!(transition, Some(Transition::Inconclusive("watchdog kill")));
+    }
+
+    #[test]
+    fn a_missing_required_file_is_refused_with_its_path() {
+        let dir = std::env::temp_dir().join(format!("msl-rule-b-read-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let missing = dir.join("nix-sandbox/crates/rumoca-test-msl/msl_quality_baseline.json");
+        let error = read_required_json(&missing, "rule B baseline").unwrap_err();
+        let text = error.to_string();
+        assert_eq!(error.kind(), io::ErrorKind::NotFound);
+        assert!(
+            text.contains("rule B baseline") && text.contains(&missing.display().to_string()),
+            "{text}"
+        );
+        assert!(!text.contains("quality_gate_version"), "{text}");
+        let broken = dir.join("broken.json");
+        fs::write(&broken, "{").unwrap();
+        let text = read_required_json(&broken, "OMC reference")
+            .unwrap_err()
+            .to_string();
+        assert!(
+            text.contains("OMC reference") && text.contains("broken.json"),
+            "{text}"
+        );
+        let good = dir.join("good.json");
+        fs::write(&good, r#"{"quality_gate_version": 14}"#).unwrap();
+        assert_eq!(
+            read_required_json(&good, "x").unwrap()["quality_gate_version"],
+            14
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_checked_in_baseline_is_found_from_the_checkout_not_the_build_path() {
+        let root = std::env::temp_dir().join(format!("msl-checkout-{}", std::process::id()));
+        let crate_dir = root.join("crates/rumoca-test-msl");
+        let nested = crate_dir.join("target/msl/results");
+        fs::create_dir_all(&nested).unwrap();
+        fs::write(root.join("Cargo.toml"), "[workspace]\nmembers = []\n").unwrap();
+        fs::write(crate_dir.join("Cargo.toml"), "[package]\nname = \"x\"\n").unwrap();
+        assert_eq!(workspace_crate_from(&nested), Some(crate_dir.clone()));
+        assert_eq!(workspace_crate_from(&root), Some(crate_dir));
+        // Outside any checkout there is no runtime answer.
+        assert_eq!(
+            workspace_crate_from(&std::env::temp_dir().join("nowhere-at-all")),
+            None
+        );
+        let _ = fs::remove_dir_all(&root);
     }
 }

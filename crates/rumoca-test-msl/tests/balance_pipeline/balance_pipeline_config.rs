@@ -31,6 +31,21 @@ impl MslParityBudgetProfile {
     }
 }
 
+/// The rumoca-test-msl crate directory of the checkout containing `start`, if
+/// any: the runtime answer a prebuilt harness needs, since the compile-time
+/// `CARGO_MANIFEST_DIR` of a Nix-built binary names a build sandbox that no
+/// longer exists.
+pub(crate) fn workspace_crate_from(start: &std::path::Path) -> Option<PathBuf> {
+    start.ancestors().find_map(|dir| {
+        let is_workspace_root = dir.join("Cargo.toml").is_file()
+            && fs::read_to_string(dir.join("Cargo.toml"))
+                .map(|s| s.contains("[workspace]"))
+                .unwrap_or(false);
+        let crate_dir = dir.join("crates/rumoca-test-msl");
+        (is_workspace_root && crate_dir.join("Cargo.toml").is_file()).then_some(crate_dir)
+    })
+}
+
 /// The `rumoca-test-msl` crate directory, resolved at RUNTIME.
 ///
 /// Every path the harness reads or writes (the parity config, sim-target JSONs,
@@ -45,16 +60,6 @@ impl MslParityBudgetProfile {
 /// the xtask sets to the workspace root). Falls back to the compile-time manifest
 /// dir if the CWD isn't inside a rumoca workspace.
 pub(crate) fn msl_crate_manifest_dir() -> PathBuf {
-    fn workspace_crate_from(start: &std::path::Path) -> Option<PathBuf> {
-        start.ancestors().find_map(|dir| {
-            let is_workspace_root = dir.join("Cargo.toml").is_file()
-                && fs::read_to_string(dir.join("Cargo.toml"))
-                    .map(|s| s.contains("[workspace]"))
-                    .unwrap_or(false);
-            let crate_dir = dir.join("crates/rumoca-test-msl");
-            (is_workspace_root && crate_dir.join("Cargo.toml").is_file()).then_some(crate_dir)
-        })
-    }
     std::env::current_dir()
         .ok()
         .and_then(|cwd| workspace_crate_from(&cwd))

@@ -554,3 +554,47 @@ fn kani_shard_parsing_accepts_only_one_based_stripes() {
         );
     }
 }
+
+#[test]
+fn a_shard_is_given_the_raw_promoted_asset_its_snapshot_frames_against() {
+    use std::cell::Cell;
+    let asset = PathBuf::from("/runner/work/rumoca/target/msl/baselines/msl_quality_baseline.json");
+    let calls = Cell::new(0);
+    let download = || {
+        calls.set(calls.get() + 1);
+        Ok(Some(asset.clone()))
+    };
+    let shard = VerifyMslParityArgs {
+        shard: Some("3/4".to_string()),
+        ..VerifyMslParityArgs::default()
+    };
+    assert_eq!(
+        super::shard_promoted_baseline(&shard, download).unwrap(),
+        Some(asset.clone())
+    );
+    assert_eq!(calls.get(), 1);
+    // Offline: nothing passed, no download; the harness uses the checked-in file.
+    let offline = VerifyMslParityArgs {
+        no_remote_quality_baseline: true,
+        ..shard.clone()
+    };
+    assert_eq!(
+        super::shard_promoted_baseline(&offline, download).unwrap(),
+        None
+    );
+    // Not a shard: this path does not apply.
+    let focused = VerifyMslParityArgs::default();
+    assert_eq!(
+        super::shard_promoted_baseline(&focused, download).unwrap(),
+        None
+    );
+    assert_eq!(calls.get(), 1);
+    // A download that fails (in CI) fails the shard instead of falling back.
+    let failed = super::shard_promoted_baseline(&shard, || anyhow::bail!("CI never falls back"));
+    assert!(
+        failed
+            .unwrap_err()
+            .to_string()
+            .contains("CI never falls back")
+    );
+}

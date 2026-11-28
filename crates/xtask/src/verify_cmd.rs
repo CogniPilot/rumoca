@@ -474,6 +474,21 @@ impl ParityConfigLock {
     }
 }
 
+/// A shard writes the quality snapshot whose rule-B frame reads the promoted
+/// asset, but enforces no baseline gate, so the baseline resolution above
+/// never runs for it: give it the raw promoted asset here. Offline
+/// (`--no-remote-quality-baseline`) nothing is passed and the harness falls
+/// back to the checked-in baseline; in CI a failed download fails the shard.
+fn shard_promoted_baseline(
+    args: &VerifyMslParityArgs,
+    download: impl FnOnce() -> Result<Option<PathBuf>>,
+) -> Result<Option<PathBuf>> {
+    if args.shard.is_none() || args.no_remote_quality_baseline {
+        return Ok(None);
+    }
+    download()
+}
+
 /// Write the parity config to the fixed path before the libtest gate runs. The
 /// file is rewritten every invocation so a previous run's config never leaks.
 fn write_parity_config(root: &Path, args: &VerifyMslParityArgs) -> Result<()> {
@@ -483,12 +498,14 @@ fn write_parity_config(root: &Path, args: &VerifyMslParityArgs) -> Result<()> {
             .with_context(|| format!("failed to create {}", parent.display()))?;
     }
     let mut config = args.clone();
-    let mut promoted = None;
-    if args.quality_baseline.is_some() || args.uses_baseline_relative_quality_gate() {
+    let promoted = if args.quality_baseline.is_some() || args.uses_baseline_relative_quality_gate()
+    {
         let resolved = resolve_msl_quality_baseline(root, args)?;
-        promoted = resolved.promoted_raw;
         config.quality_baseline = Some(resolved.selected);
-    }
+        resolved.promoted_raw
+    } else {
+        shard_promoted_baseline(args, || msl_quality_baseline::download_promoted_asset(root))?
+    };
     let mut json = config.to_parity_config_json();
     // The per-model rule judges against the raw promoted asset, the baseline
     // promotion judges against, so both key the accuracy statement alike.

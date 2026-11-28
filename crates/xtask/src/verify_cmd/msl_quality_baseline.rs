@@ -963,6 +963,11 @@ fn resolve_workspace_path(root: &Path, path: &Path) -> PathBuf {
     }
 }
 
+/// The raw promoted asset, downloaded, or `None` offline (refused in CI).
+pub(super) fn download_promoted_asset(root: &Path) -> Result<Option<PathBuf>> {
+    download_msl_quality_baseline_asset(root)
+}
+
 /// The baseline a re-measurement judges against: the raw promoted asset, or,
 /// offline only, the checked-in baseline (said out loud).
 pub(super) fn promoted_baseline_or_offline_fallback(root: &Path) -> Result<PathBuf> {
