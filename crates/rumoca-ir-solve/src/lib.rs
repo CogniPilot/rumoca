@@ -1164,6 +1164,20 @@ impl SolveProblem {
     }
 }
 
+/// An owned, immutable model that has passed the complete Solve contract.
+pub struct ValidatedSolveModel(SolveModel);
+
+impl ValidatedSolveModel {
+    pub fn new(model: SolveModel) -> Result<Self, SolveProblemShapeContractError> {
+        model.validate()?;
+        Ok(Self(model))
+    }
+
+    pub fn into_model(self) -> SolveModel {
+        self.0
+    }
+}
+
 impl SolveModel {
     /// Validate the finalized model, including every issued pure-call
     /// reference against this model's sole checked owner table.

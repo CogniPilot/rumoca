@@ -485,12 +485,20 @@ impl FmiComponent {
     /// SPEC_0044 §8 is not among them: this constructor derives it, exactly
     /// when the checked kernel is delay-bearing.
     pub fn construct(
-        mut model: SolveModel,
+        model: SolveModel,
         inputs: Vec<FmiVariableInput>,
     ) -> Result<Self, FmiComponentError> {
-        model
-            .validate()
+        let checked = crate::ValidatedSolveModel::new(model)
             .map_err(|error| FmiComponentError::InvalidSolve(error.to_string()))?;
+        Self::construct_validated(checked, inputs)
+    }
+
+    /// Bind FMI declarations to the exact model consumed by Solve validation.
+    pub fn construct_validated(
+        checked: crate::ValidatedSolveModel,
+        inputs: Vec<FmiVariableInput>,
+    ) -> Result<Self, FmiComponentError> {
+        let mut model = checked.into_model();
         let mut metadata = checked_metadata(&model.problem, inputs)?;
         metadata.publication_defaults_complete =
             input_defaults::check_model_defaults(&model, &metadata)?;

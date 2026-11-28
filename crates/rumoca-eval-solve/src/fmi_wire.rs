@@ -66,8 +66,8 @@ pub fn retained_fmi_component_wire(
 #[serde(deny_unknown_fields)]
 struct FmiComponentWire {
     schema_version: u16,
-    #[serde(deserialize_with = "crate::model_wire::deserialize_solve_model")]
-    solve_model: rumoca_ir_solve::SolveModel,
+    #[serde(deserialize_with = "crate::model_wire::deserialize_validated_solve_model")]
+    solve_model: rumoca_ir_solve::ValidatedSolveModel,
     variables: Vec<FmiVariableInput>,
 }
 
@@ -84,7 +84,8 @@ where
             wire.schema_version, FMI_COMPONENT_SCHEMA_VERSION
         )));
     }
-    FmiComponent::construct(wire.solve_model, wire.variables).map_err(serde::de::Error::custom)
+    FmiComponent::construct_validated(wire.solve_model, wire.variables)
+        .map_err(serde::de::Error::custom)
 }
 
 #[cfg(test)]
@@ -92,6 +93,25 @@ mod tests {
     use super::*;
     use crate::model_wire::SolveModelWireError;
     use std::error::Error;
+
+    #[test]
+    fn validated_replay_preserves_the_component_and_rejects_invalid_root() {
+        let model = rumoca_ir_solve::SolveModel::default();
+        let fresh = FmiComponent::construct(model.clone(), vec![]).unwrap();
+        let root = fresh.runtime_view().retain_assertion_root();
+        let bytes = serde_json::to_vec(&retained_fmi_component_wire(&root).unwrap()).unwrap();
+        let mut decoder = serde_json::Deserializer::from_slice(&bytes);
+        let replay = deserialize_fmi_component(&mut decoder).unwrap();
+        let replay_root = replay.runtime_view().retain_assertion_root();
+        assert_eq!(replay.variables().len(), fresh.variables().len());
+        assert_eq!(
+            serde_json::to_vec(&retained_fmi_component_wire(&replay_root).unwrap()).unwrap(),
+            bytes
+        );
+        let mut invalid = model;
+        invalid.problem.schema_version = 0;
+        assert!(rumoca_ir_solve::ValidatedSolveModel::new(invalid).is_err());
+    }
 
     #[test]
     fn a_component_wire_refusal_names_and_chains_the_model_wire_error() {
