@@ -263,18 +263,10 @@ impl CompiledJacobianV {
                         "projection application belongs to a different scalar-program owner".into(),
                     ));
                 }
-                let jit = if self.source.shares_program_owner(application.source()) {
-                    self.jit.clone()
-                } else {
-                    Rc::new(self.jit.compile_projection_rows(
-                        application.source().programs(),
-                        application.block_index(),
-                    )?)
-                };
-                Ok((jit, (*application).clone()))
+                Ok((*application).clone())
             })
             .collect::<Result<Vec<_>, _>>()?;
-        CompiledProjectionJacobian::new_all(prepared, &self.projections)
+        CompiledProjectionJacobian::new_all(prepared, &self.source, &self.jit, &self.projections)
     }
     /// Execute one existing program once, retaining all local outputs.
     pub fn call_program_outputs(
