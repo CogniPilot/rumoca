@@ -64,9 +64,11 @@ impl PreparedScalarProgramBlock {
                 None => TargetIsolationProgram::Unrepresentable,
             };
         }
-        let owned_by_other_shape = self
-            .assignment_shapes(row_idx)
-            .is_some_and(|shapes| shapes.iter().any(|(output, _)| *output == output_offset));
+        let owned_by_other_shape = self.assignment_shapes(row_idx).is_some_and(|shapes| {
+            shapes
+                .iter()
+                .any(|assignment| assignment.output == output_offset)
+        });
         if owned_by_other_shape || row_output_depends_on_y_index(row, output_offset, target_y_index)
         {
             TargetIsolationProgram::Unavailable
