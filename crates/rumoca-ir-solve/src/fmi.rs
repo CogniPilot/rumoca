@@ -51,6 +51,8 @@ pub use input_defaults::{
     FmiInputInstantiationDefault,
 };
 mod initial_mode;
+mod parameter_events;
+pub use parameter_events::FmiParameterEventError;
 mod max_step_duration;
 mod metadata;
 mod metadata_projection;
