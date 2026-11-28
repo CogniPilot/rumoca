@@ -27,6 +27,17 @@ pub fn omc_init_xml_file_name(model_name: &str) -> String {
     format!("{model_name}_init.xml")
 }
 
+/// The tight reference trace an OMC reference entry declares (relative to the
+/// results directory), when it declares one: part of the model's OMC artifacts
+/// wherever they are stored or restored.
+pub fn declared_tight_trace_file(entry: &serde_json::Value) -> Option<&str> {
+    let tight = entry.get("tight_reference")?;
+    if tight.get("state")?.as_str()? != "trace" {
+        return None;
+    }
+    tight.get("file")?.as_str()
+}
+
 #[derive(Debug, Clone, Copy)]
 struct MslPackageSpec {
     package_name: &'static str,

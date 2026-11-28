@@ -30,7 +30,10 @@
 //!   (never narrowed), and the error is averaged over the whole run as before.
 //!   Noise can therefore widen a scale, but never raise an alarm.
 //! * **Unclassified** (no tighter reference, or it has no such channel): the
-//!   channel is scored exactly as before. No evidence, no change.
+//!   channel is scored exactly as before. No evidence, no change. A caller
+//!   whose reference has an excursion channel must supply the tighter
+//!   reference to get this rule at all: the MSL comparison declares it with
+//!   the OMC reference and does not score a flagged model without one.
 
 use super::normalization::{
     CONTINUOUS_ABSOLUTE_SCALE_FLOOR, ReferenceScale, reference_is_information_free,

@@ -135,6 +135,10 @@ struct SimModelResult {
     omc_timing_context: Option<serde_json::Value>,
     trace_file: Option<String>,
     trace_error: Option<String>,
+    /// The tight reference a flagged model's OMC reference carries (see
+    /// `tight_reference`); absent for a model that needs none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    tight_reference: Option<tight_reference::TightReference>,
     rumoca_status: Option<String>,
     rumoca_ic_status: Option<String>,
     rumoca_ic_error: Option<String>,
@@ -404,7 +408,7 @@ pub fn run(args: Args) -> Result<()> {
     run_session_pending(&args, workers, &paths, &mut state, cache_valid)?;
     ensure_omc_trace_artifacts(&paths, &mut state.all_results);
     // After every timed run, so no rerun overlaps one (see `tight_reference`).
-    tight_reference::simulate_tight_references(&args, workers, &paths, &state.all_results)?;
+    tight_reference::simulate_tight_references(&args, workers, &paths, &mut state.all_results)?;
     attach_rumoca_runtime(&rumoca_runtimes, &mut state.all_results);
     ensure_target_placeholders(&model_names, &rumoca_runtimes, &mut state.all_results);
     let trace_exclusions = load_trace_exclusions(&args, &paths)?;
@@ -905,6 +909,7 @@ fn empty_omc_result() -> SimModelResult {
         omc_timing_context: None,
         trace_file: None,
         trace_error: None,
+        tight_reference: None,
         rumoca_status: None,
         rumoca_ic_status: None,
         rumoca_ic_error: None,
@@ -1367,9 +1372,9 @@ fn quantify_trace_differences(
                     | TraceExitKind::ComparatorFailed
                     | TraceExitKind::NoComparableSamples => &mut report.skipped,
                     TraceExitKind::TraceNonidentifiable => &mut report.trace_nonidentifiable,
-                    TraceExitKind::RumocaTraceMissing | TraceExitKind::OmcTraceMissing => {
-                        &mut report.missing_trace
-                    }
+                    TraceExitKind::RumocaTraceMissing
+                    | TraceExitKind::OmcTraceMissing
+                    | TraceExitKind::TightReferenceMissing => &mut report.missing_trace,
                 };
                 map.insert(model_name.clone(), exit);
             }
@@ -1438,8 +1443,8 @@ fn compare_one_candidate(
             format!("failed to load omc trace: {error}"),
         )
     })?;
-    let normal_csv = resolve_result_file_path(paths, model_name, omc_model.result_file.as_deref());
-    let omc_tight = tight_reference::load_tight_reference(paths, model_name, normal_csv.as_deref());
+    let omc_tight = tight_reference::required_tight_reference(paths, omc_model, &omc_trace)
+        .map_err(|why| TraceExitRecord::new(TraceExitKind::TightReferenceMissing, why))?;
     let metric = compare_model_traces(model_name, &rumoca_trace, &omc_trace, omc_tight.as_ref())
         .map_err(|error| {
             // "nothing was comparable" is a property of the two traces; every other

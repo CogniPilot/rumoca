@@ -155,6 +155,13 @@ fn cached_omc_artifact_paths(payload: &serde_json::Value) -> Option<Vec<PathBuf>
             return None;
         }
         paths.push(xml);
+        if let Some(tight) = rumoca_test_msl::msl_tools::common::declared_tight_trace_file(model) {
+            let tight = PathBuf::from(tight);
+            if !safe_relative_cache_path(&tight) {
+                return None;
+            }
+            paths.push(tight);
+        }
     }
     Some(paths)
 }
