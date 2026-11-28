@@ -58,6 +58,11 @@ accepts the backend-owned concrete configuration and derives its cache
 identity from that validated value. Absence and an explicitly supplied
 default are distinct requests; callers do not supply cache keys.
 
+`native_compilation::NativeCompilationCache::during` scopes Cranelift's
+incremental compilation to a host-owned memory budget. Queued functions inherit
+that scope on the parallel compiler threads. Each module applies relocations
+from its own context. Completed scopes report fresh compilations and hits.
+
 ## Passive Numerical Observation
 
 `simulate_with_numerical_observation` selects the same numerical path as

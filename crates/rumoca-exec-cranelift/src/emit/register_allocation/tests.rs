@@ -344,7 +344,7 @@ fn an_aarch64_block_beyond_the_conditional_branch_range_compiles() {
         builder.ins().return_(&[result]);
         builder.finalize();
     }
-    let compiled = super::compile_bytes(&*target, FuncId::from_u32(0), &mut context)
+    let compiled = super::compile_bytes(None, &*target, FuncId::from_u32(0), &mut context)
         .expect("a long AArch64 block compiles");
     assert!(
         compiled.bytes.len() > 1 << 20,
@@ -402,4 +402,95 @@ fn a_cut_long_block_computes_the_values_of_the_whole_block() {
         unsafe { std::mem::transmute(module.get_finalized_function(function)) };
     assert_eq!(call(0.5), f64::from(ADDS + 1) * 0.5);
     assert_eq!(call(2.0), f64::from(ADDS + 1) * 2.0 + 2.0);
+}
+
+#[test]
+fn startup_reuse_separate_modules_reuse_matching_stencils_and_bind_their_own_functions() {
+    let cache = crate::compiler_cache::NativeCompilationCache::new(
+        std::num::NonZeroUsize::new(1024 * 1024).unwrap(),
+    );
+    let construct = |count| {
+        let mut module = host_module();
+        let (function, mut context) = live_values_function(&mut module, "sum", count);
+        module.queue_function(function, &mut context).unwrap();
+        crate::emit::finalize_jit_module(&mut module).unwrap();
+        call_f64(&module, function).to_bits()
+    };
+    let (original, first) = cache.during(|| construct(11));
+    let (replay, second) = cache.during(|| construct(11));
+    let (changed, third) = cache.during(|| construct(15));
+    assert_eq!(first.compiled, 1);
+    assert_eq!(second.hits, 1);
+    assert_eq!(third.compiled, 1);
+    assert_eq!(original, replay);
+    assert_eq!(replay, expected_live_values_sum(11).to_bits());
+    assert_eq!(changed, expected_live_values_sum(15).to_bits());
+}
+
+extern "C" fn first_cached_import() -> f64 {
+    1.25
+}
+
+extern "C" fn second_cached_import() -> f64 {
+    -2.5
+}
+
+fn cached_import_value(shift: bool) -> u64 {
+    let mut builder = host_jit_builder().unwrap();
+    builder.symbol(
+        "cached_import",
+        if shift {
+            second_cached_import as *const u8
+        } else {
+            first_cached_import as *const u8
+        },
+    );
+    let mut module = OwnedJitModule::new(JITModule::new(builder));
+    let mut context = module.make_context();
+    context
+        .func
+        .signature
+        .returns
+        .push(AbiParam::new(types::F64));
+    if shift {
+        module
+            .declare_function("unused_import", Linkage::Import, &context.func.signature)
+            .unwrap();
+    }
+    let imported = module
+        .declare_function("cached_import", Linkage::Import, &context.func.signature)
+        .unwrap();
+    let function = module
+        .declare_function("entry", Linkage::Local, &context.func.signature)
+        .unwrap();
+    let callee = crate::emit::owned_jit_module::declare_far_call_in_func(
+        &mut module,
+        imported,
+        &mut context.func,
+    );
+    let mut frontend = FunctionBuilderContext::new();
+    let mut builder = FunctionBuilder::new(&mut context.func, &mut frontend);
+    let entry = builder.create_block();
+    builder.switch_to_block(entry);
+    builder.seal_block(entry);
+    let call = builder.ins().call(callee, &[]);
+    let value = builder.inst_results(call)[0];
+    builder.ins().return_(&[value]);
+    builder.finalize();
+    module.queue_function(function, &mut context).unwrap();
+    crate::emit::finalize_jit_module(&mut module).unwrap();
+    call_f64(&module, function).to_bits()
+}
+
+#[test]
+fn cache_reuse_resolves_imports_in_each_fresh_module() {
+    let cache = crate::compiler_cache::NativeCompilationCache::new(
+        std::num::NonZeroUsize::new(1024 * 1024).unwrap(),
+    );
+    let (first, cold) = cache.during(|| cached_import_value(false));
+    let (second, warm) = cache.during(|| cached_import_value(true));
+    assert_eq!(cold.compiled, 1);
+    assert_eq!(warm.hits, 1);
+    assert_eq!(first, first_cached_import().to_bits());
+    assert_eq!(second, second_cached_import().to_bits());
 }

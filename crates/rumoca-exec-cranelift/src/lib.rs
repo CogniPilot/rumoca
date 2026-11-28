@@ -10,6 +10,7 @@ mod compute_block;
 mod model_jacobian;
 mod selected_program;
 pub use checked_observation::{CompiledEventObservation, compile_event_observation};
+pub mod compiler_cache;
 mod emit;
 pub use emit::typed_program::{CompiledCheckedF64Call, CompiledF64Call};
 pub use model_jacobian::CompiledModelStateJacobian;

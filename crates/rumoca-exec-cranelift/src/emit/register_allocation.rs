@@ -110,6 +110,7 @@ struct CompiledFunction {
 
 /// Compile `context`, built for `function`, with `target`.
 fn compile_bytes(
+    scope: Option<&crate::compiler_cache::CompileScope>,
     target: &dyn TargetIsa,
     function: FuncId,
     context: &mut cranelift_codegen::Context,
@@ -128,12 +129,9 @@ fn compile_bytes(
     } else {
         target
     };
-    let alignment = context
-        .compile(target, &mut Default::default())
-        .map_err(|error| format!("{:?}", error.inner))?
-        .buffer
-        .alignment;
+    crate::compiler_cache::compile(scope, context, target)?;
     let compiled = context.compiled_code().ok_or("compiled code is missing")?;
+    let alignment = compiled.buffer.alignment;
     let bytes = compiled.code_buffer().to_vec();
     let relocations = compiled
         .buffer
@@ -219,7 +217,7 @@ pub(super) fn define_function<M: Module>(
             .map_err(|error| error.to_string());
     }
     let target = single_pass_for(module.isa())?;
-    let compiled = compile_bytes(&*target, function, context)?;
+    let compiled = compile_bytes(None, &*target, function, context)?;
     define_compiled(module, &compiled)
 }
 
@@ -265,6 +263,7 @@ impl QueuedFunctions {
         }
         let single_pass = single_pass_for(module.isa())?;
         let backtracking = module.isa();
+        let scope = crate::compiler_cache::current();
         let compiled = queued
             .into_par_iter()
             .map(|mut queued| {
@@ -273,7 +272,7 @@ impl QueuedFunctions {
                 } else {
                     backtracking
                 };
-                compile_bytes(target, queued.function, &mut queued.context)
+                compile_bytes(scope.as_ref(), target, queued.function, &mut queued.context)
             })
             .collect::<Vec<_>>();
         for compiled in compiled {

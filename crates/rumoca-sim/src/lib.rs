@@ -110,6 +110,13 @@ use wasm_execution as native_execution;
 pub use native_execution::{
     NativeComputeInventory, native_compute_inventory, native_initialization_inventory,
 };
+/// Host-owned, in-process reuse of Cranelift compilation during fresh session construction.
+#[cfg(not(target_arch = "wasm32"))]
+pub mod native_compilation {
+    pub use rumoca_exec_cranelift::compiler_cache::{
+        NativeCompilationCache, NativeCompilationUsage,
+    };
+}
 /// Opt-in calling-thread native emission diagnostics. No generated code reads
 /// these counters, and machine-code worker execution is outside their scope.
 #[cfg(not(target_arch = "wasm32"))]
