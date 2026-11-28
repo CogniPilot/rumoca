@@ -512,3 +512,25 @@ fn the_accuracy_statement_is_keyed_to_one_baseline_and_must_match_exactly() {
     assert!(stated_accuracy(Some(other.as_bytes()), &key).is_err());
     assert_eq!(stated_accuracy(None, &key), Ok(None));
 }
+
+#[test]
+fn losing_certification_on_an_untrusted_gauge_is_inconclusive_not_a_regression() {
+    let certified = simulated(BandLabel::High, 2);
+    let mut untrusted = ModelState {
+        certified: false,
+        ..simulated(BandLabel::High, 2)
+    };
+    untrusted.stage_seconds.timing_inconclusive = Some("fewer than 30".to_string());
+    assert_eq!(
+        one(certified.clone(), untrusted),
+        Transition::Inconclusive("certification timing gauge inconclusive")
+    );
+    let measured = ModelState {
+        certified: false,
+        ..simulated(BandLabel::High, 2)
+    };
+    assert_eq!(
+        one(certified, measured),
+        Transition::Regressed(Regression::Uncertified)
+    );
+}

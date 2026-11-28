@@ -151,6 +151,8 @@ pub(super) fn model_states(
                     initialization: result.ic_seconds,
                     run: result.sim_run_seconds,
                     timeout_phase: timeout_phase_of(result)?,
+                    // Rule B fills these once the run's OMC timings are read.
+                    ..StageSeconds::default()
                 },
             };
             Ok((model.clone(), state))

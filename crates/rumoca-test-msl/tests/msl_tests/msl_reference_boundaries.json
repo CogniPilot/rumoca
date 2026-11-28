@@ -193,7 +193,7 @@
     ],
     "evidence_model_states": {
       "file": "crates/rumoca-test-msl/tests/msl_tests/msl_v15_crossing_model_states.json",
-      "sha256": "a42ec85c245615df65401ce5715a8d707a71eefdb331e446f6b038d1e0b2b27a"
+      "sha256": "079593e95287fa7f28ef777cd68e3e5d66fb2153cb6804012bda337900acfe4c"
     }
   }
 }

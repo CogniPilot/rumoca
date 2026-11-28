@@ -10,6 +10,7 @@
 //! without building the compiler.
 
 pub mod snapshot;
+pub mod speed;
 
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -238,6 +239,18 @@ pub struct StageSeconds {
     /// that type and refuses a name it does not know.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeout_phase: Option<String>,
+    /// The shard speed the stage times were divided by (rule B), when the
+    /// gauge was trusted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub speed: Option<f64>,
+    /// Why the speed gauge could not be trusted, when it could not: then the
+    /// model's certification is inconclusive, never judged on absolute time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timing_inconclusive: Option<String>,
+    /// This model's OMC wall time in the baseline's fixed frame: the reference
+    /// the next run's speed gauge reads against.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub omc_wall_reference: Option<f64>,
 }
 
 /// One sim target's state in a quality snapshot.
@@ -500,6 +513,9 @@ fn transition(
         return transition;
     }
     if previous.certified && !current.certified {
+        if current.stage_seconds.timing_inconclusive.is_some() {
+            return Transition::Inconclusive("certification timing gauge inconclusive");
+        }
         return Transition::Regressed(Regression::Uncertified);
     }
     if current.stage > previous.stage {

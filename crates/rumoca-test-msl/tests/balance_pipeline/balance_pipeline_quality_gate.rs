@@ -7,6 +7,7 @@ mod model_states;
 mod parity_measurement;
 mod per_model_gate;
 mod reference_stage;
+mod rule_b;
 mod runtime_cohort;
 mod schema_migrations;
 mod soundness_roster;
@@ -31,6 +32,8 @@ use model_states::*;
 pub(super) use parity_measurement::*;
 use per_model_gate::*;
 pub(super) use reference_stage::*;
+pub(super) use rule_b::timing_run_of;
+use rule_b::*;
 use runtime_cohort::*;
 use schema_migrations::*;
 use soundness_roster::*;
@@ -1198,6 +1201,7 @@ pub(super) fn write_current_msl_quality_snapshot(
                 (&certified, &roster),
                 &masses,
             )?;
+            insert_normalized_certification(root, summary, phase_budgets)?;
             if let Some(parity) = measurement.gate_input() {
                 insert_cohort_evidence(root, parity, &cohort.table, &trace)?;
             }

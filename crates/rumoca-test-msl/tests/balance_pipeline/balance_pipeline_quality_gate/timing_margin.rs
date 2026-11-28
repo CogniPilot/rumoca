@@ -99,6 +99,16 @@ impl PhaseBudgets {
 
     /// The phase of `result` that used the largest share of its budget.
     pub(super) fn worst_share(self, result: &MslModelResult) -> Option<TimingMarginEntry> {
+        self.worst_share_at(result, 1.0)
+    }
+
+    /// [`Self::worst_share`] with every phase time divided by the runner's
+    /// `speed` (rule B), so the share is the one in the reference frame.
+    pub(super) fn worst_share_at(
+        self,
+        result: &MslModelResult,
+        speed: f64,
+    ) -> Option<TimingMarginEntry> {
         let attempt = self.model_attempt_seconds;
         [
             ("Instantiate", result.instantiate_seconds, attempt),
@@ -114,7 +124,7 @@ impl PhaseBudgets {
         .filter_map(|(phase, seconds, budget)| {
             Some(TimingMarginEntry {
                 phase: phase.to_string(),
-                budget_share: seconds? / budget,
+                budget_share: seconds? / speed / budget,
             })
         })
         .max_by(|lhs, rhs| lhs.budget_share.total_cmp(&rhs.budget_share))

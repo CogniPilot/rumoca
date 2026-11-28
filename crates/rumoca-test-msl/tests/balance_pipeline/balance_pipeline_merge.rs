@@ -1108,9 +1108,38 @@ fn write_pretty_json_file(path: &Path, payload: &Value) -> Result<(), String> {
     fs::write(path, json).map_err(|e| format!("merge-shards: cannot write {}: {e}", path.display()))
 }
 
+/// Mark each OMC model of a shard's reference with its `shard` index and
+/// whether its timing is `timing_fresh` (taken on this shard's own run and
+/// runner, not cached or resumed): the merged file no longer says which shard
+/// a model ran on, and rule B's speed gauge reads only a shard's own fresh
+/// timings.
+fn annotate_omc_timings(shard_dir: &Path, payload: &mut Value) -> Result<(), String> {
+    let shard = shard_dir
+        .file_name()
+        .and_then(|name| name.to_str())
+        .and_then(|name| name.strip_prefix("shard-"))
+        .and_then(|index| index.parse::<u64>().ok())
+        .ok_or_else(|| format!("merge-shards: {} is not shard-<n>", shard_dir.display()))?;
+    let own_run = payload.get("timing_run").cloned().unwrap_or_default();
+    let Some(models) = payload.get_mut("models").and_then(Value::as_object_mut) else {
+        return Ok(());
+    };
+    for entry in models.values_mut() {
+        let fresh = timing_run_of(entry) == own_run;
+        if let Some(entry) = entry.as_object_mut() {
+            entry.insert("shard".to_string(), shard.into());
+            entry.insert("timing_fresh".to_string(), fresh.into());
+        }
+    }
+    Ok(())
+}
+
 fn merge_shard_parity_artifacts(dir: &Path, results_dir: &Path) -> Result<(), String> {
     let shard_dirs = list_shard_dirs(dir)?;
-    let omc_payloads = load_shard_json_payloads(&shard_dirs, SHARD_OMC_REFERENCE_FILE)?;
+    let mut omc_payloads = load_shard_json_payloads(&shard_dirs, SHARD_OMC_REFERENCE_FILE)?;
+    for (shard_dir, payload) in shard_dirs.iter().zip(&mut omc_payloads) {
+        annotate_omc_timings(shard_dir, payload)?;
+    }
     let trace_payloads = load_shard_json_payloads(&shard_dirs, SHARD_TRACE_COMPARISON_FILE)?;
     let omc_models = merge_required_object_maps(&omc_payloads, &["models"], "OMC model")?;
     let trace_models = merge_required_object_maps(&trace_payloads, &["models"], "trace model")?;
